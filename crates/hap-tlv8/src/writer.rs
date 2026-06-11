@@ -1,7 +1,7 @@
 //! TLV8 encoder appending to a caller-provided `Vec<u8>`.
 //!
 //! [`Tlv8Writer::push`] writes one logical value as one or more TLV8 items,
-//! fragmenting values longer than 255 bytes (phase 2). The integer helpers
+//! fragmenting values longer than 255 bytes. The integer helpers
 //! write fixed-width little-endian payloads — HAP integer fields are fixed
 //! width, so there is no minimal-width trimming.
 
@@ -19,16 +19,34 @@ impl<'a> Tlv8Writer<'a> {
         Self { out }
     }
 
-    /// Write a logical value as one TLV8 item. Phase 1 assumes
-    /// `value.len() <= 255`; phase 2 replaces this body with the
-    /// auto-fragmenting version.
+    /// Write a logical value as one or more TLV8 items, fragmenting any value
+    /// longer than 255 bytes into consecutive items of the same type.
+    ///
+    /// A 255-byte item means "more of this type follows", so when the value's
+    /// length is a non-zero exact multiple of 255 a terminating zero-length
+    /// item of the same type is appended to mark the end of the run. The
+    /// matching reader ([`crate::Tlv8Reader::parse`]) reverses this.
     pub fn push(&mut self, ty: u8, value: &[u8]) {
-        debug_assert!(value.len() <= 255, "phase 1 push handles <= 255 bytes");
-        self.out.push(ty);
-        // value.len() <= 255 is guaranteed by the caller in phase 1.
-        #[allow(clippy::cast_possible_truncation)]
-        self.out.push(value.len() as u8);
-        self.out.extend_from_slice(value);
+        if value.is_empty() {
+            self.out.push(ty);
+            self.out.push(0);
+            return;
+        }
+        let mut last_chunk_len = 0usize;
+        for chunk in value.chunks(255) {
+            self.out.push(ty);
+            // chunk.len() is at most 255, so the cast cannot truncate.
+            #[allow(clippy::cast_possible_truncation)]
+            self.out.push(chunk.len() as u8);
+            self.out.extend_from_slice(chunk);
+            last_chunk_len = chunk.len();
+        }
+        // If the final chunk was exactly 255 bytes, the reader would expect
+        // the run to continue. Append a zero-length terminator of this type.
+        if last_chunk_len == 255 {
+            self.out.push(ty);
+            self.out.push(0);
+        }
     }
 
     /// Write an unsigned 8-bit integer as a 1-byte item.
@@ -80,18 +98,58 @@ mod tests {
     }
 
     #[test]
-    fn push_exactly_255_bytes_single_item() {
+    fn push_256_bytes_fragments_255_then_1() {
         let mut buf = Vec::new();
         let mut w = Tlv8Writer::new(&mut buf);
-        // 255 is the max single-item length; phase 1 does not yet add a
-        // terminating fragment (that arrives in phase 2). For now we assert
-        // the single-item framing for a sub-256 value of length 255.
+        let value: Vec<u8> = (0..=255u16).map(|i| i as u8).take(256).collect();
+        // value = 0x00,0x01,...,0xFF (256 bytes)
+        w.push(0x09, &value);
+        // header of first item
+        assert_eq!(&buf[0..2], &[0x09, 0xFF]);
+        // 255 value bytes 0x00..=0xFE
+        assert_eq!(&buf[2..257], &(0u8..=254).collect::<Vec<u8>>()[..]);
+        // header of second item: type 0x09, length 1
+        assert_eq!(&buf[257..259], &[0x09, 0x01]);
+        // last value byte 0xFF
+        assert_eq!(buf[259], 0xFF);
+        assert_eq!(buf.len(), 260);
+    }
+
+    #[test]
+    fn push_exactly_255_appends_terminating_zero_length_item() {
+        let mut buf = Vec::new();
+        let mut w = Tlv8Writer::new(&mut buf);
         let value = vec![0x42_u8; 255];
         w.push(0x09, &value);
-        assert_eq!(buf.len(), 2 + 255);
-        assert_eq!(buf[0], 0x09);
-        assert_eq!(buf[1], 0xFF);
-        assert!(buf[2..].iter().all(|&b| b == 0x42));
+        assert_eq!(&buf[0..2], &[0x09, 0xFF]);
+        assert!(buf[2..257].iter().all(|&b| b == 0x42));
+        // terminating zero-length item
+        assert_eq!(&buf[257..259], &[0x09, 0x00]);
+        assert_eq!(buf.len(), 259);
+    }
+
+    #[test]
+    fn push_510_bytes_two_full_fragments_then_terminator() {
+        let mut buf = Vec::new();
+        let mut w = Tlv8Writer::new(&mut buf);
+        let value = vec![0xAB_u8; 510];
+        w.push(0x09, &value);
+        assert_eq!(&buf[0..2], &[0x09, 0xFF]);
+        assert_eq!(&buf[257..259], &[0x09, 0xFF]);
+        assert_eq!(&buf[514..516], &[0x09, 0x00]);
+        assert_eq!(buf.len(), 516);
+    }
+
+    #[test]
+    fn push_300_bytes_fragments_255_then_45() {
+        let mut buf = Vec::new();
+        let mut w = Tlv8Writer::new(&mut buf);
+        let value = vec![0x01_u8; 300];
+        w.push(0x09, &value);
+        assert_eq!(&buf[0..2], &[0x09, 0xFF]);
+        // second item length = 300 - 255 = 45 = 0x2D
+        assert_eq!(&buf[257..259], &[0x09, 0x2D]);
+        assert_eq!(buf.len(), 2 + 255 + 2 + 45);
     }
 
     #[test]
