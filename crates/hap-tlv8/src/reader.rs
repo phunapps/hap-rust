@@ -114,10 +114,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].0, 0x09);
         assert_eq!(items[0].1.len(), 256);
-        assert_eq!(
-            items[0].1,
-            (0..=255u16).map(|i| i as u8).take(256).collect::<Vec<u8>>()
-        );
+        assert_eq!(items[0].1, (0..=u8::MAX).collect::<Vec<u8>>());
     }
 
     #[test]

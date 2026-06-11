@@ -73,6 +73,13 @@ impl<'a> Tlv8Writer<'a> {
     pub fn push_str(&mut self, ty: u8, v: &str) {
         self.push(ty, v.as_bytes());
     }
+
+    /// Write a zero-length separator item ([`crate::SEPARATOR`], `0xFF`) used
+    /// to delimit repeated structures such as a list of pairings.
+    pub fn push_separator(&mut self) {
+        self.out.push(crate::SEPARATOR);
+        self.out.push(0);
+    }
 }
 
 #[cfg(test)]
@@ -101,7 +108,7 @@ mod tests {
     fn push_256_bytes_fragments_255_then_1() {
         let mut buf = Vec::new();
         let mut w = Tlv8Writer::new(&mut buf);
-        let value: Vec<u8> = (0..=255u16).map(|i| i as u8).take(256).collect();
+        let value: Vec<u8> = (0..=u8::MAX).collect();
         // value = 0x00,0x01,...,0xFF (256 bytes)
         w.push(0x09, &value);
         // header of first item
@@ -194,5 +201,28 @@ mod tests {
         w.push_str(0x07, "Pair");
         // "Pair" = [0x50, 0x61, 0x69, 0x72], length 4.
         assert_eq!(buf, [0x07, 0x04, 0x50, 0x61, 0x69, 0x72]);
+    }
+
+    #[test]
+    fn push_separator_emits_ff_zero() {
+        let mut buf = Vec::new();
+        let mut w = Tlv8Writer::new(&mut buf);
+        w.push_separator();
+        assert_eq!(buf, [0xFF, 0x00]);
+    }
+
+    #[test]
+    fn write_then_parse_round_trips_with_separator_and_fragment() {
+        use crate::Tlv8Reader;
+        let big = vec![0x07_u8; 300];
+        let mut buf = Vec::new();
+        {
+            let mut w = Tlv8Writer::new(&mut buf);
+            w.push(0x01, &[0xAA]);
+            w.push_separator();
+            w.push(0x01, &big);
+        }
+        let items = Tlv8Reader::parse(&buf).unwrap();
+        assert_eq!(items, vec![(0x01, vec![0xAA]), (0xFF, vec![]), (0x01, big)]);
     }
 }
