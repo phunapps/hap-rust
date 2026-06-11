@@ -106,6 +106,18 @@ Releases are cut by the maintainer at the end of each milestone. The flow is:
 3. Tag `<crate>-vX.Y.Z`.
 4. `cargo publish` from a clean checkout of the tag.
 
+### Release checklist
+
+Inter-crate path dependencies are pinned `version = "0.0.0"` (a caret `^0.0.0`
+requirement that matches only `0.0.0`). Before `cargo publish` of any crate:
+
+- Bump BOTH the crate's own `version` AND the `version = ` field of every other
+  crate that path-depends on it, in lockstep, so the published-version
+  requirements resolve. (A crate published at, say, `0.1.0` cannot be depended
+  on by an `= "0.0.0"` requirement.)
+- Ensure each crate being published has a `README.md` in its crate directory —
+  the `readme = "README.md"` manifest key requires the file to exist.
+
 ## Questions
 
 Open a [Discussion](https://github.com/phunapps/hap-rust/discussions) for design
