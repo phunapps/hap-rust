@@ -1,0 +1,24 @@
+name: Fuzz
+
+on:
+  schedule:
+    # 06:00 UTC every Monday. Avoids the PR-CI traffic peaks.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  fuzz_tlv8:
+    name: fuzz hap-tlv8 reader (stub until M1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No fuzz targets yet
+        run: |
+          echo "::notice::No fuzz targets exist yet. The hap-tlv8 reader fuzz"
+          echo "::notice::target lands in M1; this workflow becomes a real"
+          echo "::notice::'cargo +nightly fuzz run' step then."
+          echo "Skipping: nothing to fuzz in M0."
