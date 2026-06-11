@@ -16,6 +16,21 @@
 //! - **Separators.** A zero-length item of type [`SEPARATOR`] (`0xFF`)
 //!   delimits repeated structures.
 //!
+//! Integers are encoded little-endian at a fixed width per field
+//! ([`Tlv8Writer::push_u8`] → 1 byte, [`Tlv8Writer::push_u16`] → 2 bytes, and
+//! so on); there is no minimal-width trimming, because HAP integer
+//! characteristics declare their width.
+//!
+//! # Fragmentation
+//!
+//! A logical value longer than 255 bytes is encoded as consecutive items of
+//! the same type. Because a full 255-byte item means "more follows", a value
+//! whose length is a non-zero exact multiple of 255 is terminated by a
+//! zero-length item of the same type. For example, a 256-byte value of type
+//! `0x09` encodes as `[0x09, 0xFF, <255 bytes>, 0x09, 0x01, <1 byte>]`, and a
+//! 255-byte value as `[0x09, 0xFF, <255 bytes>, 0x09, 0x00]`. The reader
+//! reverses this transparently.
+//!
 //! # Usage
 //!
 //! ```
