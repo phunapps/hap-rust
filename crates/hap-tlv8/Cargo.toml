@@ -1,0 +1,22 @@
+[package]
+name = "hap-tlv8"
+version = "0.0.0"
+description = "HomeKit Accessory Protocol TLV8 encoder and decoder (type-length-value, 255-byte fragmentation)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["homekit", "hap", "tlv8", "codec", "iot"]
+categories = ["encoding", "parser-implementations"]
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

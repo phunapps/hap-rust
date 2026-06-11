@@ -1,0 +1,20 @@
+[package]
+name = "hap-crypto"
+version = "0.0.0"
+description = "HomeKit Accessory Protocol pairing crypto: Pair Setup (SRP-6a) and Pair Verify (X25519/Ed25519)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["homekit", "hap", "srp", "pairing", "cryptography"]
+categories = ["cryptography", "authentication"]
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+hap-tlv8 = { path = "../hap-tlv8", version = "0.0.0" }
