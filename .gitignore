@@ -4,3 +4,8 @@
 # Private planning docs (specs + plans) live in their own private repo
 # nested at docs/superpowers/. Never commit them to the public repo.
 superpowers/
+
+# aiohomekit capture tooling
+xtask/scripts/**/.venv/
+__pycache__/
+*.pyc
