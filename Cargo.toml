@@ -1,0 +1,70 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hap-tlv8",
+    "crates/hap-crypto",
+    "crates/hap-transport",
+    "crates/hap-pairing",
+    "crates/hap-model",
+    "crates/hap-controller",
+    "xtask",
+]
+
+# Shared metadata picked up by each crate via `field.workspace = true`.
+# The crate `version` is intentionally NOT shared — every crate is versioned
+# independently and bumps on its own milestone cadence (see README).
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/phunapps/hap-rust"
+homepage = "https://github.com/phunapps/hap-rust"
+authors = ["hap-rust contributors"]
+keywords = ["homekit", "hap", "smart-home", "iot", "accessory"]
+categories = ["network-programming", "api-bindings", "cryptography"]
+
+# Lints enforced workspace-wide. Each crate opts in with `[lints] workspace = true`.
+# CI runs clippy with `-D warnings`, so any of these becoming a warning fails the build.
+# `unsafe_code = "forbid"` is set here AND repeated as `#![forbid(unsafe_code)]` at
+# every crate root — the inner attribute is what shows up in published rustdoc and
+# survives someone copying a single crate out of the workspace.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+undocumented_unsafe_blocks = "warn"
+# General hygiene.
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints that produce too much noise for a library at this stage.
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_const_for_fn = "allow"
+
+# Common dependency versions, so every member crate pulls the same release.
+# Add to this table — do not bump per-crate without discussion. Crypto-primitive
+# crates (ring / RustCrypto / a bigint crate) are deliberately NOT pinned here
+# yet; they land with hap-crypto in M2 once the exact provider is chosen.
+[workspace.dependencies]
+thiserror = "2"
+bitflags = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", default-features = false }
+# Testing / automation.
+proptest = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+
+# Release profile defaults. Keep these conservative; consumers can override.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
