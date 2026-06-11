@@ -18,7 +18,9 @@ pub enum Tlv8Error {
     /// A typed getter was asked for an integer width that does not match the
     /// number of bytes stored for that type (for example `get_u16` on a
     /// 3-byte value).
-    #[error("integer value has {actual} bytes, too large for the requested {requested}-byte width")]
+    #[error(
+        "integer value has {actual} bytes, too large for the requested {requested}-byte width"
+    )]
     IntegerTooLarge {
         /// The width in bytes the caller requested (1, 2, 4, or 8).
         requested: usize,
