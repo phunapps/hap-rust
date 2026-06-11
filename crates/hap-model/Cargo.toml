@@ -1,0 +1,23 @@
+[package]
+name = "hap-model"
+version = "0.0.0"
+description = "HomeKit Accessory Protocol attribute database: accessory/service/characteristic model and HAP-defined types."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["homekit", "hap", "accessory", "characteristic", "iot"]
+categories = ["data-structures", "parser-implementations"]
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bitflags = { workspace = true }
+hap-tlv8 = { path = "../hap-tlv8", version = "0.0.0" }

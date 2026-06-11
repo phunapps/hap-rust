@@ -1,0 +1,25 @@
+[package]
+name = "hap-controller"
+version = "0.0.0"
+description = "High-level HomeKit (HAP) controller API: discover, pair, connect, read/write/subscribe characteristics."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["homekit", "hap", "controller", "smart-home", "iot"]
+categories = ["network-programming", "api-bindings", "asynchronous"]
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+tokio = { workspace = true }
+hap-tlv8 = { path = "../hap-tlv8", version = "0.0.0" }
+hap-crypto = { path = "../hap-crypto", version = "0.0.0" }
+hap-transport = { path = "../hap-transport", version = "0.0.0" }
+hap-pairing = { path = "../hap-pairing", version = "0.0.0" }
+hap-model = { path = "../hap-model", version = "0.0.0" }
