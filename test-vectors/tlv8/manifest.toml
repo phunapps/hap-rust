@@ -1,0 +1,63 @@
+# TLV8 vector manifest.
+#
+# id          = stable identifier
+# description = human description
+# source      = provenance (aiohomekit capture / synthetic / HAP spec)
+# file        = .bin filename, relative to test-vectors/tlv8/
+# reencodes   = true if the writer reproduces the exact bytes from `items`
+#               (false for captured payloads whose fragment boundaries we do
+#                not control). default true.
+# [[vector.item]] sequence describes the reassembled logical items in order:
+#   ty    = u8 type
+#   bytes = lowercase hex of the value (may be empty "")
+
+[[vector]]
+id = "state_m1"
+description = "Pair Setup M1 request: State=1, Method=0 (Pair Setup)"
+source = "aiohomekit pairing capture (Pair Setup, first request)"
+file = "state_m1.bin"
+reencodes = true
+[[vector.item]]
+ty = 0x06
+bytes = "01"
+[[vector.item]]
+ty = 0x00
+bytes = "00"
+
+[[vector]]
+id = "list_pairings"
+description = "List Pairings response: two pairings delimited by a separator"
+source = "aiohomekit pairing capture (List Pairings)"
+file = "list_pairings.bin"
+reencodes = true
+[[vector.item]]
+ty = 0x01
+bytes = "41"
+[[vector.item]]
+ty = 0x03
+bytes = "aabb"
+[[vector.item]]
+ty = 0x0b
+bytes = "00"
+[[vector.item]]
+ty = 0xff
+bytes = ""
+[[vector.item]]
+ty = 0x01
+bytes = "42"
+[[vector.item]]
+ty = 0x03
+bytes = "ccdd"
+[[vector.item]]
+ty = 0x0b
+bytes = "00"
+
+[[vector]]
+id = "frag_300"
+description = "300-byte PublicKey value, writer-fragmented 255 + 45"
+source = "synthetic (fragmentation framing)"
+file = "frag_300.bin"
+reencodes = true
+[[vector.item]]
+ty = 0x03
+bytes = "070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707"
