@@ -1,0 +1,6 @@
+# Rust
+/target
+
+# Private planning docs (specs + plans) live in their own private repo
+# nested at docs/superpowers/. Never commit them to the public repo.
+superpowers/
