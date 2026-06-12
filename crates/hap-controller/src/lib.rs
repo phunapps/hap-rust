@@ -38,9 +38,11 @@ mod controller;
 mod error;
 mod event;
 mod handle;
+mod setup_payload;
 
 pub use controller::HapController;
 pub use error::{HapError, Result};
+pub use setup_payload::{SetupFlags, SetupPayload};
 pub use event::CharacteristicEvent;
 pub use handle::AccessoryHandle;
 
