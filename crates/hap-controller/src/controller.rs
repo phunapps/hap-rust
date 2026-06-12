@@ -1,6 +1,7 @@
 //! [`HapController`]: the top-level handle. Owns the pairing store and the
 //! controller's long-term identity; produces [`AccessoryHandle`]s.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use hap_crypto::ControllerKeypair;
@@ -9,6 +10,24 @@ use hap_transport::{DiscoveredAccessory, HapConnection};
 
 use crate::error::{HapError, Result};
 use crate::handle::AccessoryHandle;
+
+/// Re-establishes a secure session for an [`AccessoryHandle`] by re-running
+/// Pair Verify against the stored pairing. Owned by the handle's supervisor.
+struct PairingReconnector {
+    stored: StoredAccessory,
+    keypair: ControllerKeypair,
+}
+
+#[async_trait::async_trait]
+impl crate::reconnect::Reconnector for PairingReconnector {
+    async fn reconnect(&self) -> Result<crate::reconnect::Reconnected> {
+        let session = hap_pairing::connect(&self.stored, &self.keypair).await?;
+        Ok(crate::reconnect::Reconnected {
+            session: Arc::new(session),
+            config_number: None,
+        })
+    }
+}
 
 /// The pairing id assigned to a freshly created controller identity.
 ///
@@ -112,7 +131,11 @@ impl HapController {
         if !self.cached_ids.contains(&id) {
             self.cached_ids.push(id);
         }
-        Ok(AccessoryHandle::connect(session))
+        let reconnector = Box::new(PairingReconnector {
+            stored: stored.clone(),
+            keypair: self.keypair.clone(),
+        });
+        Ok(AccessoryHandle::connect(Arc::new(session), reconnector))
     }
 
     /// Open a new secure session to an already-paired accessory.
@@ -125,7 +148,11 @@ impl HapController {
     pub async fn connect(&self, accessory_id: &str) -> Result<AccessoryHandle> {
         let stored = self.load_stored(accessory_id).await?;
         let session = hap_pairing::connect(&stored, &self.keypair).await?;
-        Ok(AccessoryHandle::connect(session))
+        let reconnector = Box::new(PairingReconnector {
+            stored,
+            keypair: self.keypair.clone(),
+        });
+        Ok(AccessoryHandle::connect(Arc::new(session), reconnector))
     }
 
     /// Remove a pairing both from the accessory (`/pairings` remove of this

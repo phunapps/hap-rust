@@ -21,15 +21,24 @@ pub struct CharacteristicEvent {
     pub value: CharValue,
 }
 
-/// Wrap a broadcast receiver as a public `Stream` of events, dropping any
-/// lagged messages rather than surfacing the broadcast lag error to callers.
+/// Wrap a broadcast receiver as a `Stream`, dropping any lagged messages rather
+/// than surfacing the broadcast lag error to callers.
 ///
 /// `BroadcastStream`'s item is `Result<T, BroadcastStreamRecvError>` — the error
-/// only signals that a slow receiver lagged and skipped messages. The canonical
-/// `events()` signature is `Stream<Item = CharacteristicEvent>`, so we drop
-/// lagged items with `filter_map(Result::ok)`.
+/// only signals that a slow receiver lagged and skipped messages. Public stream
+/// signatures want a bare `Stream<Item = T>`, so we drop lagged items with
+/// `filter_map(Result::ok)`.
+pub(crate) fn into_broadcast_stream<T: Clone + Send + 'static>(
+    rx: broadcast::Receiver<T>,
+) -> impl Stream<Item = T> {
+    BroadcastStream::new(rx).filter_map(Result::ok)
+}
+
+/// Wrap a [`CharacteristicEvent`] broadcast receiver as a public `Stream`.
+///
+/// A thin alias over [`into_broadcast_stream`] for the `events()` call site.
 pub(crate) fn into_stream(
     rx: broadcast::Receiver<CharacteristicEvent>,
 ) -> impl Stream<Item = CharacteristicEvent> {
-    BroadcastStream::new(rx).filter_map(Result::ok)
+    into_broadcast_stream(rx)
 }

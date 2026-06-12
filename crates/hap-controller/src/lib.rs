@@ -38,6 +38,7 @@ mod controller;
 mod error;
 mod event;
 mod handle;
+mod reconnect;
 mod setup_payload;
 
 pub use controller::HapController;
@@ -45,6 +46,13 @@ pub use error::{HapError, Result};
 pub use setup_payload::{SetupFlags, SetupPayload};
 pub use event::CharacteristicEvent;
 pub use handle::AccessoryHandle;
+pub use reconnect::ConnectionState;
+
+// The reconnection seam: a [`Reconnector`] mints fresh sessions on demand.
+// Not part of the supported public API — hidden from docs and named only by
+// this crate's own reconnect tests.
+#[doc(hidden)]
+pub use reconnect::{Reconnected, Reconnector};
 
 // The transport seam that makes `read`/`write`/`subscribe`/`events` testable
 // against a mock. Not part of the supported public API — hidden from docs and
