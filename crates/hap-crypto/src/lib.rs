@@ -38,7 +38,9 @@ mod keys;
 mod pair_setup;
 mod srp;
 mod tlv_types;
+mod x25519;
 
 pub use error::{CryptoError, Result};
 pub use keys::{verify_ed25519, ControllerKeypair};
 pub use pair_setup::{AccessoryPairing, PairSetupClient, PairSetupStep};
+pub use x25519::{x25519_shared, EphemeralKeypair};

@@ -72,6 +72,10 @@ hkdf = "0.12"
 chacha20poly1305 = "0.10"
 # Ed25519 controller long-term keypair (dalek); rand_core feature enables OsRng.
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+# X25519 ephemeral ECDH for Pair Verify (M3, dalek). `static_secrets` enables
+# constructing a secret from raw 32-byte material (deterministic replay/tests);
+# `getrandom` lets `StaticSecret::random_from_rng`/`random` use the OS CSPRNG.
+x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
 # CSPRNG entropy source for Ed25519 keypair generation.
 rand_core = { version = "0.6", features = ["getrandom"] }
 # Testing / automation.
