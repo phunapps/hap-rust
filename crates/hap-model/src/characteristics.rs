@@ -141,3 +141,36 @@ pub fn build_subscribe_request(ids: &[(u64, u64)], enable: bool) -> Vec<u8> {
     let body = serde_json::json!({ "characteristics": entries });
     serde_json::to_vec(&body).unwrap_or_default()
 }
+
+/// Build the JSON body for `PUT /prepare`: a timed-write reservation.
+///
+/// `ttl_ms` is milliseconds; `pid` is the controller-chosen transaction id echoed
+/// by the subsequent timed write.
+pub fn build_prepare_request(ttl_ms: u64, pid: u64) -> Vec<u8> {
+    let body = serde_json::json!({ "ttl": ttl_ms, "pid": pid });
+    serde_json::to_vec(&body).unwrap_or_default()
+}
+
+/// Build a `PUT /characteristics` body for a timed write: every entry carries
+/// the `pid` from a preceding [`build_prepare_request`].
+pub fn build_timed_write_request(writes: &[((u64, u64), CharValue)], pid: u64) -> Vec<u8> {
+    let entries: Vec<serde_json::Value> = writes
+        .iter()
+        .map(|((aid, iid), v)| {
+            serde_json::json!({ "aid": aid, "iid": iid, "value": v.to_json(), "pid": pid })
+        })
+        .collect();
+    serde_json::to_vec(&serde_json::json!({ "characteristics": entries })).unwrap_or_default()
+}
+
+/// Build a `PUT /characteristics` body requesting the post-write value back
+/// (the HAP `r` flag).
+pub fn build_write_request_with_response(writes: &[((u64, u64), CharValue)]) -> Vec<u8> {
+    let entries: Vec<serde_json::Value> = writes
+        .iter()
+        .map(|((aid, iid), v)| {
+            serde_json::json!({ "aid": aid, "iid": iid, "value": v.to_json(), "r": true })
+        })
+        .collect();
+    serde_json::to_vec(&serde_json::json!({ "characteristics": entries })).unwrap_or_default()
+}
