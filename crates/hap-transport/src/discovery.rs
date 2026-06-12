@@ -61,10 +61,10 @@ pub async fn discover(timeout: Duration) -> Result<Vec<DiscoveredAccessory>> {
         if remaining.is_zero() {
             break;
         }
-        let event = tokio::time::timeout(remaining, async {
-            tokio::task::block_in_place(|| receiver.recv())
-        })
-        .await;
+        // `browse()` returns a flume receiver; `recv_async()` lets us await the
+        // next event without blocking the runtime (so this works on any Tokio
+        // flavor, not just the multi-thread one).
+        let event = tokio::time::timeout(remaining, receiver.recv_async()).await;
 
         match event {
             Err(_elapsed) => break,
