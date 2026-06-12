@@ -34,8 +34,9 @@ pub use discovery::{discover, DiscoveredAccessory};
 #[doc(hidden)]
 pub use discovery::discovery_test_support;
 
-// TODO(M4 Task 2): re-enable when `HapResponse` lands
-// pub use http::HapResponse;
+pub use http::HapResponse;
+#[doc(hidden)]
+pub use http::http_test_support;
 
 // TODO(M4 Task 3): re-enable when `HapConnection` lands
 // pub use connection::HapConnection;
