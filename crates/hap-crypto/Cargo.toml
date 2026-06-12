@@ -22,6 +22,10 @@ num-bigint = { workspace = true }
 num-traits = { workspace = true }
 sha2 = { workspace = true }
 subtle = { workspace = true }
+hkdf = { workspace = true }
+chacha20poly1305 = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand_core = { workspace = true }
 
 [dev-dependencies]
 # RFC 5054 Appendix B known-answer test (1024-bit group, SHA-1) for the generic

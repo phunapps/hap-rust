@@ -66,6 +66,14 @@ num-bigint = "0.4"
 num-traits = "0.2"
 sha2 = "0.10"
 subtle = "2"
+# HKDF-SHA512 key derivation (RustCrypto, over sha2::Sha512).
+hkdf = "0.12"
+# ChaCha20-Poly1305 AEAD, IETF 96-bit-nonce construction (RustCrypto).
+chacha20poly1305 = "0.10"
+# Ed25519 controller long-term keypair (dalek); rand_core feature enables OsRng.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+# CSPRNG entropy source for Ed25519 keypair generation.
+rand_core = { version = "0.6", features = ["getrandom"] }
 # Testing / automation.
 proptest = "1"
 anyhow = "1"

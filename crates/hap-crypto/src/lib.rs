@@ -32,6 +32,7 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod kdf;
 mod srp;
 
 pub use error::{CryptoError, Result};

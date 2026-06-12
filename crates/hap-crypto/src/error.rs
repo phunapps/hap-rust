@@ -34,6 +34,22 @@ pub enum CryptoError {
     /// A response TLV8 body could not be decoded.
     #[error("malformed TLV8 in pairing message: {0}")]
     Tlv(#[from] hap_tlv8::Tlv8Error),
+
+    /// HKDF key derivation failed (the requested output length exceeded the
+    /// HKDF-SHA512 maximum of `255 * 64` bytes).
+    #[error("HKDF-SHA512 key derivation failed: {0}")]
+    Kdf(&'static str),
+
+    /// ChaCha20-Poly1305 authenticated encryption or decryption failed: a tag
+    /// mismatch on decrypt (wrong key or tampered ciphertext/AAD), or an
+    /// encryption-time usage error.
+    #[error("ChaCha20-Poly1305 AEAD operation failed (authentication or usage error)")]
+    Aead,
+
+    /// An Ed25519 signature failed to verify, or a public key / signature was
+    /// malformed (e.g. not a valid curve point).
+    #[error("Ed25519 signature verification failed")]
+    Signature,
 }
 
 /// `Result<T, CryptoError>` for the crate.
