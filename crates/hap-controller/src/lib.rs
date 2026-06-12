@@ -16,7 +16,7 @@
 //!
 //! # async fn run() -> hap_controller::Result<()> {
 //! let store = JsonFileStore::new("./homekit-pairings.json");
-//! let controller = HapController::new(store).await?;
+//! let mut controller = HapController::new(store).await?;
 //!
 //! let found = controller.discover(Duration::from_secs(5)).await?;
 //! let plug = &found[0];
