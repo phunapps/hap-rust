@@ -74,3 +74,81 @@ pub(crate) fn check_tlv_error(body: &[u8]) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+mod tests {
+    //! Pair Setup loop tests.
+    //!
+    //! Only the deterministic M1 request and the accessory-error surfacing are
+    //! exercised offline. The full M1–M6 setup loop is validated by the
+    //! real-device runbook (Task 8): the captured aiohomekit setup trace does
+    //! not pin the controller's SRP ephemeral `a` or its LTSK, so the loop
+    //! cannot be replayed to completion without a live accessory.
+
+    use std::path::Path;
+
+    use hap_crypto::ControllerKeypair;
+    use hap_tlv8::Tlv8Writer;
+
+    use super::run_pair_setup;
+    use crate::error::PairingError;
+    use crate::test_support::{Exchange, Replay};
+
+    /// Read a pair-setup fixture relative to the workspace `test-vectors`.
+    fn load_setup(name: &str) -> Option<Vec<u8>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-vectors/pair-setup")
+            .join(name);
+        std::fs::read(path).ok()
+    }
+
+    /// Build an accessory error reply: State=M2 then kTLVType_Error=`code`.
+    fn error_reply(code: u8) -> Vec<u8> {
+        let mut body = Vec::new();
+        let mut w = Tlv8Writer::new(&mut body);
+        w.push_u8(0x06, 0x02);
+        w.push_u8(0x07, code);
+        body
+    }
+
+    #[tokio::test]
+    async fn pair_setup_sends_m1_then_surfaces_accessory_error() {
+        let Some(m1) = load_setup("m1.bin") else {
+            eprintln!("skipping pair_setup_sends_m1_then_surfaces_accessory_error: fixture absent");
+            return;
+        };
+        let mut replay = Replay::new(vec![Exchange {
+            path: "/pair-setup",
+            expect_request: Some(m1),
+            response: error_reply(0x02),
+        }]);
+        let controller = ControllerKeypair::generate("ctl".to_string());
+        let result = run_pair_setup(&mut replay, "123-45-678", &controller).await;
+        assert!(
+            matches!(result, Err(PairingError::Accessory(0x02))),
+            "expected Accessory(0x02), got {result:?}"
+        );
+        assert!(replay.is_drained());
+    }
+
+    #[tokio::test]
+    async fn pair_setup_propagates_tlv_error_code() {
+        let Some(m1) = load_setup("m1.bin") else {
+            eprintln!("skipping pair_setup_propagates_tlv_error_code: fixture absent");
+            return;
+        };
+        let mut replay = Replay::new(vec![Exchange {
+            path: "/pair-setup",
+            expect_request: Some(m1),
+            response: error_reply(0x06),
+        }]);
+        let controller = ControllerKeypair::generate("ctl".to_string());
+        let result = run_pair_setup(&mut replay, "123-45-678", &controller).await;
+        assert!(
+            matches!(result, Err(PairingError::Accessory(0x06))),
+            "expected Accessory(0x06), got {result:?}"
+        );
+        assert!(replay.is_drained());
+    }
+}

@@ -67,11 +67,7 @@ impl<'a> PairingsAdmin<'a> {
     }
 
     /// Wrap any [`PairingSession`] (the seam used by replay tests).
-    ///
-    /// Unused until the in-module replay tests land in Task 7; allowed to be
-    /// dead in the meantime so the crate builds cleanly under `-D warnings`.
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn with_session(session: &'a mut dyn PairingSession) -> Self {
         Self { session }
     }
@@ -237,4 +233,148 @@ fn parse_list_reply(body: &[u8]) -> Result<Vec<PairingInfo>> {
     flush_pairing(&mut out, &mut id, &mut ltpk, &mut admin)?;
 
     Ok(out)
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::similar_names
+)]
+mod tests {
+    //! Pairings-management tests: drive add/remove/list over the replay mock
+    //! against inline-built `/pairings` replies, cross-checking both the request
+    //! encoder and the list parser.
+
+    use hap_tlv8::Tlv8Writer;
+
+    use super::{
+        PairingInfo, PairingsAdmin, METHOD_ADD, METHOD_LIST, METHOD_REMOVE, PERM_ADMIN, PERM_USER,
+        STATE_M1, STATE_M2, TLV_ERROR, TLV_IDENTIFIER, TLV_METHOD, TLV_PERMISSIONS, TLV_PUBLIC_KEY,
+        TLV_STATE,
+    };
+    use crate::error::PairingError;
+    use crate::test_support::{Exchange, Replay};
+
+    /// Build the request a `list()` call should emit (State M1 + Method LIST).
+    fn list_request() -> Vec<u8> {
+        let mut body = Vec::new();
+        let mut w = Tlv8Writer::new(&mut body);
+        w.push_u8(TLV_STATE, STATE_M1);
+        w.push_u8(TLV_METHOD, METHOD_LIST);
+        body
+    }
+
+    #[tokio::test]
+    async fn list_parses_two_entries() {
+        // Inline list reply: State M2, then two (id, key, perm) triplets split
+        // by a separator.
+        let mut reply = Vec::new();
+        {
+            let mut w = Tlv8Writer::new(&mut reply);
+            w.push_u8(TLV_STATE, STATE_M2);
+            w.push(TLV_IDENTIFIER, b"A");
+            w.push(TLV_PUBLIC_KEY, &[0x11; 32]);
+            w.push_u8(TLV_PERMISSIONS, PERM_ADMIN);
+            w.push_separator();
+            w.push(TLV_IDENTIFIER, b"B");
+            w.push(TLV_PUBLIC_KEY, &[0x22; 32]);
+            w.push_u8(TLV_PERMISSIONS, PERM_USER);
+        }
+        let mut replay = Replay::new(vec![Exchange {
+            path: "/pairings",
+            expect_request: Some(list_request()),
+            response: reply,
+        }]);
+        let entries = PairingsAdmin::with_session(&mut replay)
+            .list()
+            .await
+            .expect("list should succeed");
+        assert_eq!(
+            entries,
+            vec![
+                PairingInfo {
+                    id: "A".to_string(),
+                    ltpk: [0x11; 32],
+                    admin: true,
+                },
+                PairingInfo {
+                    id: "B".to_string(),
+                    ltpk: [0x22; 32],
+                    admin: false,
+                },
+            ]
+        );
+        assert!(replay.is_drained());
+    }
+
+    #[tokio::test]
+    async fn add_encodes_request_and_accepts_m2() {
+        let mut expected = Vec::new();
+        {
+            let mut w = Tlv8Writer::new(&mut expected);
+            w.push_u8(TLV_STATE, STATE_M1);
+            w.push_u8(TLV_METHOD, METHOD_ADD);
+            w.push(TLV_IDENTIFIER, b"ctl-2");
+            w.push(TLV_PUBLIC_KEY, &[0xAB; 32]);
+            w.push_u8(TLV_PERMISSIONS, PERM_ADMIN);
+        }
+        let mut reply = Vec::new();
+        Tlv8Writer::new(&mut reply).push_u8(TLV_STATE, STATE_M2);
+        let mut replay = Replay::new(vec![Exchange {
+            path: "/pairings",
+            expect_request: Some(expected),
+            response: reply,
+        }]);
+        let result = PairingsAdmin::with_session(&mut replay)
+            .add("ctl-2", [0xAB; 32], true)
+            .await;
+        assert!(matches!(result, Ok(())), "expected Ok, got {result:?}");
+        assert!(replay.is_drained());
+    }
+
+    #[tokio::test]
+    async fn remove_encodes_request_and_accepts_m2() {
+        let mut expected = Vec::new();
+        {
+            let mut w = Tlv8Writer::new(&mut expected);
+            w.push_u8(TLV_STATE, STATE_M1);
+            w.push_u8(TLV_METHOD, METHOD_REMOVE);
+            w.push(TLV_IDENTIFIER, b"ctl-2");
+        }
+        let mut reply = Vec::new();
+        Tlv8Writer::new(&mut reply).push_u8(TLV_STATE, STATE_M2);
+        let mut replay = Replay::new(vec![Exchange {
+            path: "/pairings",
+            expect_request: Some(expected),
+            response: reply,
+        }]);
+        let result = PairingsAdmin::with_session(&mut replay)
+            .remove("ctl-2")
+            .await;
+        assert!(matches!(result, Ok(())), "expected Ok, got {result:?}");
+        assert!(replay.is_drained());
+    }
+
+    #[tokio::test]
+    async fn pairings_surfaces_accessory_error() {
+        let mut reply = Vec::new();
+        {
+            let mut w = Tlv8Writer::new(&mut reply);
+            w.push_u8(TLV_STATE, STATE_M2);
+            w.push_u8(TLV_ERROR, 0x02);
+        }
+        let mut replay = Replay::new(vec![Exchange {
+            path: "/pairings",
+            expect_request: Some(list_request()),
+            response: reply,
+        }]);
+        let result = PairingsAdmin::with_session(&mut replay).list().await;
+        assert!(
+            matches!(result, Err(PairingError::Accessory(0x02))),
+            "expected Accessory(0x02), got {result:?}"
+        );
+        assert!(replay.is_drained());
+    }
 }

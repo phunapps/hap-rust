@@ -47,6 +47,8 @@ mod error;
 mod pairings;
 mod setup;
 mod store;
+#[cfg(test)]
+mod test_support;
 mod verify;
 mod wire;
 
