@@ -26,9 +26,6 @@ use crate::error::{CryptoError, Result};
 /// Returns [`CryptoError::Kdf`] if `out.len()` exceeds the HKDF-SHA512 maximum
 /// output length of `255 * 64 = 16320` bytes (the only failure mode of HKDF
 /// expansion).
-// Consumed by the Pair Setup message flow (Chunk C) to derive the M5/M6
-// encryption key; exercised here only by the KAT tests until then.
-#[allow(dead_code)]
 pub(crate) fn hkdf_sha512(ikm: &[u8], salt: &[u8], info: &[u8], out: &mut [u8]) -> Result<()> {
     let hk = Hkdf::<Sha512>::new(Some(salt), ikm);
     hk.expand(info, out)

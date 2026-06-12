@@ -35,7 +35,6 @@ use crate::error::{CryptoError, Result};
 ///
 /// Labels longer than 8 bytes are truncated to their first 8 bytes; HAP labels
 /// (e.g. `b"PS-Msg05"`) are always exactly 8 bytes.
-#[allow(dead_code)] // Consumed by the Pair Setup M5/M6 steps (Chunk C).
 pub(crate) fn hap_nonce(label: &[u8]) -> [u8; 12] {
     let mut nonce = [0u8; 12];
     let n = label.len().min(8);
@@ -53,7 +52,6 @@ pub(crate) fn hap_nonce(label: &[u8]) -> [u8; 12] {
 /// Returns [`CryptoError::Aead`] only on an internal AEAD usage error; for
 /// well-formed in-memory inputs (as used by Pair Setup) encryption does not
 /// fail.
-#[allow(dead_code)] // Consumed by the Pair Setup M5 step (Chunk C).
 pub(crate) fn encrypt(
     key: &[u8; 32],
     nonce: &[u8; 12],
@@ -81,7 +79,6 @@ pub(crate) fn encrypt(
 /// Returns [`CryptoError::Aead`] if authentication fails — a wrong key, a
 /// tampered ciphertext or tag, mismatched `aad`, or input shorter than the
 /// 16-byte tag.
-#[allow(dead_code)] // Consumed by the Pair Setup M6 step (Chunk C).
 pub(crate) fn decrypt(
     key: &[u8; 32],
     nonce: &[u8; 12],

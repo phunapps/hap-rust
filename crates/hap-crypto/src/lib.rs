@@ -35,7 +35,10 @@ mod aead;
 mod error;
 mod kdf;
 mod keys;
+mod pair_setup;
 mod srp;
+mod tlv_types;
 
 pub use error::{CryptoError, Result};
 pub use keys::{verify_ed25519, ControllerKeypair};
+pub use pair_setup::{AccessoryPairing, PairSetupClient, PairSetupStep};
