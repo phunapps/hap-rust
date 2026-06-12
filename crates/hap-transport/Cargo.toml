@@ -17,5 +17,10 @@ workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "sync", "macros", "time"] }
+mdns-sd = { workspace = true }
 hap-tlv8 = { path = "../hap-tlv8", version = "0.0.0" }
 hap-crypto = { path = "../hap-crypto", version = "0.0.0" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "sync", "macros", "time", "test-util"] }

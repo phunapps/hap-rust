@@ -97,6 +97,40 @@ pub(crate) fn decrypt(
         .map_err(|_| CryptoError::Aead)
 }
 
+/// Seal `plaintext` with ChaCha20-Poly1305 under `key`/`nonce`, binding `aad`,
+/// returning `ciphertext || tag`. Thin public wrapper over [`encrypt`] used by
+/// the `hap-transport` record layer.
+///
+/// # Errors
+///
+/// Returns [`crate::CryptoError::Aead`] only on an internal AEAD usage error.
+pub fn chacha20poly1305_seal(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    plaintext: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    encrypt(key, nonce, aad, plaintext)
+}
+
+/// Open `ciphertext_and_tag` (ciphertext with the 16-byte Poly1305 tag appended)
+/// with ChaCha20-Poly1305 under `key`/`nonce`, verifying `aad`, returning the
+/// recovered plaintext. Thin public wrapper over [`decrypt`] used by the
+/// `hap-transport` record layer.
+///
+/// # Errors
+///
+/// Returns [`crate::CryptoError::Aead`] if authentication fails — a wrong key,
+/// tampered ciphertext or tag, or mismatched `aad`.
+pub fn chacha20poly1305_open(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    ciphertext_and_tag: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    decrypt(key, nonce, aad, ciphertext_and_tag)
+}
+
 #[cfg(test)]
 // Test code only: CLAUDE.md carves out `unwrap`/`expect` for tests with a
 // documented justification. A failed `unwrap` here is itself a test failure.

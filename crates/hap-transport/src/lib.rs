@@ -20,3 +20,31 @@
 //! [`hap_tlv8`].
 
 #![forbid(unsafe_code)]
+
+mod connection;
+mod discovery;
+mod error;
+mod http;
+mod record;
+mod session;
+
+pub use error::{Result, TransportError};
+
+// TODO(M4 Task 1): re-enable when `DiscoveredAccessory` and `discover` land
+// pub use discovery::{discover, DiscoveredAccessory};
+
+// TODO(M4 Task 2): re-enable when `HapResponse` lands
+// pub use http::HapResponse;
+
+// TODO(M4 Task 3): re-enable when `HapConnection` lands
+// pub use connection::HapConnection;
+
+// TODO(M4 Task 4): re-enable when `SessionKeys` re-export is wired through transport
+// pub use hap_crypto::SessionKeys;
+
+// TODO(M4 Task 5): re-enable when `SecureSession` and `EventNotification` land
+// pub use session::{EventNotification, SecureSession};
+
+// TODO(M4 Task N): re-enable test-support re-exports when types exist
+// #[doc(hidden)]
+// pub use record::tests as record_tests;

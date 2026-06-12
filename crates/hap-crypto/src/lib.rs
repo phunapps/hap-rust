@@ -31,7 +31,7 @@
 
 #![forbid(unsafe_code)]
 
-mod aead;
+pub mod aead;
 mod error;
 mod kdf;
 mod keys;
