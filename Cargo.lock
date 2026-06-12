@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "hap-controller"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "hap-crypto",
@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "hap-crypto"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -465,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "hap-model"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64",
  "hap-tlv8",
@@ -476,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "hap-pairing"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "hap-tlv8"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "serde",
@@ -503,7 +503,7 @@ dependencies = [
 
 [[package]]
 name = "hap-transport"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "hap-crypto",
  "hap-tlv8",

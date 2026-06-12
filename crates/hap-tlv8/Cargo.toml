@@ -1,6 +1,6 @@
 [package]
 name = "hap-tlv8"
-version = "0.0.0"
+version = "1.0.0"
 description = "HomeKit Accessory Protocol TLV8 encoder and decoder (type-length-value, 255-byte fragmentation)."
 edition.workspace = true
 rust-version.workspace = true
