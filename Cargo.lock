@@ -467,9 +467,11 @@ dependencies = [
 
 [[package]]
 name = "hap-pairing"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
+ "clap",
  "hap-crypto",
  "hap-tlv8",
  "hap-transport",

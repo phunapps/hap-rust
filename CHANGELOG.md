@@ -26,6 +26,34 @@ workspace-wide foundation work is tracked under "Workspace".
 - `test-vectors/` tree (`tlv8/`, `srp/`, `pair-verify/`, `session/`,
   `accessories/`) and the documented first `aiohomekit` TLV8 capture task.
 
+## hap-pairing
+
+### [0.1.0] — M5
+
+First release: Pair Setup + Pair Verify orchestration over the real transport,
+pairings management, and persistence. **First pure-Rust HomeKit controller pairs
+a real accessory end to end.**
+
+- `pair` — drives **Pair Setup** (SRP-6a, M1–M6) over a `HapConnection`,
+  returning the accessory's `AccessoryPairing` (pairing id + LTPK) and a live
+  `SecureSession`.
+- `connect` — drives **Pair Verify** (X25519 + Ed25519, M1–M4) from a stored
+  pairing, returning a fresh `SecureSession`.
+- `PairingsAdmin` — `add` / `remove` / `list` over the `/pairings` endpoint of
+  an established session (`PairingInfo`: id, LTPK, admin permission).
+- `PairingStore` trait + `JsonFileStore` — persist the controller's long-term
+  identity and its known accessories (`StoredAccessory`) across restart.
+- `PairingError` — the crate's error type over the pairing/transport/crypto
+  layers.
+- `pair_accessory` example (the operator binary) and the
+  `docs/runbooks/m5-first-pairing.md` first-pairing runbook.
+
+### Additive changes in dependencies
+
+- `hap-crypto`: `ControllerKeypair::seed()` plus `Clone` on the keypair, so the
+  controller identity can be persisted and reloaded by `JsonFileStore`
+  (additive, semver-minor).
+
 ## hap-transport
 
 ### [Unreleased] — M4
