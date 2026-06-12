@@ -12,12 +12,9 @@ use hap_model::{
 fn read_request_path_is_exact() {
     assert_eq!(
         build_read_request(&[(1, 9), (1, 10)]),
-        "/characteristics?id=1.9,1.10&meta=1"
+        "/characteristics?id=1.9,1.10"
     );
-    assert_eq!(
-        build_read_request(&[(2, 3)]),
-        "/characteristics?id=2.3&meta=1"
-    );
+    assert_eq!(build_read_request(&[(2, 3)]), "/characteristics?id=2.3");
 }
 
 #[test]

@@ -9,8 +9,7 @@ mod common;
 async fn read_many_decodes_all_entries() {
     let body =
         r#"{"characteristics":[{"aid":1,"iid":10,"value":true},{"aid":1,"iid":11,"value":42}]}"#;
-    let session =
-        common::MockSession::new().with_get("/characteristics?id=1.10,1.11&meta=1", 200, body);
+    let session = common::MockSession::new().with_get("/characteristics?id=1.10,1.11", 200, body);
     let mut handle = common::handle_with_session(session);
 
     let got = handle.read_many(&[(1, 10), (1, 11)]).await.unwrap();

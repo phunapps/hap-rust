@@ -11,7 +11,7 @@ async fn read_recovers_after_session_drops() {
     let first = common::MockSession::new();
     let kill = first.kill_switch();
     let second = common::MockSession::new().with_get(
-        "/characteristics?id=1.10&meta=1",
+        "/characteristics?id=1.10",
         200,
         r#"{"characteristics":[{"aid":1,"iid":10,"value":true}]}"#,
     );
@@ -33,7 +33,7 @@ async fn connection_state_reports_the_blip() {
     let first = common::MockSession::new();
     let kill = first.kill_switch();
     let second = common::MockSession::new().with_get(
-        "/characteristics?id=1.10&meta=1",
+        "/characteristics?id=1.10",
         200,
         r#"{"characteristics":[{"aid":1,"iid":10,"value":true}]}"#,
     );

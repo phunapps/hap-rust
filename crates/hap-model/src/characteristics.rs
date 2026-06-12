@@ -18,10 +18,17 @@ pub struct CharRead {
     pub status: Option<i64>,
 }
 
-/// Build the path+query for `GET /characteristics?id=...&meta=1`.
+/// Build the path+query for `GET /characteristics?id=...`.
 ///
 /// `ids` is a list of `(aid, iid)` pairs. The query is rendered in the order
-/// given, comma-joined, e.g. `/characteristics?id=1.9,1.10&meta=1`.
+/// given, comma-joined, e.g. `/characteristics?id=1.9,1.10`.
+///
+/// This deliberately does NOT request `meta=1`: a value read returns only the
+/// values, and the controller types them from the accessory database fetched
+/// via [`parse_accessories`](crate::parse_accessories). Per-read `meta=1`
+/// responses are unreliable across accessories — some shipping HomeKit firmware
+/// (e.g. LIFX) serializes the metadata fields as malformed JSON — so metadata is
+/// sourced from the well-formed `/accessories` tree instead.
 pub fn build_read_request(ids: &[(u64, u64)]) -> String {
     let mut path = String::from("/characteristics?id=");
     for (i, (aid, iid)) in ids.iter().enumerate() {
@@ -31,7 +38,6 @@ pub fn build_read_request(ids: &[(u64, u64)]) -> String {
         // write! into a String cannot fail.
         let _ = write!(path, "{aid}.{iid}");
     }
-    path.push_str("&meta=1");
     path
 }
 

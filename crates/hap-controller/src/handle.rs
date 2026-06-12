@@ -337,6 +337,11 @@ impl AccessoryHandle {
 
     /// Read several characteristics in one request.
     ///
+    /// Values are typed from the cached accessory database (the read itself does
+    /// not request `meta=1`), so call [`accessories`](Self::accessories) first to
+    /// get fully-typed values; without it, numeric/bool values fall back to JSON
+    /// inference (e.g. an `int` may surface as `Uint`).
+    ///
     /// # Errors
     ///
     /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
@@ -351,7 +356,25 @@ impl AccessoryHandle {
                 status: resp.status,
             });
         }
-        Ok(hap_model::parse_read_response(&resp.body)?)
+        let parsed = hap_model::parse_read_response(&resp.body)?;
+        // The read omits `meta=1`, so values are inferred from JSON. Re-type each
+        // to its declared format from the cached accessory DB (same coercion the
+        // event pump applies).
+        Ok(parsed
+            .into_iter()
+            .map(|((aid, iid), value)| {
+                let fmt = self
+                    .formats
+                    .lock()
+                    .ok()
+                    .and_then(|m| m.get(&(aid, iid)).copied());
+                let value = match fmt {
+                    Some(f) => coerce_to_format(value, f),
+                    None => value,
+                };
+                ((aid, iid), value)
+            })
+            .collect())
     }
 
     /// Write several characteristics in one request.
