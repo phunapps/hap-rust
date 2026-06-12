@@ -19,5 +19,5 @@ workspace = true
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-bitflags = { workspace = true }
+base64 = { workspace = true }
 hap-tlv8 = { path = "../hap-tlv8", version = "0.0.0" }

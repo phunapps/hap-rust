@@ -1,20 +1,50 @@
-//! HomeKit Accessory Protocol **attribute database**.
+//! HomeKit accessory attribute database — Milestone 6 of `hap-rust`.
 //!
-//! This is Milestone 6 (M6) of the `hap-rust` roadmap. It is currently an empty
-//! skeleton: the public API lands in the M6 implementation plan.
+//! `hap-model` is transport-agnostic. It parses the `/accessories` JSON into
+//! a typed [`Accessory`] → [`Service`] → [`Characteristic`] tree and builds /
+//! parses the `/characteristics` request and response bodies. It never touches
+//! the network: the controller (`hap-controller`, M7) executes the requests
+//! this crate produces over a secure session.
 //!
-//! # Scope (M6)
+//! # Example
 //!
-//! - Parses the `/accessories` JSON into a typed
-//!   `Accessory → Service → Characteristic` tree.
-//! - Reads and writes characteristics via `/characteristics`.
-//! - Models characteristic formats (`bool`, `uint8/16/32/64`, `int`, `float`,
-//!   `string`, `tlv8`, `data`), permissions, units, and value constraints.
-//! - The HAP-defined service and characteristic **type tables** (UUIDs, names,
-//!   metadata) are **code-generated** in `xtask` from a captured metadata
-//!   source, the same approach matter-rust used for clusters.
+//! ```
+//! use hap_model::parse_accessories;
 //!
-//! Depends on [`hap_tlv8`] (for the `tlv8` characteristic format) plus a JSON
-//! layer (`serde` / `serde_json`); otherwise standalone.
+//! let body = br#"{"accessories":[{"aid":1,"services":[
+//!     {"iid":1,"type":"3E","characteristics":[
+//!         {"iid":2,"type":"23","format":"string","perms":["pr"],"value":"Lamp"}
+//!     ]}
+//! ]}]}"#;
+//! let accessories = parse_accessories(body).unwrap();
+//! assert_eq!(accessories[0].aid, 1);
+//! ```
+//!
+//! The doc-test uses `unwrap()`; real library code must propagate the
+//! [`Result`] instead.
 
 #![forbid(unsafe_code)]
+
+pub mod database;
+pub mod error;
+pub mod format;
+pub mod perms;
+pub mod tree;
+pub mod uuid;
+
+mod accessories;
+mod characteristics;
+mod generated;
+
+pub use accessories::parse_accessories;
+pub use characteristics::{
+    build_read_request, build_subscribe_request, build_write_request, parse_read_response,
+    CharRead,
+};
+pub use database::{AccessoryDatabase, Request, RequestExecutor};
+pub use error::{ModelError, Result};
+pub use format::{CharFormat, CharValue};
+pub use generated::{CharacteristicType, ServiceType};
+pub use perms::Perms;
+pub use tree::{Accessory, Characteristic, Service};
+pub use uuid::Uuid;
