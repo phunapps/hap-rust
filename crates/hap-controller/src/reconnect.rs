@@ -48,12 +48,19 @@ pub enum ConnectionState {
 
 /// Whether a transport error means the session is gone (vs. an application error).
 pub(crate) fn is_session_dead(err: &HapError) -> bool {
+    // A real network drop (Wi-Fi loss, accessory reboot) surfaces as a socket
+    // `Io` error (broken pipe, timed out, reset) just as often as the explicit
+    // channel-closed variants — hardware testing showed foreground ops getting
+    // raw `Io` errors during an outage. Treat all of these as "session gone" so a
+    // foreground op waits for the supervisor's reconnect instead of leaking the
+    // raw error.
     matches!(
         err,
         HapError::Transport(
             TransportError::ConnectionClosed
                 | TransportError::SessionClosed
                 | TransportError::NoResponse
+                | TransportError::Io(_)
         )
     )
 }
@@ -148,5 +155,24 @@ impl ReconnectingSession {
             }
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_session_dead;
+    use crate::error::HapError;
+
+    #[test]
+    fn io_and_closed_errors_are_session_dead() {
+        // A real Wi-Fi drop surfaces as an Io error; it must count as dead.
+        assert!(is_session_dead(&HapError::Transport(
+            hap_transport::error_test_support::io_disconnected()
+        )));
+        assert!(is_session_dead(&HapError::Transport(
+            hap_transport::error_test_support::session_closed()
+        )));
+        // An application-level error is NOT a dead session.
+        assert!(!is_session_dead(&HapError::Http { status: 400 }));
     }
 }

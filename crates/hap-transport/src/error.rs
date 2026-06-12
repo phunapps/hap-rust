@@ -64,4 +64,11 @@ pub mod error_test_support {
     pub fn session_closed() -> TransportError {
         TransportError::SessionClosed
     }
+
+    /// A [`TransportError::Io`] (broken pipe) for tests that simulate a network
+    /// drop — the shape a real Wi-Fi loss produces.
+    #[must_use]
+    pub fn io_disconnected() -> TransportError {
+        TransportError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    }
 }
