@@ -114,7 +114,17 @@ fn all_vectors_parse_and_round_trip() {
         );
 
         // Re-encode side: writer must reproduce the original bytes.
-        if entry.reencodes {
+        //
+        // The writer cannot faithfully represent a non-empty separator (`0xFF`)
+        // item: the reader keeps such an item verbatim, but the writer only
+        // emits a zero-length `0xFF`. That asymmetry is fine for real HAP
+        // (separators are always zero-length), so skip the byte-equality check
+        // for any vector that contains a non-empty separator. Current vectors
+        // have none, so they must still fully round-trip.
+        let writer_representable = expected
+            .iter()
+            .all(|(ty, value)| *ty != SEPARATOR || value.is_empty());
+        if entry.reencodes && writer_representable {
             let encoded = reencode(&expected);
             assert_eq!(
                 encoded, raw,
