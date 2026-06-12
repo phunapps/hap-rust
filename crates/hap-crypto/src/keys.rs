@@ -17,6 +17,7 @@ use crate::error::{CryptoError, Result};
 ///
 /// `id` is the controller's pairing identifier (`iOSDevicePairingID`) — an
 /// arbitrary UTF-8 string the accessory stores alongside the public key.
+#[derive(Clone)]
 pub struct ControllerKeypair {
     /// The controller's pairing identifier.
     pub id: String,
@@ -52,6 +53,17 @@ impl ControllerKeypair {
         self.signing.verifying_key().to_bytes()
     }
 
+    /// The controller's 32-byte Ed25519 secret seed.
+    ///
+    /// This is **sensitive long-term private key material** — the inverse of
+    /// [`from_seed`](Self::from_seed). It exists so a persistence layer (e.g.
+    /// `hap-pairing`'s `JsonFileStore`) can save and later restore the controller
+    /// identity. Store it only in a location you would treat as secret.
+    #[must_use]
+    pub fn seed(&self) -> [u8; 32] {
+        self.signing.to_bytes()
+    }
+
     /// Sign `msg` with the controller's Ed25519 key, producing a 64-byte
     /// detached signature.
     #[must_use]
@@ -69,6 +81,14 @@ impl ControllerKeypair {
         self.signing.clone()
     }
 }
+
+impl PartialEq for ControllerKeypair {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.seed() == other.seed()
+    }
+}
+
+impl Eq for ControllerKeypair {}
 
 /// Verify an Ed25519 `sig` over `msg` against a 32-byte public key `ltpk`.
 ///

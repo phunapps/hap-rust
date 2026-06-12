@@ -64,7 +64,7 @@ ends with a `cargo publish` to crates.io.
 | M2        | `hap-crypto` v0.1    | Pair Setup: SRP-6a (3072-bit, SHA-512), HKDF-SHA512, ChaCha20-Poly1305, Ed25519 | planned |
 | M3        | `hap-crypto` v0.2    | Pair Verify: X25519 ECDH, Ed25519 verify, session-key derivation    | planned |
 | M4        | `hap-transport`      | mDNS `_hap._tcp` discovery, HAP HTTP/1.1, record layer, EVENT notifications | planned |
-| M5        | `hap-pairing`        | Pair Setup + Pair Verify state machines, pairings mgmt. **First pairing.** | planned |
+| M5        | `hap-pairing`        | Pair Setup + Pair Verify state machines, pairings mgmt. **First pairing.** | done    |
 | M6        | `hap-model`          | Accessory/service/characteristic DB, read/write, HAP-defined types (codegen) | planned |
 | M7        | `hap-controller`     | High-level controller API, subscriptions, examples. **v1.0.**       | planned |
 
@@ -154,6 +154,22 @@ while let Some(change) = events.next().await { /* live events */ }
 
 See [`crates/hap-controller`](crates/hap-controller/) and the `aiohomekit`
 migration guide (lands with M7).
+
+## Pairing a real accessory
+
+As of **M5**, the first pure-Rust HomeKit controller pairs a real accessory end
+to end. The `pair_accessory` example discovers an accessory, runs Pair Setup
+(SRP-6a M1–M6) and Pair Verify (M1–M4), persists the pairing, and proves the
+secure session by listing the accessory's pairings:
+
+```bash
+cargo run -p hap-pairing --example pair_accessory -- --code XXX-XX-XXX --name "Living Room Plug"
+```
+
+The accessory must be unpaired (removed from Apple Home first). The full
+end-to-end procedure — preparing the accessory, the variants (`--addr`,
+`--store`), expected output, the `aiohomekit` cross-check, and troubleshooting —
+is in [`docs/runbooks/m5-first-pairing.md`](docs/runbooks/m5-first-pairing.md).
 
 ## Contributing
 
