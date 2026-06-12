@@ -58,6 +58,16 @@ impl ControllerKeypair {
     pub fn sign(&self, msg: &[u8]) -> [u8; 64] {
         self.signing.sign(msg).to_bytes()
     }
+
+    /// Clone the underlying Ed25519 signing key.
+    ///
+    /// Used internally by Pair Verify so a [`crate::pair_verify::PairVerifyClient`]
+    /// can own a signer for the duration of the exchange without requiring the
+    /// caller's [`ControllerKeypair`] to outlive it. The signing key is sensitive
+    /// material, so this stays crate-private.
+    pub(crate) fn signing_key(&self) -> SigningKey {
+        self.signing.clone()
+    }
 }
 
 /// Verify an Ed25519 `sig` over `msg` against a 32-byte public key `ltpk`.
