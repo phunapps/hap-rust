@@ -165,6 +165,18 @@ impl AccessoryHandle {
         }
     }
 
+    /// Single point where every request leaves the handle. A later task makes
+    /// this reconnect-aware; for now it forwards to the session.
+    async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<SessionResponse> {
+        self.session.request(method, path, content_type, body).await
+    }
+
     /// Fetch (and cache) the accessory attribute database.
     ///
     /// The first call reads `/accessories` over the session and parses it via
@@ -179,7 +191,6 @@ impl AccessoryHandle {
     pub async fn accessories(&mut self) -> Result<&[Accessory]> {
         if self.accessories.is_none() {
             let resp = self
-                .session
                 .request("GET", "/accessories", "application/hap+json", b"")
                 .await?;
             if !is_success(resp.status) {
@@ -238,6 +249,32 @@ impl AccessoryHandle {
         Err(HapError::CharacteristicNotFound { aid: 0, iid: 0 })
     }
 
+    /// Read several characteristics in one request.
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
+    /// if any entry fails to decode (including a non-zero per-characteristic status).
+    pub async fn read_many(&mut self, ids: &[(u64, u64)]) -> Result<Vec<((u64, u64), CharValue)>> {
+        let path = hap_model::build_read_request(ids);
+        let resp = self.request("GET", &path, "application/hap+json", b"").await?;
+        if !is_success(resp.status) {
+            return Err(HapError::Http { status: resp.status });
+        }
+        Ok(hap_model::parse_read_response(&resp.body)?)
+    }
+
+    /// Write several characteristics in one request.
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
+    /// on a per-characteristic failure (207 Multi-Status body).
+    pub async fn write_many(&mut self, writes: &[((u64, u64), CharValue)]) -> Result<()> {
+        let body = hap_model::build_write_request(writes);
+        self.put_characteristics(&body).await
+    }
+
     /// Read one characteristic's current value.
     ///
     /// # Errors
@@ -246,17 +283,7 @@ impl AccessoryHandle {
     /// non-success status, or [`HapError::Model`] if the response cannot be
     /// decoded (including a non-zero per-characteristic HAP status).
     pub async fn read(&mut self, aid: u64, iid: u64) -> Result<CharValue> {
-        let path = hap_model::build_read_request(&[(aid, iid)]);
-        let resp = self
-            .session
-            .request("GET", &path, "application/hap+json", b"")
-            .await?;
-        if !is_success(resp.status) {
-            return Err(HapError::Http {
-                status: resp.status,
-            });
-        }
-        let mut values = hap_model::parse_read_response(&resp.body)?;
+        let mut values = self.read_many(&[(aid, iid)]).await?;
         if values.is_empty() {
             return Err(HapError::CharacteristicNotFound { aid, iid });
         }
@@ -271,8 +298,7 @@ impl AccessoryHandle {
     /// non-success status, or [`HapError::Model`] if the accessory reports a
     /// non-zero per-characteristic status (HTTP 207 Multi-Status body).
     pub async fn write(&mut self, aid: u64, iid: u64, value: CharValue) -> Result<()> {
-        let body = hap_model::build_write_request(&[((aid, iid), value)]);
-        self.put_characteristics(&body).await
+        self.write_many(&[((aid, iid), value)]).await
     }
 
     /// Subscribe to change events for one characteristic. Events then arrive on
@@ -303,7 +329,6 @@ impl AccessoryHandle {
     /// the accessory lists in a 207 Multi-Status body.
     async fn put_characteristics(&self, body: &[u8]) -> Result<()> {
         let resp = self
-            .session
             .request("PUT", "/characteristics", "application/hap+json", body)
             .await?;
         if !is_success(resp.status) {
