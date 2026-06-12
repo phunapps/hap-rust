@@ -34,13 +34,16 @@ pub(crate) trait PairingConn {
 /// `/pairings` exchanges.
 #[async_trait]
 pub(crate) trait PairingSession {
-    /// PUT `body` (content type `application/pairing+tlv8`) to `path` over the
+    /// POST `body` (content type `application/pairing+tlv8`) to `path` over the
     /// encrypted session and return the decrypted response body bytes.
+    ///
+    /// HAP pairing-management (`/pairings`) uses POST, not PUT — only
+    /// `/characteristics` writes are PUT.
     ///
     /// # Errors
     /// Propagates any [`TransportError`](hap_transport::TransportError) as
     /// [`PairingError::Transport`](crate::PairingError::Transport).
-    async fn put_tlv8(&mut self, path: &str, body: &[u8]) -> Result<Vec<u8>>;
+    async fn post_tlv8(&mut self, path: &str, body: &[u8]) -> Result<Vec<u8>>;
 }
 
 #[async_trait]
@@ -53,8 +56,8 @@ impl PairingConn for hap_transport::HapConnection {
 
 #[async_trait]
 impl PairingSession for hap_transport::SecureSession {
-    async fn put_tlv8(&mut self, path: &str, body: &[u8]) -> Result<Vec<u8>> {
-        let resp = self.request("PUT", path, PAIRING_TLV8, body).await?;
+    async fn post_tlv8(&mut self, path: &str, body: &[u8]) -> Result<Vec<u8>> {
+        let resp = self.request("POST", path, PAIRING_TLV8, body).await?;
         Ok(resp.body)
     }
 }

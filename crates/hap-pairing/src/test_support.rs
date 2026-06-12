@@ -61,7 +61,7 @@ impl PairingConn for Replay {
 
 #[async_trait]
 impl PairingSession for Replay {
-    async fn put_tlv8(&mut self, path: &str, body: &[u8]) -> Result<Vec<u8>> {
+    async fn post_tlv8(&mut self, path: &str, body: &[u8]) -> Result<Vec<u8>> {
         Ok(self.handle(path, body))
     }
 }

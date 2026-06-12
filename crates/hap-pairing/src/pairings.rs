@@ -90,7 +90,7 @@ impl<'a> PairingsAdmin<'a> {
             w.push(TLV_PUBLIC_KEY, &ltpk);
             w.push_u8(TLV_PERMISSIONS, if admin { PERM_ADMIN } else { PERM_USER });
         }
-        let reply = self.session.put_tlv8(PAIRINGS, &body).await?;
+        let reply = self.session.post_tlv8(PAIRINGS, &body).await?;
         expect_m2_ok(&reply)
     }
 
@@ -106,7 +106,7 @@ impl<'a> PairingsAdmin<'a> {
             w.push_u8(TLV_METHOD, METHOD_REMOVE);
             w.push(TLV_IDENTIFIER, id.as_bytes());
         }
-        let reply = self.session.put_tlv8(PAIRINGS, &body).await?;
+        let reply = self.session.post_tlv8(PAIRINGS, &body).await?;
         expect_m2_ok(&reply)
     }
 
@@ -123,7 +123,7 @@ impl<'a> PairingsAdmin<'a> {
             w.push_u8(TLV_STATE, STATE_M1);
             w.push_u8(TLV_METHOD, METHOD_LIST);
         }
-        let reply = self.session.put_tlv8(PAIRINGS, &body).await?;
+        let reply = self.session.post_tlv8(PAIRINGS, &body).await?;
         parse_list_reply(&reply)
     }
 }
