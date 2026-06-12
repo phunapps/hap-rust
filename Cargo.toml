@@ -81,6 +81,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # Testing / automation.
 proptest = "1"
 anyhow = "1"
+async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 toml = "0.8" # reserved for xtask config/manifest parsing in a later milestone
 # mDNS service discovery for _hap._tcp (hap-transport M4).
