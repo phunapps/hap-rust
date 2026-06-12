@@ -110,7 +110,11 @@ mod tests {
 
     #[test]
     fn serializes_in_canonical_order() {
-        let p = Perms { read: true, events: true, ..Perms::default() };
+        let p = Perms {
+            read: true,
+            events: true,
+            ..Perms::default()
+        };
         assert_eq!(serde_json::to_string(&p).unwrap(), r#"["pr","ev"]"#);
     }
 

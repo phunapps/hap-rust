@@ -124,9 +124,7 @@ fn infer_value(v: &serde_json::Value) -> Result<CharValue> {
 pub fn build_write_request(writes: &[((u64, u64), CharValue)]) -> Vec<u8> {
     let entries: Vec<serde_json::Value> = writes
         .iter()
-        .map(|((aid, iid), v)| {
-            serde_json::json!({ "aid": aid, "iid": iid, "value": v.to_json() })
-        })
+        .map(|((aid, iid), v)| serde_json::json!({ "aid": aid, "iid": iid, "value": v.to_json() }))
         .collect();
     let body = serde_json::json!({ "characteristics": entries });
     // serde_json::to_vec on an in-memory Value cannot fail.

@@ -1,0 +1,41 @@
+{
+  "services": [
+    { "name": "AccessoryInformation", "short": "3E" },
+    { "name": "ProtocolInformation",  "short": "A2" },
+    { "name": "LightBulb",            "short": "43" },
+    { "name": "Switch",               "short": "49" },
+    { "name": "Outlet",               "short": "47" },
+    { "name": "Fan",                  "short": "40" },
+    { "name": "Thermostat",           "short": "4A" },
+    { "name": "TemperatureSensor",    "short": "8A" },
+    { "name": "HumiditySensor",       "short": "82" },
+    { "name": "MotionSensor",         "short": "85" },
+    { "name": "ContactSensor",        "short": "80" },
+    { "name": "GarageDoorOpener",     "short": "41" },
+    { "name": "LockMechanism",        "short": "45" },
+    { "name": "Battery",              "short": "96" }
+  ],
+  "characteristics": [
+    { "name": "Identify",            "short": "14", "format": "bool" },
+    { "name": "Manufacturer",        "short": "20", "format": "string" },
+    { "name": "Model",               "short": "21", "format": "string" },
+    { "name": "Name",                "short": "23", "format": "string" },
+    { "name": "SerialNumber",        "short": "30", "format": "string" },
+    { "name": "FirmwareRevision",    "short": "52", "format": "string" },
+    { "name": "On",                  "short": "25", "format": "bool" },
+    { "name": "Brightness",          "short": "8",  "format": "int" },
+    { "name": "Hue",                 "short": "13", "format": "float" },
+    { "name": "Saturation",          "short": "2F", "format": "float" },
+    { "name": "ColorTemperature",    "short": "CE", "format": "uint32" },
+    { "name": "CurrentTemperature",  "short": "11", "format": "float" },
+    { "name": "TargetTemperature",   "short": "35", "format": "float" },
+    { "name": "CurrentRelativeHumidity", "short": "10", "format": "float" },
+    { "name": "MotionDetected",      "short": "22", "format": "bool" },
+    { "name": "ContactSensorState",  "short": "6A", "format": "uint8" },
+    { "name": "LockCurrentState",    "short": "1D", "format": "uint8" },
+    { "name": "LockTargetState",     "short": "1E", "format": "uint8" },
+    { "name": "BatteryLevel",        "short": "68", "format": "uint8" },
+    { "name": "StatusLowBattery",    "short": "79", "format": "uint8" },
+    { "name": "OutletInUse",         "short": "26", "format": "bool" }
+  ]
+}

@@ -34,7 +34,9 @@ impl Uuid {
         // Short form: 1..=8 hex digits.
         if (1..=8).contains(&t.len()) && t.chars().all(|c| c.is_ascii_hexdigit()) {
             let padded = format!("{:0>8}", t.to_ascii_lowercase());
-            return Ok(Uuid(format!("{padded}{HAP_BASE_SUFFIX}").to_ascii_lowercase()));
+            return Ok(Uuid(
+                format!("{padded}{HAP_BASE_SUFFIX}").to_ascii_lowercase(),
+            ));
         }
         Err(ModelError::MalformedUuid(s.to_string()))
     }
@@ -112,7 +114,10 @@ mod tests {
 
     #[test]
     fn rejects_garbage() {
-        assert!(matches!(Uuid::parse("zz"), Err(ModelError::MalformedUuid(_))));
+        assert!(matches!(
+            Uuid::parse("zz"),
+            Err(ModelError::MalformedUuid(_))
+        ));
         assert!(matches!(Uuid::parse(""), Err(ModelError::MalformedUuid(_))));
     }
 }

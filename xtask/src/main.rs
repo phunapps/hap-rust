@@ -6,10 +6,12 @@
 //! - `check`              — run every gate CI runs (M0).
 //! - `capture-tlv8`       — drive `aiohomekit` to capture TLV8 pairing vectors (M1).
 //! - `capture-pair-setup` — point to the Pair Setup (SRP-6a) capture tooling (M2).
-//! - `codegen`            — generate the HAP-defined service / characteristic type
-//!   tables (M6).
+//! - `codegen-hap-types`  — generate the HAP-defined service / characteristic type
+//!   tables into `crates/hap-model/src/generated.rs` (M6).
 
 #![forbid(unsafe_code)]
+
+mod codegen_hap_types;
 
 use std::process::{Command, ExitCode};
 
@@ -31,8 +33,8 @@ enum Cmd {
     CaptureTlv8,
     /// Capture a Pair Setup (SRP-6a) trace from aiohomekit (M2).
     CapturePairSetup,
-    /// Generate the HAP-defined type tables (lands in M6).
-    Codegen,
+    /// Generate the HAP-defined type tables into hap-model/src/generated.rs (M6).
+    CodegenHapTypes,
 }
 
 fn main() -> ExitCode {
@@ -44,7 +46,7 @@ fn main() -> ExitCode {
             capture_pair_setup();
             Ok(())
         }
-        Cmd::Codegen => not_yet("codegen", "M6 (see docs/superpowers/plans/)"),
+        Cmd::CodegenHapTypes => codegen_hap_types::run().map(|path| println!("wrote {path}")),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

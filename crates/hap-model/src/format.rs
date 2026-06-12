@@ -162,15 +162,27 @@ mod tests {
 
     #[test]
     fn bool_accepts_json_bool_and_0_1() {
-        assert_eq!(CharFormat::Bool.value_from_json(&json!(true)).unwrap(), CharValue::Bool(true));
-        assert_eq!(CharFormat::Bool.value_from_json(&json!(0)).unwrap(), CharValue::Bool(false));
-        assert_eq!(CharFormat::Bool.value_from_json(&json!(1)).unwrap(), CharValue::Bool(true));
+        assert_eq!(
+            CharFormat::Bool.value_from_json(&json!(true)).unwrap(),
+            CharValue::Bool(true)
+        );
+        assert_eq!(
+            CharFormat::Bool.value_from_json(&json!(0)).unwrap(),
+            CharValue::Bool(false)
+        );
+        assert_eq!(
+            CharFormat::Bool.value_from_json(&json!(1)).unwrap(),
+            CharValue::Bool(true)
+        );
         assert!(CharFormat::Bool.value_from_json(&json!("x")).is_err());
     }
 
     #[test]
     fn uint8_rejects_over_255() {
-        assert_eq!(CharFormat::Uint8.value_from_json(&json!(255)).unwrap(), CharValue::Uint(255));
+        assert_eq!(
+            CharFormat::Uint8.value_from_json(&json!(255)).unwrap(),
+            CharValue::Uint(255)
+        );
         assert!(matches!(
             CharFormat::Uint8.value_from_json(&json!(256)),
             Err(ModelError::ValueRange { .. })
@@ -179,8 +191,14 @@ mod tests {
 
     #[test]
     fn float_accepts_integer_json() {
-        assert_eq!(CharFormat::Float.value_from_json(&json!(3)).unwrap(), CharValue::Float(3.0));
-        assert_eq!(CharFormat::Float.value_from_json(&json!(0.5)).unwrap(), CharValue::Float(0.5));
+        assert_eq!(
+            CharFormat::Float.value_from_json(&json!(3)).unwrap(),
+            CharValue::Float(3.0)
+        );
+        assert_eq!(
+            CharFormat::Float.value_from_json(&json!(0.5)).unwrap(),
+            CharValue::Float(0.5)
+        );
     }
 
     #[test]

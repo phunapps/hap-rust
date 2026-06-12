@@ -38,8 +38,7 @@ mod generated;
 
 pub use accessories::parse_accessories;
 pub use characteristics::{
-    build_read_request, build_subscribe_request, build_write_request, parse_read_response,
-    CharRead,
+    build_read_request, build_subscribe_request, build_write_request, parse_read_response, CharRead,
 };
 pub use database::{AccessoryDatabase, Request, RequestExecutor};
 pub use error::{ModelError, Result};
