@@ -2,6 +2,7 @@
 //! accessory tree and an event stream.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -103,6 +104,7 @@ pub struct AccessoryHandle {
     accessories: Option<Vec<Accessory>>,
     events_tx: broadcast::Sender<CharacteristicEvent>,
     formats: FormatMap,
+    pid: Arc<AtomicU64>,
 }
 
 impl AccessoryHandle {
@@ -162,6 +164,7 @@ impl AccessoryHandle {
             accessories: None,
             events_tx,
             formats,
+            pid: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -322,6 +325,60 @@ impl AccessoryHandle {
     /// dropped for that stream.
     pub fn events(&self) -> impl Stream<Item = CharacteristicEvent> {
         into_stream(self.events_tx.subscribe())
+    }
+
+    /// Timed write: reserve with `PUT /prepare {ttl,pid}` then write carrying that
+    /// pid, completing within `ttl`. For security-sensitive accessories (locks).
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`]/[`HapError::Http`] on either request, [`HapError::Model`]
+    /// on a per-characteristic failure.
+    pub async fn write_timed(
+        &mut self,
+        aid: u64,
+        iid: u64,
+        value: CharValue,
+        ttl: std::time::Duration,
+    ) -> Result<()> {
+        let pid = self.pid.fetch_add(1, Ordering::Relaxed);
+        let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
+        let prepare = hap_model::build_prepare_request(ttl_ms, pid);
+        let resp = self
+            .request("PUT", "/prepare", "application/hap+json", &prepare)
+            .await?;
+        if !is_success(resp.status) {
+            return Err(HapError::Http { status: resp.status });
+        }
+        let body = hap_model::build_timed_write_request(&[((aid, iid), value)], pid);
+        self.put_characteristics(&body).await
+    }
+
+    /// Write requesting the post-write value back (the HAP `r` flag).
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
+    /// if the response cannot be decoded, [`HapError::CharacteristicNotFound`] if the
+    /// accessory returns no value.
+    pub async fn write_with_response(
+        &mut self,
+        aid: u64,
+        iid: u64,
+        value: CharValue,
+    ) -> Result<CharValue> {
+        let body = hap_model::build_write_request_with_response(&[((aid, iid), value)]);
+        let resp = self
+            .request("PUT", "/characteristics", "application/hap+json", &body)
+            .await?;
+        if !is_success(resp.status) {
+            return Err(HapError::Http { status: resp.status });
+        }
+        let mut v = hap_model::parse_read_response(&resp.body)?;
+        if v.is_empty() {
+            return Err(HapError::CharacteristicNotFound { aid, iid });
+        }
+        Ok(v.remove(0).1)
     }
 
     /// Shared `PUT /characteristics` path for `write` and `subscribe`: send the
