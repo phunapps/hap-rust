@@ -61,6 +61,10 @@ serde_json = "1"
 # base64 for the opaque `tlv8` / `data` characteristic value formats (hap-model M6).
 base64 = "0.22"
 tokio = { version = "1", default-features = false }
+# Channel→Stream adapter for the controller's events() API (hap-controller M7).
+# tokio-stream re-exports futures_core::Stream and provides BroadcastStream, so
+# the public async Stream needs no separate `futures` dependency.
+tokio-stream = { version = "0.1", default-features = false }
 # Crypto primitives for hap-crypto (M2). SRP-6a modular exponentiation uses
 # num-bigint's dynamic-width integers; sha2 provides SHA-512; subtle gives
 # constant-time comparison of secret proofs. Primitives are never reimplemented.
