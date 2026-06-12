@@ -10,7 +10,8 @@
 //!   [`AccessoryPairing`](hap_crypto::AccessoryPairing) and a live
 //!   [`SecureSession`](hap_transport::SecureSession).
 //! - [`connect`] drives **Pair Verify** (X25519 + Ed25519, steps M1–M4) from a
-//!   stored pairing, returning a fresh [`SecureSession`].
+//!   stored pairing, returning a fresh
+//!   [`SecureSession`](hap_transport::SecureSession).
 //! - [`PairingsAdmin`] manages pairings (`add` / `remove` / `list`) over the
 //!   `/pairings` endpoint of an established session.
 //! - [`PairingStore`] (and the bundled [`JsonFileStore`]) persists the

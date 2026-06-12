@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use hap_crypto::{AccessoryPairing, ControllerKeypair, PairVerifyClient, PairVerifyStep, SessionKeys};
+use hap_crypto::{
+    AccessoryPairing, ControllerKeypair, PairVerifyClient, PairVerifyStep, SessionKeys,
+};
 use hap_transport::{discover, HapConnection, SecureSession};
 
 use crate::error::{PairingError, Result};
@@ -40,9 +42,7 @@ pub async fn connect(
         let dev = found
             .into_iter()
             .find(|d| d.id == accessory.pairing.pairing_id)
-            .ok_or_else(|| {
-                PairingError::UnknownAccessory(accessory.pairing.pairing_id.clone())
-            })?;
+            .ok_or_else(|| PairingError::UnknownAccessory(accessory.pairing.pairing_id.clone()))?;
         HapConnection::connect(dev.addr).await?
     };
     connect_over(conn, &accessory.pairing, controller).await
