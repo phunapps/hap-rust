@@ -505,7 +505,17 @@ impl AccessoryHandle {
         if v.is_empty() {
             return Err(HapError::CharacteristicNotFound { aid, iid });
         }
-        Ok(v.remove(0).1)
+        let value = v.remove(0).1;
+        // Re-type to the declared format from the cached DB, like `read_many`.
+        let fmt = self
+            .formats
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&(aid, iid)).copied());
+        Ok(match fmt {
+            Some(f) => coerce_to_format(value, f),
+            None => value,
+        })
     }
 
     /// Shared `PUT /characteristics` path for `write` and `subscribe`: send the

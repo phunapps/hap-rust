@@ -34,7 +34,8 @@ Controller completeness. `hap-model` and `hap-controller` bump to `1.1.0`
 - **Transparent auto-reconnect.** A dropped secure session is re-established by a
   background supervisor (indefinite backoff, capped); foreground ops wait a
   bounded window then return the new `HapError::ConnectionLost`. Subscriptions
-  are re-issued and the cached DB is refreshed on a config-number change. New
+  are re-issued after every reconnect; the cached DB is refreshed when a
+  reconnect reports a changed config number. New
   `AccessoryHandle::connection_state()` exposes a `ConnectionState` stream.
 - `SetupPayload::parse` decodes the `X-HM://` setup URI; new
   `HapError::InvalidSetupPayload`.
