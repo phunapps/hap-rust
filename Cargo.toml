@@ -59,11 +59,21 @@ bitflags = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", default-features = false }
+# Crypto primitives for hap-crypto (M2). SRP-6a modular exponentiation uses
+# num-bigint's dynamic-width integers; sha2 provides SHA-512; subtle gives
+# constant-time comparison of secret proofs. Primitives are never reimplemented.
+num-bigint = "0.4"
+num-traits = "0.2"
+sha2 = "0.10"
+subtle = "2"
 # Testing / automation.
 proptest = "1"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 toml = "0.8" # reserved for xtask config/manifest parsing in a later milestone
+# Dev-only: RFC 5054 known-answer test uses SHA-1 (sha1) and hex fixtures.
+sha-1 = "0.10"
+hex = "0.4"
 
 # Release profile defaults. Keep these conservative; consumers can override.
 [profile.release]
