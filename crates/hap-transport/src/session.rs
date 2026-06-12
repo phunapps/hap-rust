@@ -240,7 +240,9 @@ pub fn demux_messages(buf: &[u8]) -> Result<(Vec<Demuxed>, usize)> {
             ParseOutcome::Incomplete => break,
             ParseOutcome::Complete { response, consumed } => {
                 if is_event {
-                    out.push(Demuxed::Event(EventNotification { body: response.body }));
+                    out.push(Demuxed::Event(EventNotification {
+                        body: response.body,
+                    }));
                 } else {
                     out.push(Demuxed::Response(response));
                 }

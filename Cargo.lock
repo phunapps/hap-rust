@@ -481,6 +481,8 @@ dependencies = [
  "hap-crypto",
  "hap-tlv8",
  "mdns-sd",
+ "serde",
+ "serde_json",
  "thiserror",
  "tokio",
 ]

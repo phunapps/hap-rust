@@ -55,13 +55,19 @@ fn parses_204_no_content() {
 #[test]
 fn returns_incomplete_when_body_not_fully_arrived() {
     let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc";
-    assert!(matches!(parse_response(raw).unwrap(), ParseOutcome::Incomplete));
+    assert!(matches!(
+        parse_response(raw).unwrap(),
+        ParseOutcome::Incomplete
+    ));
 }
 
 #[test]
 fn returns_incomplete_when_headers_not_terminated() {
     let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n";
-    assert!(matches!(parse_response(raw).unwrap(), ParseOutcome::Incomplete));
+    assert!(matches!(
+        parse_response(raw).unwrap(),
+        ParseOutcome::Incomplete
+    ));
 }
 
 #[test]

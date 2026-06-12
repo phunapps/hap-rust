@@ -104,8 +104,12 @@ pub(crate) fn parse_message(buf: &[u8], expected_prefix: &[u8]) -> Result<ParseO
         let Some(colon) = line.iter().position(|&b| b == b':') else {
             return Err(TransportError::MalformedHttp("header without colon".into()));
         };
-        let name = String::from_utf8_lossy(&line[..colon]).trim().to_ascii_lowercase();
-        let value = String::from_utf8_lossy(&line[colon + 1..]).trim().to_string();
+        let name = String::from_utf8_lossy(&line[..colon])
+            .trim()
+            .to_ascii_lowercase();
+        let value = String::from_utf8_lossy(&line[colon + 1..])
+            .trim()
+            .to_string();
         match name.as_str() {
             "content-type" => content_type = value,
             "content-length" => {
@@ -200,13 +204,9 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 fn split_crlf(block: &[u8]) -> impl Iterator<Item = &[u8]> {
-    block.split(|&b| b == b'\n').map(|l| {
-        if let [rest @ .., b'\r'] = l {
-            rest
-        } else {
-            l
-        }
-    })
+    block
+        .split(|&b| b == b'\n')
+        .map(|l| if let [rest @ .., b'\r'] = l { rest } else { l })
 }
 
 /// Test-only re-exports.

@@ -94,7 +94,6 @@ pub async fn discover(timeout: Duration) -> Result<Vec<DiscoveredAccessory>> {
                 }
             }
             Ok(Ok(_other)) => {}
-
         }
     }
 
@@ -105,9 +104,10 @@ pub async fn discover(timeout: Duration) -> Result<Vec<DiscoveredAccessory>> {
 /// Derive the human-readable name from an mDNS fullname like
 /// `My Lamp 1234._hap._tcp.local.`.
 fn instance_name(fullname: &str) -> String {
-    fullname
-        .strip_suffix(HAP_SERVICE_TYPE)
-        .map_or_else(|| fullname.to_string(), |s| s.trim_end_matches('.').to_string())
+    fullname.strip_suffix(HAP_SERVICE_TYPE).map_or_else(
+        || fullname.to_string(),
+        |s| s.trim_end_matches('.').to_string(),
+    )
 }
 
 /// Parse a TXT-record map (plus the resolved address) into a
@@ -138,10 +138,10 @@ pub fn parse_txt<S: ::std::hash::BuildHasher>(
         }
     };
 
-    let config_number = u32::try_from(parse_num("c#")?)
-        .map_err(|_| TransportError::DiscoveryTxt("c#".into()))?;
-    let category = u16::try_from(parse_num("ci")?)
-        .map_err(|_| TransportError::DiscoveryTxt("ci".into()))?;
+    let config_number =
+        u32::try_from(parse_num("c#")?).map_err(|_| TransportError::DiscoveryTxt("c#".into()))?;
+    let category =
+        u16::try_from(parse_num("ci")?).map_err(|_| TransportError::DiscoveryTxt("ci".into()))?;
     let sf = parse_num("sf")?;
     let paired = (sf & 0x1) == 0;
 

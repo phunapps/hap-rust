@@ -38,12 +38,18 @@ fn parses_unpaired_accessory_txt() {
 
 #[test]
 fn paired_accessory_clears_sf_bit0() {
-    let txt: HashMap<String, String> = [("id", "11:22:33:44:55:66"), ("sf", "0"), ("ci", "2"), ("c#", "9")]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
+    let txt: HashMap<String, String> = [
+        ("id", "11:22:33:44:55:66"),
+        ("sf", "0"),
+        ("ci", "2"),
+        ("c#", "9"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
     let addr: SocketAddr = "10.0.0.7:80".parse().unwrap();
-    let acc = hap_transport::discovery_test_support::parse_txt("Hub._hap._tcp.local.", addr, &txt).unwrap();
+    let acc = hap_transport::discovery_test_support::parse_txt("Hub._hap._tcp.local.", addr, &txt)
+        .unwrap();
     assert!(acc.paired, "sf=0 means already paired");
     assert_eq!(acc.category, 2);
     assert_eq!(acc.config_number, 9);
@@ -51,8 +57,12 @@ fn paired_accessory_clears_sf_bit0() {
 
 #[test]
 fn missing_id_is_an_error() {
-    let txt: HashMap<String, String> = [("sf", "1")].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let txt: HashMap<String, String> = [("sf", "1")]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
     let addr: SocketAddr = "10.0.0.7:80".parse().unwrap();
-    let err = hap_transport::discovery_test_support::parse_txt("x._hap._tcp.local.", addr, &txt).unwrap_err();
+    let err = hap_transport::discovery_test_support::parse_txt("x._hap._tcp.local.", addr, &txt)
+        .unwrap_err();
     assert!(matches!(err, hap_transport::TransportError::DiscoveryTxt(k) if k == "id"));
 }

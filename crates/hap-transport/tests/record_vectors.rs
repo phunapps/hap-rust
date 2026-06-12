@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs, clippy::cast_possible_truncation)] // test carve-out
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    missing_docs,
+    clippy::cast_possible_truncation
+)] // test carve-out
 
 use std::fs;
 use std::path::PathBuf;
@@ -29,7 +34,10 @@ struct FrameVec {
 }
 
 fn hex32(s: &str) -> [u8; 32] {
-    let bytes: Vec<u8> = (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect();
+    let bytes: Vec<u8> = (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect();
     bytes.try_into().unwrap()
 }
 
@@ -49,12 +57,18 @@ fn encrypt_matches_every_captured_frame() {
         let frame = encrypt_frame(&key, &mut counter, &plaintext).unwrap();
         assert_eq!(
             frame, expected_frame,
-            "frame {} ({}) encrypt mismatch", f.id, f.direction
+            "frame {} ({}) encrypt mismatch",
+            f.id, f.direction
         );
 
         let mut counter = NonceCounter::at(f.counter);
         let recovered = decrypt_frame(&key, &mut counter, &expected_frame).unwrap();
-        assert_eq!(recovered, Some(plaintext), "frame {} decrypt mismatch", f.id);
+        assert_eq!(
+            recovered,
+            Some(plaintext),
+            "frame {} decrypt mismatch",
+            f.id
+        );
     }
 }
 
@@ -91,5 +105,8 @@ fn rejects_block_over_1024() {
     let mut ctr = NonceCounter::new();
     let too_big = vec![0u8; 1025];
     let err = encrypt_frame(&key, &mut ctr, &too_big).unwrap_err();
-    assert!(matches!(err, hap_transport::TransportError::InvalidFrameLength(1025)));
+    assert!(matches!(
+        err,
+        hap_transport::TransportError::InvalidFrameLength(1025)
+    ));
 }

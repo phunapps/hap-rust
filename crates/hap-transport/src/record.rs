@@ -1,7 +1,7 @@
 //! The HAP secure record layer (ChaCha20-Poly1305 framing).
 //!
 //! After Pair Verify, every byte of the HTTP stream is carried inside record
-//! frames. One plaintext block (at most [`MAX_BLOCK`] bytes) becomes:
+//! frames. One plaintext block (at most `MAX_BLOCK` bytes) becomes:
 //!
 //! ```text
 //! [ 2-byte LE length ][ ciphertext (= len bytes) ][ 16-byte Poly1305 tag ]
@@ -68,14 +68,14 @@ impl Default for NonceCounter {
 ///
 /// # Errors
 ///
-/// [`TransportError::InvalidFrameLength`] if `block` exceeds [`MAX_BLOCK`] (or,
+/// [`TransportError::InvalidFrameLength`] if `block` exceeds `MAX_BLOCK` (or,
 /// defensively, if the sealed AEAD reports the input length is out of range).
 pub fn encrypt_frame(key: &[u8; 32], counter: &mut NonceCounter, block: &[u8]) -> Result<Vec<u8>> {
     if block.len() > MAX_BLOCK {
         return Err(TransportError::InvalidFrameLength(block.len()));
     }
-    let len = u16::try_from(block.len())
-        .map_err(|_| TransportError::InvalidFrameLength(block.len()))?;
+    let len =
+        u16::try_from(block.len()).map_err(|_| TransportError::InvalidFrameLength(block.len()))?;
     let aad = len.to_le_bytes(); // the length prefix doubles as AAD
     let nonce = counter.nonce();
     let ciphertext_and_tag = chacha20poly1305_seal(key, &nonce, &aad, block)
@@ -98,7 +98,7 @@ pub fn encrypt_frame(key: &[u8; 32], counter: &mut NonceCounter, block: &[u8]) -
 ///
 /// [`TransportError::Decrypt`] if authentication fails (tampered/replayed/wrong
 /// key); [`TransportError::InvalidFrameLength`] if the declared length exceeds
-/// [`MAX_BLOCK`].
+/// `MAX_BLOCK`.
 pub fn decrypt_frame(
     key: &[u8; 32],
     counter: &mut NonceCounter,
