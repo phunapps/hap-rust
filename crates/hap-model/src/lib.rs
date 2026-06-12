@@ -30,6 +30,7 @@ pub mod error;
 pub mod format;
 pub mod perms;
 pub mod tree;
+pub mod unit;
 pub mod uuid;
 
 mod accessories;
@@ -46,4 +47,5 @@ pub use format::{CharFormat, CharValue};
 pub use generated::{CharacteristicType, ServiceType};
 pub use perms::Perms;
 pub use tree::{Accessory, Characteristic, Service};
+pub use unit::Unit;
 pub use uuid::Uuid;
