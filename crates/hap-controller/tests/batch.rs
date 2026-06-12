@@ -7,8 +7,10 @@ mod common;
 
 #[tokio::test]
 async fn read_many_decodes_all_entries() {
-    let body = r#"{"characteristics":[{"aid":1,"iid":10,"value":true},{"aid":1,"iid":11,"value":42}]}"#;
-    let session = common::MockSession::new().with_get("/characteristics?id=1.10,1.11&meta=1", 200, body);
+    let body =
+        r#"{"characteristics":[{"aid":1,"iid":10,"value":true},{"aid":1,"iid":11,"value":42}]}"#;
+    let session =
+        common::MockSession::new().with_get("/characteristics?id=1.10,1.11&meta=1", 200, body);
     let mut handle = common::handle_with_session(session);
 
     let got = handle.read_many(&[(1, 10), (1, 11)]).await.unwrap();
@@ -31,5 +33,8 @@ async fn write_many_serializes_all_entries() {
         .unwrap();
     let puts = recorder.lock().unwrap();
     let body = String::from_utf8(puts[0].1.clone()).unwrap();
-    assert!(body.contains("\"iid\":10") && body.contains("\"iid\":11"), "{body}");
+    assert!(
+        body.contains("\"iid\":10") && body.contains("\"iid\":11"),
+        "{body}"
+    );
 }

@@ -100,7 +100,10 @@ pub type PutLog = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
 /// A handle that, when `kill()` is called, sets the dead flag AND drops
 /// the live event sender so the supervisor's current `recv()` returns `None`.
-pub struct KillSwitch(Arc<std::sync::atomic::AtomicBool>, Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>);
+pub struct KillSwitch(
+    Arc<std::sync::atomic::AtomicBool>,
+    Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
+);
 
 impl KillSwitch {
     /// Mark the session as dead and close the live event channel.

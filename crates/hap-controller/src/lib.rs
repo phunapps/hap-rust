@@ -43,10 +43,10 @@ mod setup_payload;
 
 pub use controller::HapController;
 pub use error::{HapError, Result};
-pub use setup_payload::{SetupFlags, SetupPayload};
 pub use event::CharacteristicEvent;
 pub use handle::AccessoryHandle;
 pub use reconnect::ConnectionState;
+pub use setup_payload::{SetupFlags, SetupPayload};
 
 // The reconnection seam: a [`Reconnector`] mints fresh sessions on demand.
 // Not part of the supported public API — hidden from docs and named only by

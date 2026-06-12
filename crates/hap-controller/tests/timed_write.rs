@@ -11,7 +11,12 @@ async fn timed_write_prepares_then_writes_with_pid() {
     let recorder = session.put_recorder();
     let mut handle = common::handle_with_session(session);
     handle
-        .write_timed(1, 10, hap_controller::CharValue::Bool(true), Duration::from_secs(2))
+        .write_timed(
+            1,
+            10,
+            hap_controller::CharValue::Bool(true),
+            Duration::from_secs(2),
+        )
         .await
         .unwrap();
     let puts = recorder.lock().unwrap();
@@ -20,5 +25,8 @@ async fn timed_write_prepares_then_writes_with_pid() {
     assert_eq!(puts[1].0, "/characteristics");
     let prep = String::from_utf8(puts[0].1.clone()).unwrap();
     let write = String::from_utf8(puts[1].1.clone()).unwrap();
-    assert!(prep.contains("\"pid\":") && write.contains("\"pid\":"), "{prep} / {write}");
+    assert!(
+        prep.contains("\"pid\":") && write.contains("\"pid\":"),
+        "{prep} / {write}"
+    );
 }

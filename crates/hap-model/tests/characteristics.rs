@@ -109,7 +109,8 @@ fn prepare_request_carries_ttl_and_pid() {
 
 #[test]
 fn timed_write_request_includes_pid_per_entry() {
-    let body = hap_model::build_timed_write_request(&[((1, 10), hap_model::CharValue::Bool(true))], 7);
+    let body =
+        hap_model::build_timed_write_request(&[((1, 10), hap_model::CharValue::Bool(true))], 7);
     let s = String::from_utf8(body).unwrap();
     assert!(s.contains("\"pid\":7"), "{s}");
     assert!(s.contains("\"iid\":10"), "{s}");
@@ -117,7 +118,10 @@ fn timed_write_request_includes_pid_per_entry() {
 
 #[test]
 fn response_write_request_sets_r_flag() {
-    let body = hap_model::build_write_request_with_response(&[((1, 10), hap_model::CharValue::Bool(true))]);
+    let body = hap_model::build_write_request_with_response(&[(
+        (1, 10),
+        hap_model::CharValue::Bool(true),
+    )]);
     let s = String::from_utf8(body).unwrap();
     assert!(s.contains("\"r\":true"), "{s}");
 }

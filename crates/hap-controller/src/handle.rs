@@ -14,9 +14,7 @@ use hap_transport::SecureSession;
 
 use crate::error::{HapError, Result};
 use crate::event::{into_stream, CharacteristicEvent};
-use crate::reconnect::{
-    backoff, ConnectionState, Reconnected, ReconnectingSession, Reconnector,
-};
+use crate::reconnect::{backoff, ConnectionState, Reconnected, ReconnectingSession, Reconnector};
 
 /// `(aid, iid)` → declared characteristic format, learned from `/accessories`.
 /// Shared with the event pump so it can decode `EVENT/1.0` values (which carry
@@ -345,9 +343,13 @@ impl AccessoryHandle {
     /// if any entry fails to decode (including a non-zero per-characteristic status).
     pub async fn read_many(&mut self, ids: &[(u64, u64)]) -> Result<Vec<((u64, u64), CharValue)>> {
         let path = hap_model::build_read_request(ids);
-        let resp = self.request("GET", &path, "application/hap+json", b"").await?;
+        let resp = self
+            .request("GET", &path, "application/hap+json", b"")
+            .await?;
         if !is_success(resp.status) {
-            return Err(HapError::Http { status: resp.status });
+            return Err(HapError::Http {
+                status: resp.status,
+            });
         }
         Ok(hap_model::parse_read_response(&resp.body)?)
     }
@@ -446,7 +448,9 @@ impl AccessoryHandle {
             .request("PUT", "/prepare", "application/hap+json", &prepare)
             .await?;
         if !is_success(resp.status) {
-            return Err(HapError::Http { status: resp.status });
+            return Err(HapError::Http {
+                status: resp.status,
+            });
         }
         let body = hap_model::build_timed_write_request(&[((aid, iid), value)], pid);
         self.put_characteristics(&body).await
@@ -470,7 +474,9 @@ impl AccessoryHandle {
             .request("PUT", "/characteristics", "application/hap+json", &body)
             .await?;
         if !is_success(resp.status) {
-            return Err(HapError::Http { status: resp.status });
+            return Err(HapError::Http {
+                status: resp.status,
+            });
         }
         let mut v = hap_model::parse_read_response(&resp.body)?;
         if v.is_empty() {
