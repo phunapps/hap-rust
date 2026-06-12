@@ -8,10 +8,9 @@ mod common;
 
 #[tokio::test]
 async fn read_decodes_a_bool_characteristic() {
-    // build_read_request(&[(1, 10)]) -> "/characteristics?id=1.10&meta=1".
+    // build_read_request(&[(1, 10)]) -> "/characteristics?id=1.10".
     let json = common::fixture("read-on-true.json");
-    let session =
-        common::MockSession::new().with_get("/characteristics?id=1.10&meta=1", 200, &json);
+    let session = common::MockSession::new().with_get("/characteristics?id=1.10", 200, &json);
     let mut handle = common::handle_with_session(session);
 
     let value = handle.read(1, 10).await.unwrap();

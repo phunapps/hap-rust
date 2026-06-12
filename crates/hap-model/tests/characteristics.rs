@@ -12,12 +12,9 @@ use hap_model::{
 fn read_request_path_is_exact() {
     assert_eq!(
         build_read_request(&[(1, 9), (1, 10)]),
-        "/characteristics?id=1.9,1.10&meta=1"
+        "/characteristics?id=1.9,1.10"
     );
-    assert_eq!(
-        build_read_request(&[(2, 3)]),
-        "/characteristics?id=2.3&meta=1"
-    );
+    assert_eq!(build_read_request(&[(2, 3)]), "/characteristics?id=2.3");
 }
 
 #[test]
@@ -97,4 +94,31 @@ fn unsubscribe_body_sets_ev_false() {
             {"aid":1,"iid":8,"ev":false}
         ]})
     );
+}
+
+#[test]
+fn prepare_request_carries_ttl_and_pid() {
+    let body = hap_model::build_prepare_request(2500, 7);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["ttl"], 2500);
+    assert_eq!(v["pid"], 7);
+}
+
+#[test]
+fn timed_write_request_includes_pid_per_entry() {
+    let body =
+        hap_model::build_timed_write_request(&[((1, 10), hap_model::CharValue::Bool(true))], 7);
+    let s = String::from_utf8(body).unwrap();
+    assert!(s.contains("\"pid\":7"), "{s}");
+    assert!(s.contains("\"iid\":10"), "{s}");
+}
+
+#[test]
+fn response_write_request_sets_r_flag() {
+    let body = hap_model::build_write_request_with_response(&[(
+        (1, 10),
+        hap_model::CharValue::Bool(true),
+    )]);
+    let s = String::from_utf8(body).unwrap();
+    assert!(s.contains("\"r\":true"), "{s}");
 }

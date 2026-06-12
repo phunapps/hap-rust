@@ -47,6 +47,9 @@ mod session;
 pub use error::{Result, TransportError};
 
 #[doc(hidden)]
+pub use error::error_test_support;
+
+#[doc(hidden)]
 pub use discovery::discovery_test_support;
 pub use discovery::{discover, DiscoveredAccessory};
 

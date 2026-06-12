@@ -98,13 +98,34 @@ impl PairingStore for MockStore {
 /// Shared record of every `(path, body)` written via the mock session.
 pub type PutLog = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
+/// A handle that, when `kill()` is called, sets the dead flag AND drops
+/// the live event sender so the supervisor's current `recv()` returns `None`.
+pub struct KillSwitch(
+    Arc<std::sync::atomic::AtomicBool>,
+    Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
+);
+
+impl KillSwitch {
+    /// Mark the session as dead and close the live event channel.
+    pub fn kill(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        // Drop the sender so the supervisor's recv() returns None immediately.
+        if let Ok(mut guard) = self.1.lock() {
+            *guard = None;
+        }
+    }
+}
+
 /// A [`Session`]-shaped double: returns canned JSON for `GET`, records `PUT`
 /// bodies, and lets a test inject `EVENT/1.0` pushes onto the pump channel.
 pub struct MockSession {
     gets: HashMap<String, (u16, Vec<u8>)>,
     puts: PutLog,
-    event_tx: mpsc::Sender<Vec<u8>>,
+    /// The event sender stored behind a Mutex<Option> so `KillSwitch::kill()`
+    /// can drop it to close the live event receiver.
+    event_tx: Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
     event_rx: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
+    dead: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MockSession {
@@ -113,8 +134,9 @@ impl MockSession {
         Self {
             gets: HashMap::new(),
             puts: Arc::new(Mutex::new(Vec::new())),
-            event_tx,
+            event_tx: Arc::new(Mutex::new(Some(event_tx))),
             event_rx: Mutex::new(Some(event_rx)),
+            dead: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -132,8 +154,20 @@ impl MockSession {
     }
 
     /// A sender that feeds raw `EVENT/1.0` bodies to the handle's event pump.
+    ///
+    /// # Panics
+    /// Panics if called after the session has been killed (the sender is gone).
     pub fn event_injector(&self) -> mpsc::Sender<Vec<u8>> {
-        self.event_tx.clone()
+        self.event_tx
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("event_injector called after session was killed")
+    }
+
+    /// A handle to flip this session to "dead" and close the live event channel.
+    pub fn kill_switch(&self) -> KillSwitch {
+        KillSwitch(self.dead.clone(), self.event_tx.clone())
     }
 }
 
@@ -146,6 +180,11 @@ impl Session for MockSession {
         _content_type: &str,
         body: &[u8],
     ) -> hap_controller::Result<SessionResponse> {
+        if self.dead.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(hap_controller::HapError::Transport(
+                hap_transport::error_test_support::session_closed(),
+            ));
+        }
         match method {
             "GET" => {
                 let (status, body) = self.gets.get(path).cloned().unwrap_or((404, Vec::new()));
@@ -170,6 +209,11 @@ impl Session for MockSession {
     }
 
     fn take_events(&self) -> mpsc::Receiver<Vec<u8>> {
+        if self.dead.load(std::sync::atomic::Ordering::Relaxed) {
+            // Return an already-closed receiver: create a channel and drop the sender.
+            let (_tx, rx) = mpsc::channel(1);
+            return rx;
+        }
         self.event_rx.lock().unwrap().take().unwrap_or_else(|| {
             // Already taken: hand back an immediately-closed receiver.
             let (_tx, rx) = mpsc::channel(1);
@@ -178,8 +222,48 @@ impl Session for MockSession {
     }
 }
 
+/// A [`Reconnector`] that hands out a fixed sequence of sessions, returning
+/// [`hap_controller::HapError::ConnectionLost`] once the list is exhausted.
+pub struct MockReconnector {
+    sessions: std::sync::Mutex<std::vec::IntoIter<MockSession>>,
+    config_number: Option<u32>,
+}
+
+impl MockReconnector {
+    #[allow(clippy::unnecessary_box_returns)]
+    pub fn new(sessions: Vec<MockSession>, config_number: Option<u32>) -> Box<Self> {
+        Box::new(Self {
+            sessions: std::sync::Mutex::new(sessions.into_iter()),
+            config_number,
+        })
+    }
+}
+
+#[async_trait]
+impl hap_controller::Reconnector for MockReconnector {
+    async fn reconnect(&self) -> hap_controller::Result<hap_controller::Reconnected> {
+        let next = self.sessions.lock().unwrap().next();
+        match next {
+            Some(s) => Ok(hap_controller::Reconnected {
+                session: std::sync::Arc::new(s),
+                config_number: self.config_number,
+            }),
+            None => Err(hap_controller::HapError::ConnectionLost),
+        }
+    }
+}
+
 /// Wrap a [`MockSession`] in an [`AccessoryHandle`] via the hidden test seam.
 /// Must be called from within a Tokio runtime (it spawns the event pump).
 pub fn handle_with_session(session: MockSession) -> AccessoryHandle {
     AccessoryHandle::from_session(Box::new(session))
+}
+
+/// Wrap a [`MockSession`] plus a [`MockReconnector`] in an [`AccessoryHandle`]
+/// via the hidden reconnect test seam. Must be called from within a Tokio runtime.
+pub fn handle_with_reconnector(
+    initial: MockSession,
+    reconnector: Box<MockReconnector>,
+) -> AccessoryHandle {
+    AccessoryHandle::from_parts(std::sync::Arc::new(initial), reconnector)
 }

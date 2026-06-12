@@ -18,10 +18,17 @@ pub struct CharRead {
     pub status: Option<i64>,
 }
 
-/// Build the path+query for `GET /characteristics?id=...&meta=1`.
+/// Build the path+query for `GET /characteristics?id=...`.
 ///
 /// `ids` is a list of `(aid, iid)` pairs. The query is rendered in the order
-/// given, comma-joined, e.g. `/characteristics?id=1.9,1.10&meta=1`.
+/// given, comma-joined, e.g. `/characteristics?id=1.9,1.10`.
+///
+/// This deliberately does NOT request `meta=1`: a value read returns only the
+/// values, and the controller types them from the accessory database fetched
+/// via [`parse_accessories`](crate::parse_accessories). Per-read `meta=1`
+/// responses are unreliable across accessories — some shipping HomeKit firmware
+/// (e.g. LIFX) serializes the metadata fields as malformed JSON — so metadata is
+/// sourced from the well-formed `/accessories` tree instead.
 pub fn build_read_request(ids: &[(u64, u64)]) -> String {
     let mut path = String::from("/characteristics?id=");
     for (i, (aid, iid)) in ids.iter().enumerate() {
@@ -31,7 +38,6 @@ pub fn build_read_request(ids: &[(u64, u64)]) -> String {
         // write! into a String cannot fail.
         let _ = write!(path, "{aid}.{iid}");
     }
-    path.push_str("&meta=1");
     path
 }
 
@@ -140,4 +146,37 @@ pub fn build_subscribe_request(ids: &[(u64, u64)], enable: bool) -> Vec<u8> {
         .collect();
     let body = serde_json::json!({ "characteristics": entries });
     serde_json::to_vec(&body).unwrap_or_default()
+}
+
+/// Build the JSON body for `PUT /prepare`: a timed-write reservation.
+///
+/// `ttl_ms` is milliseconds; `pid` is the controller-chosen transaction id echoed
+/// by the subsequent timed write.
+pub fn build_prepare_request(ttl_ms: u64, pid: u64) -> Vec<u8> {
+    let body = serde_json::json!({ "ttl": ttl_ms, "pid": pid });
+    serde_json::to_vec(&body).unwrap_or_default()
+}
+
+/// Build a `PUT /characteristics` body for a timed write: every entry carries
+/// the `pid` from a preceding [`build_prepare_request`].
+pub fn build_timed_write_request(writes: &[((u64, u64), CharValue)], pid: u64) -> Vec<u8> {
+    let entries: Vec<serde_json::Value> = writes
+        .iter()
+        .map(|((aid, iid), v)| {
+            serde_json::json!({ "aid": aid, "iid": iid, "value": v.to_json(), "pid": pid })
+        })
+        .collect();
+    serde_json::to_vec(&serde_json::json!({ "characteristics": entries })).unwrap_or_default()
+}
+
+/// Build a `PUT /characteristics` body requesting the post-write value back
+/// (the HAP `r` flag).
+pub fn build_write_request_with_response(writes: &[((u64, u64), CharValue)]) -> Vec<u8> {
+    let entries: Vec<serde_json::Value> = writes
+        .iter()
+        .map(|((aid, iid), v)| {
+            serde_json::json!({ "aid": aid, "iid": iid, "value": v.to_json(), "r": true })
+        })
+        .collect();
+    serde_json::to_vec(&serde_json::json!({ "characteristics": entries })).unwrap_or_default()
 }

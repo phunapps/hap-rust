@@ -1,7 +1,8 @@
 //! [`AccessoryHandle`]: one secure session to one accessory, plus a cached
 //! accessory tree and an event stream.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -13,6 +14,7 @@ use hap_transport::SecureSession;
 
 use crate::error::{HapError, Result};
 use crate::event::{into_stream, CharacteristicEvent};
+use crate::reconnect::{backoff, ConnectionState, Reconnected, ReconnectingSession, Reconnector};
 
 /// `(aid, iid)` → declared characteristic format, learned from `/accessories`.
 /// Shared with the event pump so it can decode `EVENT/1.0` values (which carry
@@ -99,70 +101,161 @@ impl Session for SecureSession {
 /// [`Stream`] from [`AccessoryHandle::events`] can be held concurrently because
 /// it is fed by a broadcast channel.
 pub struct AccessoryHandle {
-    session: Box<dyn Session>,
+    conn: Arc<ReconnectingSession>,
     accessories: Option<Vec<Accessory>>,
     events_tx: broadcast::Sender<CharacteristicEvent>,
     formats: FormatMap,
+    subscribed: Arc<Mutex<HashSet<(u64, u64)>>>,
+    pid: Arc<AtomicU64>,
+    needs_refresh: Arc<AtomicBool>,
+}
+
+/// A no-op [`Reconnector`] for the single-session test seam: it is wired in but
+/// never actually called unless the lone session dies, in which case there is
+/// nothing to reconnect to.
+struct NoReconnect;
+
+#[async_trait]
+impl Reconnector for NoReconnect {
+    async fn reconnect(&self) -> Result<Reconnected> {
+        Err(HapError::ConnectionLost)
+    }
 }
 
 impl AccessoryHandle {
-    /// Build a handle around an established [`SecureSession`], wiring its
-    /// `EVENT/1.0` channel into a broadcast fan-out. Crate-internal — used by
-    /// the controller after Pair Verify. Must be called from within a Tokio
-    /// runtime, since it spawns the event-pump task.
-    pub(crate) fn connect(session: SecureSession) -> Self {
-        Self::build(Box::new(session))
+    /// Build a handle from an established session plus a [`Reconnector`] that can
+    /// re-establish it. Crate-internal — used by the controller after Pair
+    /// Verify. Must be called from within a Tokio runtime, since it spawns the
+    /// supervisor task that owns reconnection and the event pump.
+    pub(crate) fn connect(session: Arc<dyn Session>, reconnector: Box<dyn Reconnector>) -> Self {
+        Self::build(session, reconnector)
     }
 
-    /// Build a handle around an arbitrary [`Session`] implementation. Hidden
-    /// test seam — used by this crate's integration tests to wrap a mock.
+    /// Build a handle around an arbitrary [`Session`] with no reconnection.
+    /// Hidden test seam — used by this crate's integration tests to wrap a mock.
     #[doc(hidden)]
     pub fn from_session(session: Box<dyn Session>) -> Self {
-        Self::build(session)
+        Self::build(Arc::from(session), Box::new(NoReconnect))
     }
 
-    /// Spawn the event pump and assemble the handle. Must be called from within
-    /// a Tokio runtime, since it `tokio::spawn`s the event-pump task.
-    fn build(session: Box<dyn Session>) -> Self {
+    /// Build a handle around a session plus a custom [`Reconnector`]. Hidden test
+    /// seam — used by the reconnect tests to drive a controlled reconnector.
+    #[doc(hidden)]
+    pub fn from_parts(session: Arc<dyn Session>, reconnector: Box<dyn Reconnector>) -> Self {
+        Self::build(session, reconnector)
+    }
+
+    /// Assemble the handle and spawn the supervisor task. Must be called from
+    /// within a Tokio runtime, since it `tokio::spawn`s that task.
+    ///
+    /// A single supervisor task owns all reconnection: it drains the current
+    /// session's `EVENT/1.0` channel, and on session death reconnects (with
+    /// indefinite backoff), re-issues subscriptions, then publishes the fresh
+    /// session for foreground ops to pick up. Foreground ops never reconnect
+    /// themselves — they only wait for a restored session — so reconnection is
+    /// race-free by construction.
+    fn build(session: Arc<dyn Session>, reconnector: Box<dyn Reconnector>) -> Self {
         let (events_tx, _) = broadcast::channel(64);
         let formats: FormatMap = Arc::new(Mutex::new(HashMap::new()));
-        // Drain the transport's EVENT/1.0 mpsc receiver, decode each hap+json
-        // push via hap-model, and fan it out over the broadcast channel.
-        let mut event_rx = session.take_events();
+        let subscribed: Arc<Mutex<HashSet<(u64, u64)>>> = Arc::new(Mutex::new(HashSet::new()));
+        let needs_refresh = Arc::new(AtomicBool::new(false));
+        let conn = Arc::new(ReconnectingSession::new(session, reconnector));
+
+        let pump = conn.clone();
         let tx = events_tx.clone();
-        let fmt_map = formats.clone();
+        let fmt = formats.clone();
+        let subs = subscribed.clone();
+        let refresh = needs_refresh.clone();
         tokio::spawn(async move {
-            while let Some(body) = event_rx.recv().await {
-                // An EVENT body has the same shape as a /characteristics read
-                // response (a list of {aid, iid, value}); reuse that decoder.
-                if let Ok(reports) = hap_model::parse_read_response(&body) {
-                    for ((aid, iid), value) in reports {
-                        // EVENT bodies omit `format`, so the decoder above infers
-                        // the type (e.g. a bool `0` becomes Uint). Re-coerce to the
-                        // characteristic's declared format if we learned it from
-                        // a prior `/accessories` fetch.
-                        let fmt = fmt_map
-                            .lock()
-                            .ok()
-                            .and_then(|m| m.get(&(aid, iid)).copied());
-                        let value = match fmt {
-                            Some(f) => coerce_to_format(value, f),
-                            None => value,
-                        };
-                        // Send error only means there are no live receivers yet.
-                        let _ = tx.send(CharacteristicEvent { aid, iid, value });
+            let mut last_cn: Option<u32> = None;
+            loop {
+                let sess = pump.current();
+                pump.set_state(ConnectionState::Connected);
+                let mut rx = sess.take_events();
+                // Drain the current session's EVENT/1.0 channel. An EVENT body
+                // has the same shape as a /characteristics read response (a list
+                // of {aid, iid, value}); reuse that decoder.
+                while let Some(body) = rx.recv().await {
+                    if let Ok(reports) = hap_model::parse_read_response(&body) {
+                        for ((aid, iid), value) in reports {
+                            // EVENT bodies omit `format`, so the decoder infers
+                            // the type (a bool `0` becomes Uint). Re-coerce to
+                            // the characteristic's declared format if we learned
+                            // it from a prior `/accessories` fetch.
+                            let f = fmt.lock().ok().and_then(|m| m.get(&(aid, iid)).copied());
+                            let value = match f {
+                                Some(x) => coerce_to_format(value, x),
+                                None => value,
+                            };
+                            // Send error only means there are no live receivers.
+                            let _ = tx.send(CharacteristicEvent { aid, iid, value });
+                        }
                     }
                 }
+
+                // Session died. Reconnect with indefinite backoff.
+                pump.set_state(ConnectionState::Disconnected);
+                let mut attempt: u32 = 0;
+                let rc = loop {
+                    attempt += 1;
+                    pump.set_state(ConnectionState::Reconnecting { attempt });
+                    match pump.reconnect().await {
+                        Ok(rc) => break rc,
+                        Err(_) => tokio::time::sleep(backoff(attempt)).await,
+                    }
+                };
+
+                // c# refresh: invalidate the cached DB if the config number
+                // changed across the reconnect.
+                if let Some(new_cn) = rc.config_number {
+                    if last_cn.is_some() && last_cn != Some(new_cn) {
+                        refresh.store(true, Ordering::Relaxed);
+                    }
+                    last_cn = Some(new_cn);
+                }
+
+                // Re-subscribe on the fresh session before publishing it, so a
+                // foreground waiter that wakes on the new session already has its
+                // subscriptions in place.
+                let ids: Vec<(u64, u64)> = subs
+                    .lock()
+                    .map(|s| s.iter().copied().collect())
+                    .unwrap_or_default();
+                for (aid, iid) in ids {
+                    let b = hap_model::build_subscribe_request(&[(aid, iid)], true);
+                    let _ = rc
+                        .session
+                        .request("PUT", "/characteristics", "application/hap+json", &b)
+                        .await;
+                }
+
+                pump.publish(rc.session.clone());
+                // Loop: drain the freshly published session's events.
             }
-            // Channel closed: the session is gone. The task ends and the
-            // broadcast sender it held drops.
         });
+
         Self {
-            session,
+            conn,
             accessories: None,
             events_tx,
             formats,
+            subscribed,
+            pid: Arc::new(AtomicU64::new(1)),
+            needs_refresh,
         }
+    }
+
+    /// Single point where every request leaves the handle. Routes through the
+    /// reconnecting session, which transparently waits out a reconnect if the
+    /// current session is dead.
+    async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<SessionResponse> {
+        self.conn.request(method, path, content_type, body).await
     }
 
     /// Fetch (and cache) the accessory attribute database.
@@ -177,9 +270,13 @@ impl AccessoryHandle {
     /// accessory returns a non-success status, or [`HapError::Model`] if the
     /// JSON cannot be parsed.
     pub async fn accessories(&mut self) -> Result<&[Accessory]> {
+        // A reconnect that observed a config-number (`c#`) change requests a
+        // refresh; drop the cached tree so it is re-fetched below.
+        if self.needs_refresh.swap(false, Ordering::Relaxed) {
+            self.accessories = None;
+        }
         if self.accessories.is_none() {
             let resp = self
-                .session
                 .request("GET", "/accessories", "application/hap+json", b"")
                 .await?;
             if !is_success(resp.status) {
@@ -238,6 +335,59 @@ impl AccessoryHandle {
         Err(HapError::CharacteristicNotFound { aid: 0, iid: 0 })
     }
 
+    /// Read several characteristics in one request.
+    ///
+    /// Values are typed from the cached accessory database (the read itself does
+    /// not request `meta=1`), so call [`accessories`](Self::accessories) first to
+    /// get fully-typed values; without it, numeric/bool values fall back to JSON
+    /// inference (e.g. an `int` may surface as `Uint`).
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
+    /// if any entry fails to decode (including a non-zero per-characteristic status).
+    pub async fn read_many(&mut self, ids: &[(u64, u64)]) -> Result<Vec<((u64, u64), CharValue)>> {
+        let path = hap_model::build_read_request(ids);
+        let resp = self
+            .request("GET", &path, "application/hap+json", b"")
+            .await?;
+        if !is_success(resp.status) {
+            return Err(HapError::Http {
+                status: resp.status,
+            });
+        }
+        let parsed = hap_model::parse_read_response(&resp.body)?;
+        // The read omits `meta=1`, so values are inferred from JSON. Re-type each
+        // to its declared format from the cached accessory DB (same coercion the
+        // event pump applies).
+        Ok(parsed
+            .into_iter()
+            .map(|((aid, iid), value)| {
+                let fmt = self
+                    .formats
+                    .lock()
+                    .ok()
+                    .and_then(|m| m.get(&(aid, iid)).copied());
+                let value = match fmt {
+                    Some(f) => coerce_to_format(value, f),
+                    None => value,
+                };
+                ((aid, iid), value)
+            })
+            .collect())
+    }
+
+    /// Write several characteristics in one request.
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
+    /// on a per-characteristic failure (207 Multi-Status body).
+    pub async fn write_many(&mut self, writes: &[((u64, u64), CharValue)]) -> Result<()> {
+        let body = hap_model::build_write_request(writes);
+        self.put_characteristics(&body).await
+    }
+
     /// Read one characteristic's current value.
     ///
     /// # Errors
@@ -246,17 +396,7 @@ impl AccessoryHandle {
     /// non-success status, or [`HapError::Model`] if the response cannot be
     /// decoded (including a non-zero per-characteristic HAP status).
     pub async fn read(&mut self, aid: u64, iid: u64) -> Result<CharValue> {
-        let path = hap_model::build_read_request(&[(aid, iid)]);
-        let resp = self
-            .session
-            .request("GET", &path, "application/hap+json", b"")
-            .await?;
-        if !is_success(resp.status) {
-            return Err(HapError::Http {
-                status: resp.status,
-            });
-        }
-        let mut values = hap_model::parse_read_response(&resp.body)?;
+        let mut values = self.read_many(&[(aid, iid)]).await?;
         if values.is_empty() {
             return Err(HapError::CharacteristicNotFound { aid, iid });
         }
@@ -271,8 +411,7 @@ impl AccessoryHandle {
     /// non-success status, or [`HapError::Model`] if the accessory reports a
     /// non-zero per-characteristic status (HTTP 207 Multi-Status body).
     pub async fn write(&mut self, aid: u64, iid: u64, value: CharValue) -> Result<()> {
-        let body = hap_model::build_write_request(&[((aid, iid), value)]);
-        self.put_characteristics(&body).await
+        self.write_many(&[((aid, iid), value)]).await
     }
 
     /// Subscribe to change events for one characteristic. Events then arrive on
@@ -285,7 +424,20 @@ impl AccessoryHandle {
     /// failure.
     pub async fn subscribe(&mut self, aid: u64, iid: u64) -> Result<()> {
         let body = hap_model::build_subscribe_request(&[(aid, iid)], true);
-        self.put_characteristics(&body).await
+        self.put_characteristics(&body).await?;
+        // Record the id so the supervisor can re-issue it after a reconnect.
+        if let Ok(mut s) = self.subscribed.lock() {
+            s.insert((aid, iid));
+        }
+        Ok(())
+    }
+
+    /// A stream of [`ConnectionState`] transitions, for health reporting.
+    ///
+    /// Each call returns an independent receiver; transitions that arrive while
+    /// a particular stream is lagging are dropped for that stream.
+    pub fn connection_state(&self) -> impl Stream<Item = ConnectionState> {
+        crate::event::into_broadcast_stream(self.conn.subscribe_state())
     }
 
     /// An async stream of [`CharacteristicEvent`]s for every characteristic this
@@ -298,12 +450,79 @@ impl AccessoryHandle {
         into_stream(self.events_tx.subscribe())
     }
 
+    /// Timed write: reserve with `PUT /prepare {ttl,pid}` then write carrying that
+    /// pid, completing within `ttl`. For security-sensitive accessories (locks).
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`]/[`HapError::Http`] on either request, [`HapError::Model`]
+    /// on a per-characteristic failure.
+    pub async fn write_timed(
+        &mut self,
+        aid: u64,
+        iid: u64,
+        value: CharValue,
+        ttl: std::time::Duration,
+    ) -> Result<()> {
+        let pid = self.pid.fetch_add(1, Ordering::Relaxed);
+        let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
+        let prepare = hap_model::build_prepare_request(ttl_ms, pid);
+        let resp = self
+            .request("PUT", "/prepare", "application/hap+json", &prepare)
+            .await?;
+        if !is_success(resp.status) {
+            return Err(HapError::Http {
+                status: resp.status,
+            });
+        }
+        let body = hap_model::build_timed_write_request(&[((aid, iid), value)], pid);
+        self.put_characteristics(&body).await
+    }
+
+    /// Write requesting the post-write value back (the HAP `r` flag).
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
+    /// if the response cannot be decoded, [`HapError::CharacteristicNotFound`] if the
+    /// accessory returns no value.
+    pub async fn write_with_response(
+        &mut self,
+        aid: u64,
+        iid: u64,
+        value: CharValue,
+    ) -> Result<CharValue> {
+        let body = hap_model::build_write_request_with_response(&[((aid, iid), value)]);
+        let resp = self
+            .request("PUT", "/characteristics", "application/hap+json", &body)
+            .await?;
+        if !is_success(resp.status) {
+            return Err(HapError::Http {
+                status: resp.status,
+            });
+        }
+        let mut v = hap_model::parse_read_response(&resp.body)?;
+        if v.is_empty() {
+            return Err(HapError::CharacteristicNotFound { aid, iid });
+        }
+        let value = v.remove(0).1;
+        // Re-type to the declared format from the cached DB, like `read_many`.
+        let fmt = self
+            .formats
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&(aid, iid)).copied());
+        Ok(match fmt {
+            Some(f) => coerce_to_format(value, f),
+            None => value,
+        })
+    }
+
     /// Shared `PUT /characteristics` path for `write` and `subscribe`: send the
     /// body, reject non-success HTTP, and surface any per-characteristic failure
     /// the accessory lists in a 207 Multi-Status body.
     async fn put_characteristics(&self, body: &[u8]) -> Result<()> {
         let resp = self
-            .session
             .request("PUT", "/characteristics", "application/hap+json", body)
             .await?;
         if !is_success(resp.status) {

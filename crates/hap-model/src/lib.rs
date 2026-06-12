@@ -30,6 +30,7 @@ pub mod error;
 pub mod format;
 pub mod perms;
 pub mod tree;
+pub mod unit;
 pub mod uuid;
 
 mod accessories;
@@ -38,7 +39,8 @@ mod generated;
 
 pub use accessories::parse_accessories;
 pub use characteristics::{
-    build_read_request, build_subscribe_request, build_write_request, parse_read_response, CharRead,
+    build_prepare_request, build_read_request, build_subscribe_request, build_timed_write_request,
+    build_write_request, build_write_request_with_response, parse_read_response, CharRead,
 };
 pub use database::{AccessoryDatabase, Request, RequestExecutor};
 pub use error::{ModelError, Result};
@@ -46,4 +48,5 @@ pub use format::{CharFormat, CharValue};
 pub use generated::{CharacteristicType, ServiceType};
 pub use perms::Perms;
 pub use tree::{Accessory, Characteristic, Service};
+pub use unit::Unit;
 pub use uuid::Uuid;

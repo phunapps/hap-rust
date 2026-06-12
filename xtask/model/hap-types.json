@@ -1,41 +1,1456 @@
 {
+  "_source": "aiohomekit 3.2.20 (https://github.com/Jc2k/aiohomekit)",
   "services": [
-    { "name": "AccessoryInformation", "short": "3E" },
-    { "name": "ProtocolInformation",  "short": "A2" },
-    { "name": "LightBulb",            "short": "43" },
-    { "name": "Switch",               "short": "49" },
-    { "name": "Outlet",               "short": "47" },
-    { "name": "Fan",                  "short": "40" },
-    { "name": "Thermostat",           "short": "4A" },
-    { "name": "TemperatureSensor",    "short": "8A" },
-    { "name": "HumiditySensor",       "short": "82" },
-    { "name": "MotionSensor",         "short": "85" },
-    { "name": "ContactSensor",        "short": "80" },
-    { "name": "GarageDoorOpener",     "short": "41" },
-    { "name": "LockMechanism",        "short": "45" },
-    { "name": "Battery",              "short": "96" }
+    {
+      "name": "AccessoryInformation",
+      "short": "3E"
+    },
+    {
+      "name": "Fan",
+      "short": "40"
+    },
+    {
+      "name": "GarageDoorOpener",
+      "short": "41"
+    },
+    {
+      "name": "LightBulb",
+      "short": "43"
+    },
+    {
+      "name": "LockManagement",
+      "short": "44"
+    },
+    {
+      "name": "LockMechanism",
+      "short": "45"
+    },
+    {
+      "name": "Outlet",
+      "short": "47"
+    },
+    {
+      "name": "Switch",
+      "short": "49"
+    },
+    {
+      "name": "Thermostat",
+      "short": "4A"
+    },
+    {
+      "name": "SecuritySystem",
+      "short": "7E"
+    },
+    {
+      "name": "CarbonMonoxideSensor",
+      "short": "7F"
+    },
+    {
+      "name": "ContactSensor",
+      "short": "80"
+    },
+    {
+      "name": "Door",
+      "short": "81"
+    },
+    {
+      "name": "HumiditySensor",
+      "short": "82"
+    },
+    {
+      "name": "LeakSensor",
+      "short": "83"
+    },
+    {
+      "name": "LightSensor",
+      "short": "84"
+    },
+    {
+      "name": "MotionSensor",
+      "short": "85"
+    },
+    {
+      "name": "OccupancySensor",
+      "short": "86"
+    },
+    {
+      "name": "SmokeSensor",
+      "short": "87"
+    },
+    {
+      "name": "StatelessProgrammableSwitch",
+      "short": "89"
+    },
+    {
+      "name": "TemperatureSensor",
+      "short": "8A"
+    },
+    {
+      "name": "Window",
+      "short": "8B"
+    },
+    {
+      "name": "WindowCovering",
+      "short": "8C"
+    },
+    {
+      "name": "AirQualitySensor",
+      "short": "8D"
+    },
+    {
+      "name": "Battery",
+      "short": "96"
+    },
+    {
+      "name": "CarbonDioxideSensor",
+      "short": "97"
+    },
+    {
+      "name": "ProtocolInformation",
+      "short": "A2"
+    },
+    {
+      "name": "FanV2",
+      "short": "B7"
+    },
+    {
+      "name": "Slat",
+      "short": "B9"
+    },
+    {
+      "name": "FilterMaintenance",
+      "short": "BA"
+    },
+    {
+      "name": "AirPurifier",
+      "short": "BB"
+    },
+    {
+      "name": "HeaterCooler",
+      "short": "BC"
+    },
+    {
+      "name": "HumidifierDehumidifier",
+      "short": "BD"
+    },
+    {
+      "name": "ServiceLabel",
+      "short": "CC"
+    },
+    {
+      "name": "IrrigationSystem",
+      "short": "CF"
+    },
+    {
+      "name": "Valve",
+      "short": "D0"
+    },
+    {
+      "name": "Faucet",
+      "short": "D7"
+    },
+    {
+      "name": "CameraRtpStreamManagement",
+      "short": "110"
+    },
+    {
+      "name": "Microphone",
+      "short": "112"
+    },
+    {
+      "name": "Speaker",
+      "short": "113"
+    },
+    {
+      "name": "Doorbell",
+      "short": "121"
+    }
   ],
   "characteristics": [
-    { "name": "Identify",            "short": "14", "format": "bool" },
-    { "name": "Manufacturer",        "short": "20", "format": "string" },
-    { "name": "Model",               "short": "21", "format": "string" },
-    { "name": "Name",                "short": "23", "format": "string" },
-    { "name": "SerialNumber",        "short": "30", "format": "string" },
-    { "name": "FirmwareRevision",    "short": "52", "format": "string" },
-    { "name": "On",                  "short": "25", "format": "bool" },
-    { "name": "Brightness",          "short": "8",  "format": "int" },
-    { "name": "Hue",                 "short": "13", "format": "float" },
-    { "name": "Saturation",          "short": "2F", "format": "float" },
-    { "name": "ColorTemperature",    "short": "CE", "format": "uint32" },
-    { "name": "CurrentTemperature",  "short": "11", "format": "float" },
-    { "name": "TargetTemperature",   "short": "35", "format": "float" },
-    { "name": "CurrentRelativeHumidity", "short": "10", "format": "float" },
-    { "name": "MotionDetected",      "short": "22", "format": "bool" },
-    { "name": "ContactSensorState",  "short": "6A", "format": "uint8" },
-    { "name": "LockCurrentState",    "short": "1D", "format": "uint8" },
-    { "name": "LockTargetState",     "short": "1E", "format": "uint8" },
-    { "name": "BatteryLevel",        "short": "68", "format": "uint8" },
-    { "name": "StatusLowBattery",    "short": "79", "format": "uint8" },
-    { "name": "OutletInUse",         "short": "26", "format": "bool" }
+    {
+      "name": "AdministratorOnlyAccess",
+      "short": "1",
+      "format": "bool"
+    },
+    {
+      "name": "AudioFeedback",
+      "short": "5",
+      "format": "bool"
+    },
+    {
+      "name": "Brightness",
+      "short": "8",
+      "format": "int",
+      "unit": "percentage"
+    },
+    {
+      "name": "CoolingThresholdTemperature",
+      "short": "D",
+      "format": "float",
+      "unit": "celsius"
+    },
+    {
+      "name": "CurrentDoorState",
+      "short": "E",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Open"
+        ],
+        [
+          1,
+          "Closed"
+        ],
+        [
+          2,
+          "Opening"
+        ],
+        [
+          3,
+          "Closing"
+        ],
+        [
+          4,
+          "Stopped"
+        ]
+      ]
+    },
+    {
+      "name": "CurrentHeatingCoolingState",
+      "short": "F",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Off"
+        ],
+        [
+          1,
+          "Heat"
+        ],
+        [
+          2,
+          "Cool"
+        ]
+      ]
+    },
+    {
+      "name": "CurrentRelativeHumidity",
+      "short": "10",
+      "format": "float",
+      "unit": "percentage"
+    },
+    {
+      "name": "CurrentTemperature",
+      "short": "11",
+      "format": "float",
+      "unit": "celsius"
+    },
+    {
+      "name": "HeatingThresholdTemperature",
+      "short": "12",
+      "format": "float",
+      "unit": "celsius"
+    },
+    {
+      "name": "Hue",
+      "short": "13",
+      "format": "float",
+      "unit": "arcdegrees"
+    },
+    {
+      "name": "Identify",
+      "short": "14",
+      "format": "bool"
+    },
+    {
+      "name": "LockControlPoint",
+      "short": "19",
+      "format": "tlv8"
+    },
+    {
+      "name": "LockManagementAutoSecurityTimeout",
+      "short": "1A",
+      "format": "uint32",
+      "unit": "seconds"
+    },
+    {
+      "name": "LockLastKnownAction",
+      "short": "1C",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "LastDeadbolted"
+        ],
+        [
+          1,
+          "LastUnlocked"
+        ],
+        [
+          2,
+          "LastLockedRemotely"
+        ],
+        [
+          3,
+          "LastUnlockedRemotely"
+        ],
+        [
+          4,
+          "LastLockedManual"
+        ],
+        [
+          5,
+          "LastUnlockedManual"
+        ],
+        [
+          6,
+          "AutoLock"
+        ],
+        [
+          7,
+          "AutoUnlock"
+        ],
+        [
+          8,
+          "Locked"
+        ],
+        [
+          9,
+          "Unlocked"
+        ]
+      ]
+    },
+    {
+      "name": "LockCurrentState",
+      "short": "1D",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Unsecured"
+        ],
+        [
+          1,
+          "Secured"
+        ],
+        [
+          2,
+          "Jammed"
+        ],
+        [
+          3,
+          "Unknown"
+        ]
+      ]
+    },
+    {
+      "name": "LockTargetState",
+      "short": "1E",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Unsecured"
+        ],
+        [
+          1,
+          "Secured"
+        ]
+      ]
+    },
+    {
+      "name": "Logs",
+      "short": "1F",
+      "format": "tlv8"
+    },
+    {
+      "name": "Manufacturer",
+      "short": "20",
+      "format": "string"
+    },
+    {
+      "name": "Model",
+      "short": "21",
+      "format": "string"
+    },
+    {
+      "name": "MotionDetected",
+      "short": "22",
+      "format": "bool"
+    },
+    {
+      "name": "Name",
+      "short": "23",
+      "format": "string"
+    },
+    {
+      "name": "ObstructionDetected",
+      "short": "24",
+      "format": "bool"
+    },
+    {
+      "name": "On",
+      "short": "25",
+      "format": "bool"
+    },
+    {
+      "name": "OutletInUse",
+      "short": "26",
+      "format": "bool"
+    },
+    {
+      "name": "RotationDirection",
+      "short": "28",
+      "format": "int",
+      "valid_values": [
+        [
+          0,
+          "Clockwise"
+        ],
+        [
+          1,
+          "CounterClockwise"
+        ]
+      ]
+    },
+    {
+      "name": "RotationSpeed",
+      "short": "29",
+      "format": "float",
+      "unit": "percentage"
+    },
+    {
+      "name": "Saturation",
+      "short": "2F",
+      "format": "float",
+      "unit": "percentage"
+    },
+    {
+      "name": "SerialNumber",
+      "short": "30",
+      "format": "string"
+    },
+    {
+      "name": "TargetDoorState",
+      "short": "32",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Open"
+        ],
+        [
+          1,
+          "Closed"
+        ]
+      ]
+    },
+    {
+      "name": "TargetHeatingCoolingState",
+      "short": "33",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Off"
+        ],
+        [
+          1,
+          "Heat"
+        ],
+        [
+          2,
+          "Cool"
+        ],
+        [
+          3,
+          "Auto"
+        ]
+      ]
+    },
+    {
+      "name": "TargetRelativeHumidity",
+      "short": "34",
+      "format": "float",
+      "unit": "percentage"
+    },
+    {
+      "name": "TargetTemperature",
+      "short": "35",
+      "format": "float",
+      "unit": "celsius"
+    },
+    {
+      "name": "TemperatureDisplayUnits",
+      "short": "36",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Celsius"
+        ],
+        [
+          1,
+          "Fahrenheit"
+        ]
+      ]
+    },
+    {
+      "name": "Version",
+      "short": "37",
+      "format": "string"
+    },
+    {
+      "name": "PairSetup",
+      "short": "4C",
+      "format": "tlv8"
+    },
+    {
+      "name": "PairVerify",
+      "short": "4E",
+      "format": "tlv8"
+    },
+    {
+      "name": "PairingFeatures",
+      "short": "4F",
+      "format": "uint8"
+    },
+    {
+      "name": "PairingPairings",
+      "short": "50",
+      "format": "tlv8"
+    },
+    {
+      "name": "FirmwareRevision",
+      "short": "52",
+      "format": "string"
+    },
+    {
+      "name": "HardwareRevision",
+      "short": "53",
+      "format": "string"
+    },
+    {
+      "name": "AirParticulateDensity",
+      "short": "64",
+      "format": "float"
+    },
+    {
+      "name": "AirParticulateSize",
+      "short": "65",
+      "format": "uint8"
+    },
+    {
+      "name": "SecuritySystemCurrentState",
+      "short": "66",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "StayArm"
+        ],
+        [
+          1,
+          "AwayArm"
+        ],
+        [
+          2,
+          "NightArm"
+        ],
+        [
+          3,
+          "Disarmed"
+        ],
+        [
+          4,
+          "AlarmTriggered"
+        ]
+      ]
+    },
+    {
+      "name": "SecuritySystemTargetState",
+      "short": "67",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "StayArm"
+        ],
+        [
+          1,
+          "AwayArm"
+        ],
+        [
+          2,
+          "NightArm"
+        ],
+        [
+          3,
+          "Disarmed"
+        ]
+      ]
+    },
+    {
+      "name": "BatteryLevel",
+      "short": "68",
+      "format": "uint8",
+      "unit": "percentage"
+    },
+    {
+      "name": "CarbonMonoxideDetected",
+      "short": "69",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "NotDetected"
+        ],
+        [
+          1,
+          "Detected"
+        ]
+      ]
+    },
+    {
+      "name": "ContactSensorState",
+      "short": "6A",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "ContactDetected"
+        ],
+        [
+          1,
+          "ContactNotDetected"
+        ]
+      ]
+    },
+    {
+      "name": "CurrentAmbientLightLevel",
+      "short": "6B",
+      "format": "float",
+      "unit": "lux"
+    },
+    {
+      "name": "CurrentHorizontalTiltAngle",
+      "short": "6C",
+      "format": "int",
+      "unit": "arcdegrees"
+    },
+    {
+      "name": "CurrentPosition",
+      "short": "6D",
+      "format": "uint8",
+      "unit": "percentage"
+    },
+    {
+      "name": "CurrentVerticalTiltAngle",
+      "short": "6E",
+      "format": "int",
+      "unit": "arcdegrees"
+    },
+    {
+      "name": "HoldPosition",
+      "short": "6F",
+      "format": "bool"
+    },
+    {
+      "name": "LeakDetected",
+      "short": "70",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "LeakNotDetected"
+        ],
+        [
+          1,
+          "LeakDetected"
+        ]
+      ]
+    },
+    {
+      "name": "OccupancyDetected",
+      "short": "71",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "OccupancyNotDetected"
+        ],
+        [
+          1,
+          "OccupancyDetected"
+        ]
+      ]
+    },
+    {
+      "name": "PositionState",
+      "short": "72",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Decreasing"
+        ],
+        [
+          1,
+          "Increasing"
+        ],
+        [
+          2,
+          "Stopped"
+        ]
+      ]
+    },
+    {
+      "name": "ProgrammableSwitchEvent",
+      "short": "73",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "SinglePress"
+        ],
+        [
+          1,
+          "DoublePress"
+        ],
+        [
+          2,
+          "LongPress"
+        ]
+      ]
+    },
+    {
+      "name": "StatusActive",
+      "short": "75",
+      "format": "bool"
+    },
+    {
+      "name": "SmokeDetected",
+      "short": "76",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "SmokeNotDetected"
+        ],
+        [
+          1,
+          "SmokeDetected"
+        ]
+      ]
+    },
+    {
+      "name": "StatusFault",
+      "short": "77",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "NoFault"
+        ],
+        [
+          1,
+          "GeneralFault"
+        ]
+      ]
+    },
+    {
+      "name": "StatusJammed",
+      "short": "78",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "NotJammed"
+        ],
+        [
+          1,
+          "Jammed"
+        ]
+      ]
+    },
+    {
+      "name": "StatusLowBattery",
+      "short": "79",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Normal"
+        ],
+        [
+          1,
+          "Low"
+        ]
+      ]
+    },
+    {
+      "name": "StatusTampered",
+      "short": "7A",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "NotTampered"
+        ],
+        [
+          1,
+          "Tampered"
+        ]
+      ]
+    },
+    {
+      "name": "TargetHorizontalTiltAngle",
+      "short": "7B",
+      "format": "int",
+      "unit": "arcdegrees"
+    },
+    {
+      "name": "TargetPosition",
+      "short": "7C",
+      "format": "uint8",
+      "unit": "percentage"
+    },
+    {
+      "name": "TargetVerticalTiltAngle",
+      "short": "7D",
+      "format": "int",
+      "unit": "arcdegrees"
+    },
+    {
+      "name": "SecuritySystemAlarmType",
+      "short": "8E",
+      "format": "uint8"
+    },
+    {
+      "name": "ChargingState",
+      "short": "8F",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "NotCharging"
+        ],
+        [
+          1,
+          "Charging"
+        ],
+        [
+          2,
+          "NotChargeable"
+        ]
+      ]
+    },
+    {
+      "name": "CarbonMonoxideLevel",
+      "short": "90",
+      "format": "float"
+    },
+    {
+      "name": "CarbonMonoxidePeakLevel",
+      "short": "91",
+      "format": "float"
+    },
+    {
+      "name": "CarbonDioxideDetected",
+      "short": "92",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "CarbonDioxideNotDetected"
+        ],
+        [
+          1,
+          "CarbonDioxideDetected"
+        ]
+      ]
+    },
+    {
+      "name": "CarbonDioxideLevel",
+      "short": "93",
+      "format": "float"
+    },
+    {
+      "name": "CarbonDioxidePeakLevel",
+      "short": "94",
+      "format": "float"
+    },
+    {
+      "name": "AirQuality",
+      "short": "95",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Unknown"
+        ],
+        [
+          1,
+          "Excellent"
+        ],
+        [
+          2,
+          "Good"
+        ],
+        [
+          3,
+          "Fair"
+        ],
+        [
+          4,
+          "Inferior"
+        ],
+        [
+          5,
+          "Poor"
+        ]
+      ]
+    },
+    {
+      "name": "AccessoryFlags",
+      "short": "A6",
+      "format": "uint32"
+    },
+    {
+      "name": "LockPhysicalControls",
+      "short": "A7",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "ControlLockDisabled"
+        ],
+        [
+          1,
+          "ControlLockEnabled"
+        ]
+      ]
+    },
+    {
+      "name": "TargetAirPurifierState",
+      "short": "A8",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Manual"
+        ],
+        [
+          1,
+          "Automatic"
+        ]
+      ]
+    },
+    {
+      "name": "CurrentAirPurifierState",
+      "short": "A9",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Inactive"
+        ],
+        [
+          1,
+          "Idle"
+        ],
+        [
+          2,
+          "PurgingAir"
+        ]
+      ]
+    },
+    {
+      "name": "CurrentSlatState",
+      "short": "AA",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Fixed"
+        ],
+        [
+          1,
+          "Jammed"
+        ],
+        [
+          2,
+          "Swinging"
+        ]
+      ]
+    },
+    {
+      "name": "FilterLifeLevel",
+      "short": "AB",
+      "format": "float"
+    },
+    {
+      "name": "FilterChangeIndication",
+      "short": "AC",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "FilterOk"
+        ],
+        [
+          1,
+          "ChangeFilter"
+        ]
+      ]
+    },
+    {
+      "name": "ResetFilterIndication",
+      "short": "AD",
+      "format": "uint8"
+    },
+    {
+      "name": "TargetAirQuality",
+      "short": "AE",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Excellent"
+        ],
+        [
+          1,
+          "Good"
+        ],
+        [
+          2,
+          "Fair"
+        ]
+      ]
+    },
+    {
+      "name": "CurrentFanState",
+      "short": "AF",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Inactive"
+        ],
+        [
+          1,
+          "Idle"
+        ],
+        [
+          2,
+          "BlowingAir"
+        ]
+      ]
+    },
+    {
+      "name": "Active",
+      "short": "B0",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Inactive"
+        ],
+        [
+          1,
+          "Active"
+        ]
+      ]
+    },
+    {
+      "name": "CurrentHeaterCoolerState",
+      "short": "B1",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Inactive"
+        ],
+        [
+          1,
+          "Idle"
+        ],
+        [
+          2,
+          "Heating"
+        ],
+        [
+          3,
+          "Cooling"
+        ]
+      ]
+    },
+    {
+      "name": "TargetHeaterCoolerState",
+      "short": "B2",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Automatic"
+        ],
+        [
+          1,
+          "Heat"
+        ],
+        [
+          2,
+          "Cool"
+        ]
+      ]
+    },
+    {
+      "name": "CurrentHumidifierDehumidifierState",
+      "short": "B3",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Inactive"
+        ],
+        [
+          1,
+          "Idle"
+        ],
+        [
+          2,
+          "Humidifying"
+        ],
+        [
+          3,
+          "Dehumidifying"
+        ]
+      ]
+    },
+    {
+      "name": "TargetHumidifierDehumidifierState",
+      "short": "B4",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Humidifier"
+        ],
+        [
+          1,
+          "Dehumidifier"
+        ],
+        [
+          2,
+          "HumidifierOrDehumidifier"
+        ]
+      ]
+    },
+    {
+      "name": "WaterLevel",
+      "short": "B5",
+      "format": "float",
+      "unit": "percentage"
+    },
+    {
+      "name": "SwingMode",
+      "short": "B6",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Disabled"
+        ],
+        [
+          1,
+          "Enabled"
+        ]
+      ]
+    },
+    {
+      "name": "TargetSlatState",
+      "short": "BE",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Manual"
+        ],
+        [
+          1,
+          "Auto"
+        ]
+      ]
+    },
+    {
+      "name": "TargetFanState",
+      "short": "BF",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Manual"
+        ],
+        [
+          1,
+          "Auto"
+        ]
+      ]
+    },
+    {
+      "name": "SlatType",
+      "short": "C0",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Horizontal"
+        ],
+        [
+          1,
+          "Vertical"
+        ]
+      ]
+    },
+    {
+      "name": "CurrentTiltAngle",
+      "short": "C1",
+      "format": "int",
+      "unit": "arcdegrees"
+    },
+    {
+      "name": "TargetTiltAngle",
+      "short": "C2",
+      "format": "int",
+      "unit": "arcdegrees"
+    },
+    {
+      "name": "OzoneDensity",
+      "short": "C3",
+      "format": "float"
+    },
+    {
+      "name": "NitrogenDioxideDensity",
+      "short": "C4",
+      "format": "float"
+    },
+    {
+      "name": "SulphurDioxideDensity",
+      "short": "C5",
+      "format": "float"
+    },
+    {
+      "name": "Pm25Density",
+      "short": "C6",
+      "format": "float"
+    },
+    {
+      "name": "Pm10Density",
+      "short": "C7",
+      "format": "float"
+    },
+    {
+      "name": "VocDensity",
+      "short": "C8",
+      "format": "float"
+    },
+    {
+      "name": "RelativeHumidityDehumidifierThreshold",
+      "short": "C9",
+      "format": "float",
+      "unit": "percentage"
+    },
+    {
+      "name": "RelativeHumidityHumidifierThreshold",
+      "short": "CA",
+      "format": "float",
+      "unit": "percentage"
+    },
+    {
+      "name": "ServiceLabelIndex",
+      "short": "CB",
+      "format": "uint8"
+    },
+    {
+      "name": "ServiceLabelNamespace",
+      "short": "CD",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "Dots"
+        ],
+        [
+          1,
+          "ArabicNumerals"
+        ]
+      ]
+    },
+    {
+      "name": "ColorTemperature",
+      "short": "CE",
+      "format": "uint32"
+    },
+    {
+      "name": "ProgramMode",
+      "short": "D1",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "NoProgramScheduled"
+        ],
+        [
+          1,
+          "ProgramScheduled"
+        ],
+        [
+          2,
+          "ProgramScheduledManualMode"
+        ]
+      ]
+    },
+    {
+      "name": "InUse",
+      "short": "D2",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "NotInUse"
+        ],
+        [
+          1,
+          "InUse"
+        ]
+      ]
+    },
+    {
+      "name": "SetDuration",
+      "short": "D3",
+      "format": "uint32"
+    },
+    {
+      "name": "RemainingDuration",
+      "short": "D4",
+      "format": "uint32"
+    },
+    {
+      "name": "ValveType",
+      "short": "D5",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "GenericValve"
+        ],
+        [
+          1,
+          "Irrigation"
+        ],
+        [
+          2,
+          "ShowerHead"
+        ],
+        [
+          3,
+          "WaterFaucet"
+        ]
+      ]
+    },
+    {
+      "name": "IsConfigured",
+      "short": "D6",
+      "format": "uint8",
+      "valid_values": [
+        [
+          0,
+          "NotConfigured"
+        ],
+        [
+          1,
+          "Configured"
+        ]
+      ]
+    },
+    {
+      "name": "SupportedVideoStreamConfiguration",
+      "short": "114",
+      "format": "tlv8"
+    },
+    {
+      "name": "SupportedAudioStreamConfiguration",
+      "short": "115",
+      "format": "tlv8"
+    },
+    {
+      "name": "SupportedRtpConfiguration",
+      "short": "116",
+      "format": "tlv8"
+    },
+    {
+      "name": "SelectedRtpStreamConfiguration",
+      "short": "117",
+      "format": "tlv8"
+    },
+    {
+      "name": "SetupEndpoints",
+      "short": "118",
+      "format": "tlv8"
+    },
+    {
+      "name": "Volume",
+      "short": "119",
+      "format": "uint8",
+      "unit": "percentage"
+    },
+    {
+      "name": "Mute",
+      "short": "11A",
+      "format": "bool"
+    },
+    {
+      "name": "NightVision",
+      "short": "11B",
+      "format": "bool"
+    },
+    {
+      "name": "OpticalZoom",
+      "short": "11C",
+      "format": "float"
+    },
+    {
+      "name": "DigitalZoom",
+      "short": "11D",
+      "format": "float"
+    },
+    {
+      "name": "ImageRotation",
+      "short": "11E",
+      "format": "float",
+      "unit": "arcdegrees"
+    },
+    {
+      "name": "ImageMirroring",
+      "short": "11F",
+      "format": "bool"
+    },
+    {
+      "name": "StreamingStatus",
+      "short": "120",
+      "format": "tlv8"
+    },
+    {
+      "name": "ThreadNodeCapabilities",
+      "short": "702",
+      "format": "uint16"
+    },
+    {
+      "name": "ThreadStatus",
+      "short": "703",
+      "format": "uint16"
+    }
   ]
 }
