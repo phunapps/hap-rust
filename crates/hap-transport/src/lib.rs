@@ -38,8 +38,7 @@ pub use http::HapResponse;
 #[doc(hidden)]
 pub use http::http_test_support;
 
-// TODO(M4 Task 3): re-enable when `HapConnection` lands
-// pub use connection::HapConnection;
+pub use connection::HapConnection;
 
 pub use hap_crypto::SessionKeys;
 

@@ -59,8 +59,12 @@ struct WriterState {
 impl SecureSession {
     /// Build a session from an already-Pair-Verified TCP stream and the derived
     /// session keys. Spawns the reader task.
-    #[allow(dead_code)] // called by HapConnection::upgrade (M4 Task 3)
-    pub(crate) fn new(stream: TcpStream, keys: &SessionKeys) -> Self {
+    ///
+    /// Takes [`SessionKeys`] by value on purpose: the session takes ownership of
+    /// the key material for its lifetime, so the caller cannot keep a live copy
+    /// of the session keys around after handing them off.
+    #[allow(clippy::needless_pass_by_value)] // ownership transfer is intentional, not an oversight
+    pub(crate) fn new(stream: TcpStream, keys: SessionKeys) -> Self {
         let (read_half, write_half) = stream.into_split();
         let (resp_tx, resp_rx) = mpsc::channel::<Result<HapResponse>>(8);
         let (event_tx, event_rx) = mpsc::channel::<EventNotification>(32);
@@ -135,7 +139,6 @@ impl SecureSession {
 }
 
 /// The reader task: decrypt frames, demux messages, route them.
-#[allow(dead_code)] // spawned by SecureSession::new, which is used by HapConnection::upgrade (M4 Task 3)
 async fn reader_task(
     mut half: OwnedReadHalf,
     read_key: [u8; 32],
