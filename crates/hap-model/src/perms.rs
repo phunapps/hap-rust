@@ -8,7 +8,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 /// The set of HAP characteristic permissions.
+///
+/// HAP defines seven independent permission flags; modeling them as a flat set
+/// of booleans mirrors the wire format directly, so the `struct_excessive_bools`
+/// lint does not apply here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Perms {
     /// `pr` — paired read.
     pub read: bool,

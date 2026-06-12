@@ -14,7 +14,10 @@ fn read_request_path_is_exact() {
         build_read_request(&[(1, 9), (1, 10)]),
         "/characteristics?id=1.9,1.10&meta=1"
     );
-    assert_eq!(build_read_request(&[(2, 3)]), "/characteristics?id=2.3&meta=1");
+    assert_eq!(
+        build_read_request(&[(2, 3)]),
+        "/characteristics?id=2.3&meta=1"
+    );
 }
 
 #[test]
@@ -26,7 +29,10 @@ fn read_response_with_meta_format_decodes_typed() {
     let got = parse_read_response(body).unwrap();
     assert_eq!(
         got,
-        vec![((1, 9), CharValue::Int(50)), ((1, 8), CharValue::Bool(true))]
+        vec![
+            ((1, 9), CharValue::Int(50)),
+            ((1, 8), CharValue::Bool(true))
+        ]
     );
 }
 

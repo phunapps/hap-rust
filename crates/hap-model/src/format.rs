@@ -144,9 +144,7 @@ impl CharValue {
             CharValue::Bool(b) => J::Bool(*b),
             CharValue::Int(n) => J::Number((*n).into()),
             CharValue::Uint(n) => J::Number((*n).into()),
-            CharValue::Float(f) => serde_json::Number::from_f64(*f)
-                .map(J::Number)
-                .unwrap_or(J::Null),
+            CharValue::Float(f) => serde_json::Number::from_f64(*f).map_or(J::Null, J::Number),
             CharValue::Str(s) => J::String(s.clone()),
             CharValue::Bytes(b) => J::String(B64.encode(b)),
         }

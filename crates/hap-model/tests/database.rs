@@ -16,10 +16,12 @@ impl RequestExecutor for FakeExecutor {
     fn execute(&mut self, req: Request) -> Result<Vec<u8>> {
         self.seen.push(req.clone());
         let reply: &[u8] = match &req {
-            Request::Get { path } if path == "/accessories" => br#"{"accessories":[{"aid":1,
+            Request::Get { path } if path == "/accessories" => {
+                br#"{"accessories":[{"aid":1,
                 "services":[{"iid":7,"type":"43","characteristics":[
                     {"iid":8,"type":"25","format":"bool","perms":["pr","pw","ev"],"value":false}
-                ]}]}]}"#,
+                ]}]}]}"#
+            }
             Request::Get { path } if path.starts_with("/characteristics") => {
                 br#"{"characteristics":[{"aid":1,"iid":8,"value":true,"format":"bool"}]}"#
             }
