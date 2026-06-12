@@ -30,3 +30,8 @@
 //! Depends on [`hap_tlv8`] (pairing messages are TLV8).
 
 #![forbid(unsafe_code)]
+
+mod error;
+mod srp;
+
+pub use error::{CryptoError, Result};
