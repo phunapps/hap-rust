@@ -61,6 +61,16 @@ pub enum HapError {
         /// The HTTP status code the accessory returned.
         status: u16,
     },
+
+    /// The secure session dropped and could not be re-established within the
+    /// foreground reconnect window. The background reconnect loop keeps trying;
+    /// retry the operation shortly.
+    #[error("connection lost; reconnect in progress")]
+    ConnectionLost,
+
+    /// An `X-HM://` setup payload was structurally invalid.
+    #[error("invalid setup payload (expected an X-HM:// URI)")]
+    InvalidSetupPayload,
 }
 
 /// `Result<T, HapError>` — the public result alias for the whole library.
