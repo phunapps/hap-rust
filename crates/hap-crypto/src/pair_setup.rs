@@ -146,8 +146,9 @@ impl PairSetupClient {
     /// Create a Pair Setup client with a caller-supplied SRP private ephemeral
     /// `a` (the deterministic test seam).
     ///
-    /// Mirrors [`crate::srp`]'s `with_private` so a replay harness can reproduce
-    /// an exchange exactly. `a` is the big-endian bytes of the SRP exponent.
+    /// Mirrors the crate-internal `srp` module's `with_private` so a replay
+    /// harness can reproduce an exchange exactly. `a` is the big-endian bytes of
+    /// the SRP exponent.
     ///
     /// # Errors
     ///
@@ -175,7 +176,7 @@ impl PairSetupClient {
     ///
     /// The body is `State=1, Method=PairSetup`. Calling `start` advances the
     /// machine to await M2; calling it again re-emits M1 but does not reset any
-    /// state already established by [`handle`].
+    /// state already established by [`Self::handle`].
     #[must_use]
     pub fn start(&mut self) -> Vec<u8> {
         self.state = State::AwaitingM2;
