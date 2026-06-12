@@ -31,6 +31,7 @@
 
 #![forbid(unsafe_code)]
 
+mod aead;
 mod error;
 mod kdf;
 mod srp;
