@@ -1,0 +1,87 @@
+{
+  "source": "aiohomekit 3.2.20 (cryptography 48.0.1) \u2014 framing primitives ChaCha20Poly1305Encryptor + PACK_NONCE from aiohomekit.crypto.chacha20poly1305, reproducing SecureHomeKitProtocol.send_bytes (controller/ip/connection.py)",
+  "captured": "2026-06-12",
+  "note": "Synthetic test keys (not real session keys); the keys only pin the framing. Each frame is one record block: 2-byte LE length (also the AEAD AAD) + ChaCha20-Poly1305 ciphertext + 16-byte tag. Nonce is PACK_NONCE(counter) = 4 zero bytes + 64-bit LE counter.",
+  "frames": [
+    {
+      "id": "c2a-getaccessories-req-0",
+      "direction": "controller_to_accessory",
+      "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "counter": 0,
+      "plaintext_len": 84,
+      "frame_len": 102,
+      "plaintext_file": "c2a-getaccessories-req-0.plain.bin",
+      "frame_file": "c2a-getaccessories-req-0.frame.bin"
+    },
+    {
+      "id": "c2a-putcharacteristics-req-1",
+      "direction": "controller_to_accessory",
+      "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "counter": 1,
+      "plaintext_len": 49,
+      "frame_len": 67,
+      "plaintext_file": "c2a-putcharacteristics-req-1.plain.bin",
+      "frame_file": "c2a-putcharacteristics-req-1.frame.bin"
+    },
+    {
+      "id": "a2c-accessories-resp-0",
+      "direction": "accessory_to_controller",
+      "key_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "counter": 0,
+      "plaintext_len": 22,
+      "frame_len": 40,
+      "plaintext_file": "a2c-accessories-resp-0.plain.bin",
+      "frame_file": "a2c-accessories-resp-0.frame.bin"
+    },
+    {
+      "id": "a2c-nocontent-resp-1",
+      "direction": "accessory_to_controller",
+      "key_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "counter": 1,
+      "plaintext_len": 27,
+      "frame_len": 45,
+      "plaintext_file": "a2c-nocontent-resp-1.plain.bin",
+      "frame_file": "a2c-nocontent-resp-1.frame.bin"
+    },
+    {
+      "id": "a2c-event-0",
+      "direction": "accessory_to_controller",
+      "key_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "counter": 5,
+      "plaintext_len": 30,
+      "frame_len": 48,
+      "plaintext_file": "a2c-event-0.plain.bin",
+      "frame_file": "a2c-event-0.frame.bin"
+    },
+    {
+      "id": "c2a-largemsg-block-0",
+      "direction": "controller_to_accessory",
+      "key_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "counter": 0,
+      "plaintext_len": 1024,
+      "frame_len": 1042,
+      "plaintext_file": "c2a-largemsg-block-0.plain.bin",
+      "frame_file": "c2a-largemsg-block-0.frame.bin"
+    },
+    {
+      "id": "c2a-largemsg-block-1",
+      "direction": "controller_to_accessory",
+      "key_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "counter": 1,
+      "plaintext_len": 476,
+      "frame_len": 494,
+      "plaintext_file": "c2a-largemsg-block-1.plain.bin",
+      "frame_file": "c2a-largemsg-block-1.frame.bin"
+    },
+    {
+      "id": "c2a-empty-0",
+      "direction": "controller_to_accessory",
+      "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "counter": 7,
+      "plaintext_len": 0,
+      "frame_len": 18,
+      "plaintext_file": "c2a-empty-0.plain.bin",
+      "frame_file": "c2a-empty-0.frame.bin"
+    }
+  ]
+}

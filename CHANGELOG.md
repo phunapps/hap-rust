@@ -26,6 +26,24 @@ workspace-wide foundation work is tracked under "Workspace".
 - `test-vectors/` tree (`tlv8/`, `srp/`, `pair-verify/`, `session/`,
   `accessories/`) and the documented first `aiohomekit` TLV8 capture task.
 
+## hap-transport
+
+### [Unreleased] — M4
+
+Initial implementation of the HAP IP transport (not yet published; the crate
+stays at `0.0.0` until the workspace begins publishing).
+
+- mDNS discovery of `_hap._tcp.local.` accessories with TXT-record parsing
+  (`discover`, `DiscoveredAccessory`; `paired` derived from the `sf` flag).
+- Minimal HAP HTTP/1.1 request encoder / response parser (`Content-Length` and
+  `chunked` bodies; shared with the `EVENT/1.0` parser).
+- ChaCha20-Poly1305 secure record layer (2-byte LE length AAD, 4-zero + 64-bit
+  LE counter nonce, per-direction counters), cross-verified byte-for-byte
+  against record frames captured from aiohomekit 3.2.20.
+- `EVENT/1.0` notification demultiplexing onto an mpsc channel.
+- `HapConnection` (plaintext, pre-session) and `SecureSession` (record-framed,
+  post-Pair-Verify) over Tokio.
+
 ## hap-tlv8
 
 _No releases yet. First release targets M1._

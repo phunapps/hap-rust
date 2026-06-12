@@ -22,7 +22,7 @@
 //! For example the M5 label `b"PS-Msg05"` (exactly 8 bytes) yields the nonce
 //! `[0, 0, 0, 0, b'P', b'S', b'-', b'M', b's', b'g', b'0', b'5']`. Labels
 //! shorter than 8 bytes occupy the low bytes of the 8-byte region, leaving the
-//! remaining high bytes zero. See [`hap_nonce`].
+//! remaining high bytes zero. See the crate-internal `hap_nonce` helper.
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
@@ -95,6 +95,40 @@ pub(crate) fn decrypt(
             },
         )
         .map_err(|_| CryptoError::Aead)
+}
+
+/// Seal `plaintext` with ChaCha20-Poly1305 under `key`/`nonce`, binding `aad`,
+/// returning `ciphertext || tag`. Thin public wrapper over the crate-internal
+/// `encrypt` helper, used by the `hap-transport` record layer.
+///
+/// # Errors
+///
+/// Returns [`crate::CryptoError::Aead`] only on an internal AEAD usage error.
+pub fn chacha20poly1305_seal(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    plaintext: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    encrypt(key, nonce, aad, plaintext)
+}
+
+/// Open `ciphertext_and_tag` (ciphertext with the 16-byte Poly1305 tag appended)
+/// with ChaCha20-Poly1305 under `key`/`nonce`, verifying `aad`, returning the
+/// recovered plaintext. Thin public wrapper over the crate-internal `decrypt`
+/// helper, used by the `hap-transport` record layer.
+///
+/// # Errors
+///
+/// Returns [`crate::CryptoError::Aead`] if authentication fails — a wrong key,
+/// tampered ciphertext or tag, or mismatched `aad`.
+pub fn chacha20poly1305_open(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    ciphertext_and_tag: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    decrypt(key, nonce, aad, ciphertext_and_tag)
 }
 
 #[cfg(test)]
