@@ -53,3 +53,15 @@ pub enum TransportError {
 
 /// `Result<T, TransportError>` for convenience.
 pub type Result<T> = core::result::Result<T, TransportError>;
+
+/// Test-only constructors for [`TransportError`] variants (which are
+/// `#[non_exhaustive]` and so not externally constructible).
+pub mod error_test_support {
+    use super::TransportError;
+
+    /// A [`TransportError::SessionClosed`] for tests that simulate a dropped session.
+    #[must_use]
+    pub fn session_closed() -> TransportError {
+        TransportError::SessionClosed
+    }
+}
