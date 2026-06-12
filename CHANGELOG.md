@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## 1.0.0 — 2026-06-12
+
+First stable release. All six crates ship `1.0.0` together: `hap-tlv8`,
+`hap-crypto`, `hap-transport`, `hap-pairing`, `hap-model`, and `hap-controller`.
+
+`hap-rust` is the first production-grade pure-Rust HomeKit (HAP) **controller**
+library. The headline crate, **`hap-controller`**, composes the lower crates
+behind one ergonomic surface:
+
+- `HapController` — `new`, `discover`, `pair`, `connect`, `paired`,
+  `remove_pairing` over a `PairingStore` (`JsonFileStore` for persistence).
+- `AccessoryHandle` — `accessories` (cached attribute DB), typed
+  `find(ServiceType, CharacteristicType)`, `read`, `write`, `subscribe`, and
+  `events()` (an async `Stream<CharacteristicEvent>`). Event values decode with
+  the characteristic's declared format.
+- `HapError` umbrella with `#[from]` conversions for every lower-crate error.
+- Examples (`discover`, `pair_and_toggle`, `subscribe`), a crate README, and an
+  `aiohomekit` → `hap-controller` migration guide.
+
+Validated end-to-end against real hardware: discover → pair (SRP-6a Pair Setup +
+Pair Verify) → read/write → subscribe/events → remove_pairing.
+
+**Deferred past v1.0:** BLE transport, IP-camera streaming, MFi/hardware auth,
+the resident-controller role, Thread/Matter bridging, `no_std`, the accessory
+side, and HAP service/characteristic types beyond the common set.
+
 ## Workspace
 
 ### [Unreleased] — M0 foundation

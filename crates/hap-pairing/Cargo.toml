@@ -1,6 +1,6 @@
 [package]
 name = "hap-pairing"
-version = "0.1.0"
+version = "1.0.0"
 description = "HomeKit Accessory Protocol Pair Setup / Pair Verify orchestration, pairings management, and persistence."
 edition.workspace = true
 rust-version.workspace = true
@@ -16,9 +16,9 @@ readme = "README.md"
 workspace = true
 
 [dependencies]
-hap-tlv8 = { path = "../hap-tlv8", version = "0.0.0" }
-hap-crypto = { path = "../hap-crypto", version = "0.0.0" }
-hap-transport = { path = "../hap-transport", version = "0.0.0" }
+hap-tlv8 = { path = "../hap-tlv8", version = "1.0.0" }
+hap-crypto = { path = "../hap-crypto", version = "1.0.0" }
+hap-transport = { path = "../hap-transport", version = "1.0.0" }
 tokio = { workspace = true, features = ["rt", "macros", "fs"] }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
