@@ -1,0 +1,25 @@
+[package]
+name = "hap-model-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.hap-model]
+path = ".."
+
+[[bin]]
+name = "accessories"
+path = "fuzz_targets/accessories.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+# Empty table: the fuzz crate is its own workspace so `cargo fuzz` does not
+# pull in the parent workspace's lints/members.

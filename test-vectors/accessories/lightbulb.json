@@ -1,0 +1,29 @@
+{
+  "accessories": [
+    {
+      "aid": 1,
+      "services": [
+        {
+          "iid": 1,
+          "type": "3E",
+          "characteristics": [
+            { "iid": 2, "type": "20", "format": "string", "perms": ["pr"], "value": "Acme" },
+            { "iid": 3, "type": "21", "format": "string", "perms": ["pr"], "value": "Bulb100" },
+            { "iid": 4, "type": "23", "format": "string", "perms": ["pr"], "value": "Desk Lamp" },
+            { "iid": 5, "type": "30", "format": "string", "perms": ["pr"], "value": "SN-0001" },
+            { "iid": 6, "type": "14", "format": "bool", "perms": ["pw"] }
+          ]
+        },
+        {
+          "iid": 7,
+          "type": "43",
+          "characteristics": [
+            { "iid": 8, "type": "25", "format": "bool", "perms": ["pr", "pw", "ev"], "value": false },
+            { "iid": 9, "type": "8", "format": "int", "perms": ["pr", "pw", "ev"],
+              "value": 50, "unit": "percentage", "minValue": 0, "maxValue": 100, "minStep": 1 }
+          ]
+        }
+      ]
+    }
+  ]
+}
