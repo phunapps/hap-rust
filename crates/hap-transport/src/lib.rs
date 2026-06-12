@@ -30,8 +30,9 @@ mod session;
 
 pub use error::{Result, TransportError};
 
-// TODO(M4 Task 1): re-enable when `DiscoveredAccessory` and `discover` land
-// pub use discovery::{discover, DiscoveredAccessory};
+pub use discovery::{discover, DiscoveredAccessory};
+#[doc(hidden)]
+pub use discovery::discovery_test_support;
 
 // TODO(M4 Task 2): re-enable when `HapResponse` lands
 // pub use http::HapResponse;
