@@ -50,3 +50,5 @@ pub use http::http_test_support;
 // TODO(M4 Task N): re-enable test-support re-exports when types exist
 // #[doc(hidden)]
 // pub use record::tests as record_tests;
+#[doc(hidden)]
+pub use record::record_test_support;
