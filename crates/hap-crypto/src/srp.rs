@@ -528,14 +528,77 @@ mod tests {
         assert!(!ct_eq(b"abc", b"abcd"));
     }
 
-    /// Cross-verification of the HAP parameter set (3072-bit / SHA-512) against
-    /// a captured aiohomekit Pair Setup trace is DEFERRED until real hardware
-    /// is available (see the M2 plan, Task 1). When the capture lands under
-    /// `test-vectors/srp/`, this test should load those fixtures and assert the
-    /// HAP-parameter `k`, `x`, `A`, `B`, `u`, `S`, `M1`, `M2` byte-for-byte.
+    /// Read a captured SRP fixture from the workspace `test-vectors/srp/` dir.
+    fn srp_fixture(name: &str) -> Option<Vec<u8>> {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-vectors/srp")
+            .join(name);
+        std::fs::read(p).ok()
+    }
+
+    /// Cross-verification of the HAP parameter set (RFC 5054 Appendix A
+    /// 3072-bit group, `g = 5`, SHA-512) against a real captured aiohomekit
+    /// Pair Setup trace (a LIFX accessory; see the M2 capture runbook).
+    ///
+    /// `k = H(N | PAD(g))` and `u = H(PAD(A) | PAD(B))` are deterministic from
+    /// the group and the captured *public* ephemerals — no secret is needed, so
+    /// these run in CI. They validate exactly the HAP-parameter SHA-512 / 3072
+    /// computations that the RFC 5054 SHA-1 / 1024 known-answer cannot.
     #[test]
-    #[ignore = "pending captured aiohomekit SRP trace under test-vectors/srp/"]
-    fn hap_params_match_captured_trace() {
-        unimplemented!("load test-vectors/srp/ fixtures once captured");
+    fn hap_k_and_u_match_captured_trace() {
+        let (Some(k_bin), Some(a_bin), Some(b_bin), Some(u_bin)) = (
+            srp_fixture("k.bin"),
+            srp_fixture("A.bin"),
+            srp_fixture("B.bin"),
+            srp_fixture("u.bin"),
+        ) else {
+            eprintln!("skipping: no captured SRP fixtures under test-vectors/srp/");
+            return;
+        };
+
+        let group = hap_group();
+
+        // k = H(N | PAD(g)) — depends only on the group.
+        let k = compute_k::<Sha512>(&group);
+        assert_eq!(
+            k,
+            BigUint::from_bytes_be(&k_bin),
+            "HAP k mismatch vs captured trace"
+        );
+
+        // u = H(PAD(A) | PAD(B)) — from the captured public ephemerals.
+        let a_pub = BigUint::from_bytes_be(&a_bin);
+        let b_pub = BigUint::from_bytes_be(&b_bin);
+        let u = compute_u::<Sha512>(&group, &a_pub, &b_pub);
+        assert_eq!(
+            u,
+            BigUint::from_bytes_be(&u_bin),
+            "HAP u mismatch vs captured trace"
+        );
+    }
+
+    /// Cross-verify `x = H(s | H(I | ":" | P))` against the captured trace.
+    /// This needs the *secret* setup code, so it is env-gated: set
+    /// `HAP_SETUP_CODE` to run it locally; it is skipped (passes) in CI.
+    #[test]
+    fn hap_x_matches_captured_trace_with_code() {
+        let (Ok(code), Some(salt), Some(x_bin)) = (
+            std::env::var("HAP_SETUP_CODE"),
+            srp_fixture("salt.bin"),
+            srp_fixture("x.bin"),
+        ) else {
+            eprintln!("skipping: set HAP_SETUP_CODE (+ capture salt.bin/x.bin) to cross-check x");
+            return;
+        };
+        let digits: String = code.chars().filter(char::is_ascii_digit).collect();
+        assert_eq!(digits.len(), 8, "setup code must be 8 digits");
+        let pin = format!("{}-{}-{}", &digits[0..3], &digits[3..5], &digits[5..8]);
+
+        let x = compute_x::<Sha512>(&salt, b"Pair-Setup", pin.as_bytes());
+        assert_eq!(
+            x,
+            BigUint::from_bytes_be(&x_bin),
+            "HAP x mismatch vs captured trace"
+        );
     }
 }

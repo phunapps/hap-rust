@@ -9,3 +9,7 @@ superpowers/
 xtask/scripts/**/.venv/
 __pycache__/
 *.pyc
+
+# Captured pairing credentials (controller long-term secret) — never commit
+pairing.local.json
+*.local.json
