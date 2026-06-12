@@ -8,6 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## 1.1.0 — 2026-06-13
+
+Controller completeness. `hap-model` and `hap-controller` bump to `1.1.0`
+(additive); the other four crates stay at `1.0.0`.
+
+### `hap-model` 1.1.0
+
+- Full HAP type catalog: 41 services and 127 characteristics (was 14 / 21),
+  code-generated from aiohomekit's type tables.
+- Value semantics on `CharacteristicType`: `unit()` (+ a new `Unit` enum),
+  `valid_values()` (named enum values), alongside the existing `default_format()`.
+- New `/characteristics` body builders: `build_prepare_request`,
+  `build_timed_write_request`, `build_write_request_with_response`.
+- **Fix:** `build_read_request` no longer requests `meta=1`. Some shipping
+  HomeKit firmware (e.g. LIFX) returns malformed JSON for `meta=1` reads;
+  metadata is now sourced from the well-formed `/accessories` database instead.
+
+### `hap-controller` 1.1.0
+
+- Batch I/O: `AccessoryHandle::read_many` / `write_many`. Read values are typed
+  from the cached accessory database.
+- Timed writes (`write_timed`, via `/prepare` + `pid`) and `write_with_response`
+  (the HAP `r` flag).
+- **Transparent auto-reconnect.** A dropped secure session is re-established by a
+  background supervisor (indefinite backoff, capped); foreground ops wait a
+  bounded window then return the new `HapError::ConnectionLost`. Subscriptions
+  are re-issued and the cached DB is refreshed on a config-number change. New
+  `AccessoryHandle::connection_state()` exposes a `ConnectionState` stream.
+- `SetupPayload::parse` decodes the `X-HM://` setup URI; new
+  `HapError::InvalidSetupPayload`.
+- Validated end-to-end against real LIFX hardware.
+
 ## 1.0.0 — 2026-06-12
 
 First stable release. All six crates ship `1.0.0` together: `hap-tlv8`,

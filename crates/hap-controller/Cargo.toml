@@ -1,6 +1,6 @@
 [package]
 name = "hap-controller"
-version = "1.0.0"
+version = "1.1.0"
 description = "High-level HomeKit (HAP) controller API: discover, pair, connect, read/write/subscribe characteristics."
 edition.workspace = true
 rust-version.workspace = true
@@ -20,7 +20,7 @@ hap-tlv8 = { path = "../hap-tlv8", version = "1.0.0" }
 hap-crypto = { path = "../hap-crypto", version = "1.0.0" }
 hap-transport = { path = "../hap-transport", version = "1.0.0" }
 hap-pairing = { path = "../hap-pairing", version = "1.0.0" }
-hap-model = { path = "../hap-model", version = "1.0.0" }
+hap-model = { path = "../hap-model", version = "1.1.0" }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 async-trait = { workspace = true }
