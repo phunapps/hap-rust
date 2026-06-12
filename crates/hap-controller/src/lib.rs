@@ -48,10 +48,12 @@ pub use handle::AccessoryHandle;
 // against a mock. Not part of the supported public API — hidden from docs and
 // only named by this crate's own integration tests.
 #[doc(hidden)]
-pub use handle::Session;
+pub use handle::{Session, SessionResponse};
 
 // Re-export the lower-crate types that appear in this crate's public
 // signatures, so consumers depend only on `hap-controller`.
-pub use hap_model::{Accessory, CharValue, Characteristic, CharacteristicType, Service, ServiceType};
+pub use hap_model::{
+    Accessory, CharValue, Characteristic, CharacteristicType, Service, ServiceType,
+};
 pub use hap_pairing::{JsonFileStore, PairingStore, StoredAccessory};
 pub use hap_transport::DiscoveredAccessory;

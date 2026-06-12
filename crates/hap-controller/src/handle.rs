@@ -6,10 +6,20 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_stream::Stream;
 
 use hap_model::{Accessory, CharValue, CharacteristicType, ServiceType};
-use hap_transport::{EventNotification, HapResponse, SecureSession};
+use hap_transport::SecureSession;
 
 use crate::error::{HapError, Result};
 use crate::event::{into_stream, CharacteristicEvent};
+
+/// The status + body of a session response. A seam-local type so the [`Session`]
+/// trait does not leak `hap-transport`'s (non-exhaustive) response struct.
+#[doc(hidden)]
+pub struct SessionResponse {
+    /// HTTP status the accessory returned.
+    pub status: u16,
+    /// Raw response body bytes.
+    pub body: Vec<u8>,
+}
 
 /// The transport seam used by [`AccessoryHandle`] for HTTP-style requests and
 /// the `EVENT/1.0` notification channel.
@@ -33,11 +43,11 @@ pub trait Session: Send + Sync {
         path: &str,
         content_type: &str,
         body: &[u8],
-    ) -> Result<HapResponse>;
+    ) -> Result<SessionResponse>;
 
-    /// Take the `EVENT/1.0` notification receiver. Valid once per session; later
-    /// calls yield an already-closed receiver.
-    fn take_events(&self) -> mpsc::Receiver<EventNotification>;
+    /// Take the `EVENT/1.0` notification receiver, each item a raw hap+json
+    /// event body. Valid once per session; later calls yield a closed receiver.
+    fn take_events(&self) -> mpsc::Receiver<Vec<u8>>;
 }
 
 #[async_trait]
@@ -48,13 +58,28 @@ impl Session for SecureSession {
         path: &str,
         content_type: &str,
         body: &[u8],
-    ) -> Result<HapResponse> {
+    ) -> Result<SessionResponse> {
         // Disambiguate from this trait method: call the inherent method.
-        Ok(SecureSession::request(self, method, path, content_type, body).await?)
+        let resp = SecureSession::request(self, method, path, content_type, body).await?;
+        Ok(SessionResponse {
+            status: resp.status,
+            body: resp.body,
+        })
     }
 
-    fn take_events(&self) -> mpsc::Receiver<EventNotification> {
-        self.events()
+    fn take_events(&self) -> mpsc::Receiver<Vec<u8>> {
+        // Forward the transport's EventNotification stream as raw bodies, so the
+        // seam carries `Vec<u8>` and stays free of transport-internal types.
+        let mut src = self.events();
+        let (tx, rx) = mpsc::channel(64);
+        tokio::spawn(async move {
+            while let Some(note) = src.recv().await {
+                if tx.send(note.body).await.is_err() {
+                    break;
+                }
+            }
+        });
+        rx
     }
 }
 
@@ -96,10 +121,10 @@ impl AccessoryHandle {
         let mut event_rx = session.take_events();
         let tx = events_tx.clone();
         tokio::spawn(async move {
-            while let Some(note) = event_rx.recv().await {
+            while let Some(body) = event_rx.recv().await {
                 // An EVENT body has the same shape as a /characteristics read
                 // response (a list of {aid, iid, value}); reuse that decoder.
-                if let Ok(reports) = hap_model::parse_read_response(&note.body) {
+                if let Ok(reports) = hap_model::parse_read_response(&body) {
                     for ((aid, iid), value) in reports {
                         // Send error only means there are no live receivers yet.
                         let _ = tx.send(CharacteristicEvent { aid, iid, value });
