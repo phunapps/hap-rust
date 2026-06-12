@@ -18,10 +18,8 @@ use hap_crypto::aead::{chacha20poly1305_open, chacha20poly1305_seal};
 use crate::error::{Result, TransportError};
 
 /// Maximum plaintext payload of a single record frame.
-#[allow(dead_code)] // used by session.rs (M4 Task 5)
 pub(crate) const MAX_BLOCK: usize = 1024;
 /// Length of the ChaCha20-Poly1305 authentication tag.
-#[allow(dead_code)] // used by session.rs (M4 Task 5)
 pub(crate) const TAG_LEN: usize = 16;
 /// Length of the frame's length prefix.
 pub(crate) const LEN_PREFIX: usize = 2;
@@ -127,7 +125,6 @@ pub fn decrypt_frame(
 }
 
 /// How many bytes a complete frame for a `declared`-length block occupies.
-#[allow(dead_code)] // used by session.rs (M4 Task 5)
 pub(crate) fn frame_len(declared: usize) -> usize {
     LEN_PREFIX + declared + TAG_LEN
 }

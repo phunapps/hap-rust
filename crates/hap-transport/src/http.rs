@@ -39,8 +39,7 @@ pub enum ParseOutcome {
 }
 
 /// The first line of a non-HTTP message we still must demux on the secure
-/// session: `EVENT/1.0 200 OK`. Used by `session.rs` (M4 Task 5).
-#[allow(dead_code)] // referenced by session.rs once the secure session lands
+/// session: `EVENT/1.0 200 OK`. Used by `session.rs`.
 pub(crate) const EVENT_PREFIX: &[u8] = b"EVENT/1.0";
 /// The start-line prefix of a HAP `HTTP/1.1` response.
 pub(crate) const HTTP_PREFIX: &[u8] = b"HTTP/1.1";
@@ -79,7 +78,6 @@ pub fn parse_response(buf: &[u8]) -> Result<ParseOutcome> {
 ///
 /// [`TransportError::MalformedHttp`] for an unparsable start line or headers;
 /// [`TransportError::UnsupportedEncoding`] for an unsupported transfer encoding.
-#[allow(dead_code)] // the generic entrypoint is driven by session.rs (M4 Task 5); parse_response wraps it
 pub(crate) fn parse_message(buf: &[u8], expected_prefix: &[u8]) -> Result<ParseOutcome> {
     let Some(headers_end) = find_subslice(buf, b"\r\n\r\n") else {
         return Ok(ParseOutcome::Incomplete);
