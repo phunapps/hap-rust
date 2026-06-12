@@ -1,6 +1,6 @@
 [package]
 name = "hap-model"
-version = "0.0.0"
+version = "0.1.0"
 description = "HomeKit Accessory Protocol attribute database: accessory/service/characteristic model and HAP-defined types."
 edition.workspace = true
 rust-version.workspace = true
