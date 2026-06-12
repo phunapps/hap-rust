@@ -1,15 +1,23 @@
 //! [`AccessoryHandle`]: one secure session to one accessory, plus a cached
 //! accessory tree and an event stream.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::Stream;
 
-use hap_model::{Accessory, CharValue, CharacteristicType, ServiceType};
+use hap_model::{Accessory, CharFormat, CharValue, CharacteristicType, ServiceType};
 use hap_transport::SecureSession;
 
 use crate::error::{HapError, Result};
 use crate::event::{into_stream, CharacteristicEvent};
+
+/// `(aid, iid)` → declared characteristic format, learned from `/accessories`.
+/// Shared with the event pump so it can decode `EVENT/1.0` values (which carry
+/// no `format`) with their true type instead of falling back to inference.
+type FormatMap = Arc<Mutex<HashMap<(u64, u64), CharFormat>>>;
 
 /// The status + body of a session response. A seam-local type so the [`Session`]
 /// trait does not leak `hap-transport`'s (non-exhaustive) response struct.
@@ -94,6 +102,7 @@ pub struct AccessoryHandle {
     session: Box<dyn Session>,
     accessories: Option<Vec<Accessory>>,
     events_tx: broadcast::Sender<CharacteristicEvent>,
+    formats: FormatMap,
 }
 
 impl AccessoryHandle {
@@ -116,16 +125,30 @@ impl AccessoryHandle {
     /// a Tokio runtime, since it `tokio::spawn`s the event-pump task.
     fn build(session: Box<dyn Session>) -> Self {
         let (events_tx, _) = broadcast::channel(64);
+        let formats: FormatMap = Arc::new(Mutex::new(HashMap::new()));
         // Drain the transport's EVENT/1.0 mpsc receiver, decode each hap+json
         // push via hap-model, and fan it out over the broadcast channel.
         let mut event_rx = session.take_events();
         let tx = events_tx.clone();
+        let fmt_map = formats.clone();
         tokio::spawn(async move {
             while let Some(body) = event_rx.recv().await {
                 // An EVENT body has the same shape as a /characteristics read
                 // response (a list of {aid, iid, value}); reuse that decoder.
                 if let Ok(reports) = hap_model::parse_read_response(&body) {
                     for ((aid, iid), value) in reports {
+                        // EVENT bodies omit `format`, so the decoder above infers
+                        // the type (e.g. a bool `0` becomes Uint). Re-coerce to the
+                        // characteristic's declared format if we learned it from
+                        // a prior `/accessories` fetch.
+                        let fmt = fmt_map
+                            .lock()
+                            .ok()
+                            .and_then(|m| m.get(&(aid, iid)).copied());
+                        let value = match fmt {
+                            Some(f) => coerce_to_format(value, f),
+                            None => value,
+                        };
                         // Send error only means there are no live receivers yet.
                         let _ = tx.send(CharacteristicEvent { aid, iid, value });
                     }
@@ -138,6 +161,7 @@ impl AccessoryHandle {
             session,
             accessories: None,
             events_tx,
+            formats,
         }
     }
 
@@ -164,6 +188,18 @@ impl AccessoryHandle {
                 });
             }
             let parsed = hap_model::parse_accessories(&resp.body)?;
+            // Record each characteristic's declared format so the event pump can
+            // decode formatless EVENT/1.0 values with their true type.
+            if let Ok(mut map) = self.formats.lock() {
+                map.clear();
+                for acc in &parsed {
+                    for svc in &acc.services {
+                        for ch in &svc.characteristics {
+                            map.insert((acc.aid, ch.iid), ch.format);
+                        }
+                    }
+                }
+            }
             self.accessories = Some(parsed);
         }
         // Just populated above if it was `None`; `unwrap_or` keeps this panic-free.
@@ -287,4 +323,67 @@ impl AccessoryHandle {
 /// Whether an HTTP status is in the 2xx success range.
 fn is_success(status: u16) -> bool {
     (200..300).contains(&status)
+}
+
+/// Re-type an inferred event value to the characteristic's declared format.
+///
+/// EVENT/1.0 bodies omit `format`, so `parse_read_response` infers numeric/bool
+/// values from the JSON (a bool `0` becomes `Uint(0)`). Given the real format
+/// from `/accessories`, narrow the value back to its proper variant. Non-numeric
+/// formats and already-correct values pass through unchanged.
+#[allow(clippy::cast_precision_loss)] // HAP numeric values are far below 2^53
+fn coerce_to_format(value: CharValue, fmt: CharFormat) -> CharValue {
+    match (fmt, value) {
+        (CharFormat::Bool, CharValue::Uint(n)) => CharValue::Bool(n != 0),
+        (CharFormat::Bool, CharValue::Int(n)) => CharValue::Bool(n != 0),
+        (CharFormat::Int, CharValue::Uint(n)) => {
+            i64::try_from(n).map_or(CharValue::Uint(n), CharValue::Int)
+        }
+        (CharFormat::Float, CharValue::Uint(n)) => CharValue::Float(n as f64),
+        (CharFormat::Float, CharValue::Int(n)) => CharValue::Float(n as f64),
+        (_, other) => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{coerce_to_format, CharFormat, CharValue};
+
+    #[test]
+    fn bool_event_inferred_as_uint_is_narrowed_to_bool() {
+        assert_eq!(
+            coerce_to_format(CharValue::Uint(0), CharFormat::Bool),
+            CharValue::Bool(false)
+        );
+        assert_eq!(
+            coerce_to_format(CharValue::Uint(1), CharFormat::Bool),
+            CharValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn int_and_float_are_narrowed_from_uint() {
+        assert_eq!(
+            coerce_to_format(CharValue::Uint(50), CharFormat::Int),
+            CharValue::Int(50)
+        );
+        assert_eq!(
+            coerce_to_format(CharValue::Uint(23), CharFormat::Float),
+            CharValue::Float(23.0)
+        );
+    }
+
+    #[test]
+    fn matching_or_unknown_formats_pass_through() {
+        // Already the right variant.
+        assert_eq!(
+            coerce_to_format(CharValue::Bool(true), CharFormat::Bool),
+            CharValue::Bool(true)
+        );
+        // String format is left to inference.
+        assert_eq!(
+            coerce_to_format(CharValue::Str("x".into()), CharFormat::String),
+            CharValue::Str("x".into())
+        );
+    }
 }

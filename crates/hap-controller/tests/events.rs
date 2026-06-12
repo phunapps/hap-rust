@@ -34,3 +34,31 @@ async fn events_stream_yields_a_decoded_event() {
     assert_eq!(evt.iid, 10);
     assert_eq!(evt.value, hap_controller::CharValue::Float(23.5));
 }
+
+#[tokio::test]
+async fn bool_event_is_typed_via_the_cached_accessory_format() {
+    // Regression for the live-hardware finding: an On (bool) characteristic's
+    // EVENT body carries `"value":0` with no format, which infers to Uint(0).
+    // After accessories() learns iid=8 is `bool`, the pump must yield Bool(false).
+    let tree = common::fixture("lightbulb.json");
+    let session = common::MockSession::new().with_get("/accessories", 200, &tree);
+    let injector = session.event_injector();
+    let mut handle = common::handle_with_session(session);
+
+    handle.accessories().await.unwrap(); // populates the format map
+    let mut stream = handle.events();
+
+    injector
+        .send(common::fixture("event-on-0.json").into_bytes())
+        .await
+        .unwrap();
+
+    let evt = tokio::time::timeout(Duration::from_secs(1), stream.next())
+        .await
+        .expect("stream produced an event within 1s")
+        .expect("stream not closed");
+
+    assert_eq!(evt.aid, 1);
+    assert_eq!(evt.iid, 8);
+    assert_eq!(evt.value, hap_controller::CharValue::Bool(false));
+}
