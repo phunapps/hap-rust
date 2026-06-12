@@ -104,6 +104,12 @@ impl SecureSession {
         body: &[u8],
     ) -> Result<HapResponse> {
         let plaintext = encode_request(method, path, content_type, body);
+        // Hold the response receiver for the entire write+await cycle. HAP IP is
+        // strictly one request at a time; taking this lock first serialises whole
+        // request/response cycles, so two concurrent `request()` callers cannot
+        // have their responses crossed (the writer lock alone would not prevent
+        // that, since it is released before the response is awaited).
+        let mut rx = self.responses.lock().await;
         {
             let mut w = self.writer.lock().await;
             for block in plaintext.chunks(MAX_BLOCK) {
@@ -113,7 +119,6 @@ impl SecureSession {
             }
             w.half.flush().await?;
         }
-        let mut rx = self.responses.lock().await;
         match rx.recv().await {
             Some(result) => result,
             None => Err(TransportError::NoResponse),
