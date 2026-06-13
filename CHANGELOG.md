@@ -10,8 +10,15 @@ workspace-wide foundation work is tracked under "Workspace".
 
 ## 1.1.0 — 2026-06-13
 
-Controller completeness. `hap-model` and `hap-controller` bump to `1.1.0`
-(additive); the other four crates stay at `1.0.0`.
+Controller completeness. `hap-model`, `hap-controller`, and `hap-transport` bump
+to `1.1.0` (all additive); `hap-tlv8`, `hap-crypto`, and `hap-pairing` stay at
+`1.0.0`.
+
+### `hap-transport` 1.1.0
+
+- Adds `error_test_support` (`session_closed()`, `io_disconnected()`) so
+  downstream crates can construct the `#[non_exhaustive]` `TransportError`
+  variants in their tests, matching the existing `*_test_support` modules.
 
 ### `hap-model` 1.1.0
 
