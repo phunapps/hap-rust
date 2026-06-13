@@ -50,6 +50,7 @@ pub struct HapController {
     /// need not touch the async store. Assumes this process is the sole writer
     /// of the store (the v1.0 single-controller model).
     cached_ids: Vec<String>,
+    request_timeout: std::time::Duration,
 }
 
 impl HapController {
@@ -79,7 +80,15 @@ impl HapController {
             store,
             keypair,
             cached_ids,
+            request_timeout: crate::handle::DEFAULT_REQUEST_TIMEOUT,
         })
+    }
+
+    /// Set the per-request timeout for handles created after this call
+    /// (default 10s). Bounds how long a foreground read/write waits on a
+    /// silently-dropped connection before failing with [`HapError::ConnectionLost`].
+    pub fn set_request_timeout(&mut self, timeout: std::time::Duration) {
+        self.request_timeout = timeout;
     }
 
     /// Discover `_hap._tcp` accessories on the local network for up to
@@ -135,7 +144,7 @@ impl HapController {
             stored: stored.clone(),
             keypair: self.keypair.clone(),
         });
-        Ok(AccessoryHandle::connect(Arc::new(session), reconnector))
+        Ok(AccessoryHandle::connect(Arc::new(session), reconnector, self.request_timeout))
     }
 
     /// Open a new secure session to an already-paired accessory.
@@ -152,7 +161,7 @@ impl HapController {
             stored,
             keypair: self.keypair.clone(),
         });
-        Ok(AccessoryHandle::connect(Arc::new(session), reconnector))
+        Ok(AccessoryHandle::connect(Arc::new(session), reconnector, self.request_timeout))
     }
 
     /// Remove a pairing both from the accessory (`/pairings` remove of this

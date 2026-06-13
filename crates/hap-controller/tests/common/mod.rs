@@ -126,6 +126,7 @@ pub struct MockSession {
     event_tx: Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
     event_rx: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
     dead: Arc<std::sync::atomic::AtomicBool>,
+    hang: bool,
 }
 
 impl MockSession {
@@ -137,7 +138,15 @@ impl MockSession {
             event_tx: Arc::new(Mutex::new(Some(event_tx))),
             event_rx: Mutex::new(Some(event_rx)),
             dead: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            hang: false,
         }
+    }
+
+    /// Make every `request` hang forever (simulates a silently-dropped link).
+    #[must_use]
+    pub fn hanging(mut self) -> Self {
+        self.hang = true;
+        self
     }
 
     /// Register the `(status, body)` returned for a `GET` of `path`.
@@ -184,6 +193,9 @@ impl Session for MockSession {
             return Err(hap_controller::HapError::Transport(
                 hap_transport::error_test_support::session_closed(),
             ));
+        }
+        if self.hang {
+            std::future::pending::<()>().await;
         }
         match method {
             "GET" => {
