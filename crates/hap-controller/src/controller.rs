@@ -175,6 +175,40 @@ impl HapController {
         Ok(())
     }
 
+    /// List every controller currently paired to the accessory.
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::UnknownAccessory`] if `accessory_id` is not in the store;
+    /// otherwise [`HapError::Pairing`]/[`HapError::Crypto`]/[`HapError::Transport`].
+    pub async fn list_pairings(&self, accessory_id: &str) -> Result<Vec<hap_pairing::PairingInfo>> {
+        let stored = self.load_stored(accessory_id).await?;
+        let mut session = hap_pairing::connect(&stored, &self.keypair).await?;
+        let mut admin = PairingsAdmin::new(&mut session);
+        Ok(admin.list().await?)
+    }
+
+    /// Register another controller's long-term public key on the accessory
+    /// (multi-admin). `controller_id` and `ltpk` identify the controller added.
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::UnknownAccessory`] if `accessory_id` is not in the store;
+    /// otherwise [`HapError::Pairing`]/[`HapError::Crypto`]/[`HapError::Transport`].
+    pub async fn add_pairing(
+        &self,
+        accessory_id: &str,
+        controller_id: &str,
+        ltpk: [u8; 32],
+        admin: bool,
+    ) -> Result<()> {
+        let stored = self.load_stored(accessory_id).await?;
+        let mut session = hap_pairing::connect(&stored, &self.keypair).await?;
+        let mut a = PairingsAdmin::new(&mut session);
+        a.add(controller_id, ltpk, admin).await?;
+        Ok(())
+    }
+
     /// Load the stored pairing for `accessory_id`, or [`HapError::UnknownAccessory`].
     async fn load_stored(&self, accessory_id: &str) -> Result<StoredAccessory> {
         self.store
