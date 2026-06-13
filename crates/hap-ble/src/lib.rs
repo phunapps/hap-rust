@@ -15,6 +15,7 @@ mod session;
 mod pairing;
 mod db;
 mod discovery;
+mod accessory;
 
 pub use error::{BleError, Result};
 pub use gatt::{GattCharacteristic, GattConnection, GattService};
@@ -24,3 +25,4 @@ pub use session::BleSession;
 pub use pairing::{exchange, pair_setup, pair_verify};
 pub use db::{build_db, decode_value};
 pub use discovery::{parse_hap_advert, DiscoveredBleAccessory};
+pub use accessory::{BleAccessory, CharacteristicEvent};
