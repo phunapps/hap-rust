@@ -21,4 +21,4 @@ pub use pdu::{char_format_from_gatt, decode_response, encode_request, encode_val
 pub use pdu::param;
 pub use session::BleSession;
 pub use pairing::{exchange, pair_setup, pair_verify};
-pub use db::build_db;
+pub use db::{build_db, decode_value};

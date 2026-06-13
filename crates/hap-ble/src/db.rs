@@ -1,10 +1,11 @@
 //! Build a typed [`hap_model`] accessory tree from BLE characteristic
 //! signatures (BLE has no `/accessories` JSON).
 
-use crate::error::Result;
+use crate::error::{BleError, Result};
 use crate::gatt::GattConnection;
 use crate::pdu::{self, OpCode};
 use crate::session::BleSession;
+use hap_model::format::{CharFormat, CharValue};
 use hap_model::tree::{Accessory, Characteristic, Service};
 use hap_model::{ServiceType, Uuid};
 
@@ -69,6 +70,57 @@ pub async fn build_db<G: GattConnection + ?Sized>(
     Ok(vec![Accessory { aid: 1, services }])
 }
 
+/// Decode a raw BLE characteristic value to a typed [`CharValue`] per its
+/// [`CharFormat`]. Integers and floats are little-endian.
+///
+/// # Errors
+/// Returns [`BleError::MalformedPdu`] if the bytes are too short for the format.
+pub fn decode_value(format: CharFormat, raw: &[u8]) -> Result<CharValue> {
+    let need = |n: usize| -> Result<()> {
+        if raw.len() < n {
+            Err(BleError::MalformedPdu("value shorter than its format width"))
+        } else {
+            Ok(())
+        }
+    };
+    Ok(match format {
+        CharFormat::Bool => {
+            need(1)?;
+            CharValue::Bool(raw[0] != 0)
+        }
+        CharFormat::Uint8 => {
+            need(1)?;
+            CharValue::Uint(u64::from(raw[0]))
+        }
+        CharFormat::Uint16 => {
+            need(2)?;
+            CharValue::Uint(u64::from(u16::from_le_bytes([raw[0], raw[1]])))
+        }
+        CharFormat::Uint32 => {
+            need(4)?;
+            CharValue::Uint(u64::from(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])))
+        }
+        CharFormat::Uint64 => {
+            need(8)?;
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&raw[..8]);
+            CharValue::Uint(u64::from_le_bytes(b))
+        }
+        CharFormat::Int => {
+            need(4)?;
+            CharValue::Int(i64::from(i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])))
+        }
+        CharFormat::Float => {
+            need(4)?;
+            CharValue::Float(f64::from(f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])))
+        }
+        CharFormat::String => CharValue::Str(String::from_utf8_lossy(raw).into_owned()),
+        // CharFormat is #[non_exhaustive]; Tlv8, Data, and any future format
+        // we don't model yet are surfaced as opaque bytes rather than a hard error.
+        _ => CharValue::Bytes(raw.to_vec()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +146,39 @@ mod tests {
         w.push(crate::pdu::param::PROPERTIES, &0x0003u16.to_le_bytes());
         w.push(crate::pdu::param::PRESENTATION_FORMAT, &[0x01, 0, 0, 0, 0, 0, 0]);
         body
+    }
+
+    #[allow(clippy::unwrap_used)]
+    #[test]
+    fn decodes_values_by_format() {
+        use hap_model::format::{CharFormat, CharValue};
+        assert_eq!(decode_value(CharFormat::Bool, &[0x01]).unwrap(), CharValue::Bool(true));
+        assert_eq!(decode_value(CharFormat::Bool, &[0x00]).unwrap(), CharValue::Bool(false));
+        assert_eq!(decode_value(CharFormat::Uint8, &[0x2A]).unwrap(), CharValue::Uint(42));
+        assert_eq!(
+            decode_value(CharFormat::Uint16, &[0x01, 0x01]).unwrap(),
+            CharValue::Uint(257)
+        );
+        assert_eq!(
+            decode_value(CharFormat::Int, &[0xFF, 0xFF, 0xFF, 0xFF]).unwrap(),
+            CharValue::Int(-1)
+        );
+        assert_eq!(
+            decode_value(CharFormat::String, b"hi").unwrap(),
+            CharValue::Str("hi".into())
+        );
+        assert_eq!(
+            decode_value(CharFormat::Data, &[1, 2, 3]).unwrap(),
+            CharValue::Bytes(vec![1, 2, 3])
+        );
+    }
+
+    #[allow(clippy::unwrap_used)]
+    #[test]
+    fn float_decodes_le() {
+        use hap_model::format::{CharFormat, CharValue};
+        let v = decode_value(CharFormat::Float, &1.5f32.to_le_bytes()).unwrap();
+        assert_eq!(v, CharValue::Float(1.5));
     }
 
     #[allow(clippy::unwrap_used)]
