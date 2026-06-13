@@ -2,6 +2,7 @@
 //! and the body param TLV + GATT format maps. Pure logic — no I/O.
 
 use crate::error::{BleError, Result};
+use crate::gatt::GattConnection;
 use hap_model::format::CharFormat;
 use hap_model::perms::Perms;
 use hap_model::CharacteristicType;
@@ -151,6 +152,32 @@ pub fn reassemble(frags: &[Vec<u8>]) -> Result<Vec<u8>> {
         out.extend_from_slice(&f[2..]);
     }
     Ok(out)
+}
+
+/// Send one request PDU to `char_uuid` and return the decoded response.
+///
+/// Fragments the request to `frag_size`, writes each fragment, then reads and
+/// reassembles the response. (The mock and btleplug both deliver the full
+/// response from a single `read`; multi-fragment reads are reassembled by
+/// [`reassemble`] when an accessory splits them — see hardware notes.)
+///
+/// # Errors
+/// Propagates GATT I/O errors and [`BleError::MalformedPdu`] on a bad response.
+pub async fn request<G: GattConnection + ?Sized>(
+    gatt: &G,
+    char_uuid: &str,
+    op: OpCode,
+    tid: u8,
+    iid: u16,
+    body: &[u8],
+    frag_size: usize,
+) -> Result<Response> {
+    let pdu = encode_request(op, tid, iid, body);
+    for frag in fragment(&pdu, frag_size) {
+        gatt.write(char_uuid, &frag).await?;
+    }
+    let raw = gatt.read(char_uuid).await?;
+    decode_response(&raw)
 }
 
 /// A parsed characteristic signature: the fields needed to populate a
@@ -368,5 +395,33 @@ mod tests {
             .collect();
         be.reverse(); // BLE carries the 128-bit UUID little-endian
         be
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // test code: roundtrip success is the whole point
+    async fn request_writes_and_reads_back_response() {
+        use crate::gatt::MockGatt;
+        let gatt = MockGatt::new();
+        // Accessory will answer the next read of "pair" with a success PDU
+        // carrying a value param body [0xAB].
+        let body = encode_value_param(&[0xAB]);
+        let mut resp = vec![0x02, 0x05, 0x00];
+        resp.extend_from_slice(&u16::try_from(body.len()).unwrap().to_le_bytes());
+        resp.extend_from_slice(&body);
+        gatt.queue_read("pair", resp);
+
+        let got = request(
+            &gatt,
+            "pair",
+            OpCode::CharacteristicWrite,
+            0x05,
+            0x0001,
+            &encode_value_param(&[0x01]),
+            512,
+        )
+        .await
+        .unwrap();
+        assert_eq!(got.status, 0x00);
+        assert_eq!(value_param(&got.body).unwrap(), vec![0xAB]);
     }
 }
