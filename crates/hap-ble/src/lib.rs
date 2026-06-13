@@ -9,5 +9,8 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod pdu;
 
 pub use error::{BleError, Result};
+pub use pdu::{encode_request, encode_value_param, value_param, OpCode};
+pub use pdu::param;
