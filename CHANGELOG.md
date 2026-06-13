@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## 1.2.0 — 2026-06-13
+
+Controller polish. `hap-model` and `hap-controller` bump to `1.2.0` (additive);
+the other four crates are unchanged.
+
+### `hap-model` 1.2.0
+
+- `HapStatus` enum mapping the HAP per-characteristic status codes
+  (`from_code`/`code`); `ModelError::hap_status()` interprets a
+  `CharacteristicStatus` error (e.g. `-70405` → `ReadFromWriteOnly`).
+
+### `hap-controller` 1.2.0
+
+- `AccessoryHandle::unsubscribe` — turn off event notifications for a
+  characteristic (and stop the reconnect supervisor re-issuing it).
+- `HapController::list_pairings` / `add_pairing` — inspect and add controllers
+  on an accessory (multi-admin); re-exports `PairingInfo`.
+- `HapController::identify` — pre-pairing `POST /identify` on an unpaired
+  accessory (blink/beep before pairing).
+- Configurable **per-request timeout** (default 10s, `set_request_timeout`): a
+  foreground read/write on a silently-dropped link fails fast with
+  `HapError::ConnectionLost` instead of hanging until TCP's own timeout.
+- The reconnector now reads the accessory's config number (`c#`) on reconnect,
+  so the cached attribute database refreshes when the configuration changes.
+- Re-exports `HapStatus` from `hap-model`.
+
 ## 1.1.0 — 2026-06-13
 
 Controller completeness. `hap-model`, `hap-controller`, and `hap-transport` bump
