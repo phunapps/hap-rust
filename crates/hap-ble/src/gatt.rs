@@ -5,6 +5,92 @@ use crate::error::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+use btleplug::api::{Characteristic as BtleChar, Peripheral as _, WriteType};
+use btleplug::platform::Peripheral;
+
+// Instance-ID (iid) placeholders: the HAP Instance-ID descriptor
+// (UUID DC46F0FE-81D2-4616-B5D9-6ABDD796939A) is read per-characteristic on
+// hardware to populate real iid values. That resolution is deferred to a later
+// task; all iids here are set to 0 until then.
+
+/// A [`GattConnection`] backed by an already-connected btleplug [`Peripheral`].
+///
+/// Services must be discovered (via [`btleplug::api::Peripheral::discover_services`])
+/// before constructing or calling [`enumerate`](GattConnection::enumerate).
+pub struct BtleplugConnection {
+    peripheral: Peripheral,
+}
+
+impl BtleplugConnection {
+    /// Wrap an already-connected peripheral (its services must be discovered).
+    pub fn new(peripheral: Peripheral) -> Self {
+        Self { peripheral }
+    }
+
+    fn characteristic(&self, uuid: &str) -> Result<BtleChar> {
+        let target = uuid.to_ascii_lowercase();
+        self.peripheral
+            .characteristics()
+            .into_iter()
+            .find(|c| c.uuid.to_string().to_ascii_lowercase() == target)
+            .ok_or(crate::error::BleError::MalformedPdu("gatt characteristic not found"))
+    }
+}
+
+#[async_trait]
+impl GattConnection for BtleplugConnection {
+    async fn write(&self, char_uuid: &str, value: &[u8]) -> Result<()> {
+        let ch = self.characteristic(char_uuid)?;
+        self.peripheral
+            .write(&ch, value, WriteType::WithResponse)
+            .await?;
+        Ok(())
+    }
+
+    async fn read(&self, char_uuid: &str) -> Result<Vec<u8>> {
+        let ch = self.characteristic(char_uuid)?;
+        Ok(self.peripheral.read(&ch).await?)
+    }
+
+    async fn subscribe(&self, char_uuid: &str) -> Result<mpsc::Receiver<Vec<u8>>> {
+        let ch = self.characteristic(char_uuid)?;
+        self.peripheral.subscribe(&ch).await?;
+        let target = ch.uuid;
+        let mut notifs = self.peripheral.notifications().await?;
+        let (tx, rx) = mpsc::channel(16);
+        tokio::spawn(async move {
+            use tokio_stream::StreamExt as _;
+            while let Some(n) = notifs.next().await {
+                if n.uuid == target && tx.send(n.value).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(rx)
+    }
+
+    async fn enumerate(&self) -> Result<Vec<GattService>> {
+        self.peripheral.discover_services().await?;
+        let mut services = Vec::new();
+        for svc in self.peripheral.services() {
+            let characteristics = svc
+                .characteristics
+                .iter()
+                .map(|c| GattCharacteristic {
+                    uuid: c.uuid.to_string(),
+                    iid: 0,
+                })
+                .collect();
+            services.push(GattService {
+                uuid: svc.uuid.to_string(),
+                iid: 0,
+                characteristics,
+            });
+        }
+        Ok(services)
+    }
+}
+
 /// One GATT characteristic discovered on the accessory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GattCharacteristic {
