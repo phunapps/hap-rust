@@ -188,6 +188,28 @@ impl HapController {
         Ok(admin.list().await?)
     }
 
+    /// Ask an unpaired accessory to identify itself (blink/beep) before pairing.
+    ///
+    /// HAP only permits this on an UNPAIRED accessory; a paired accessory rejects
+    /// it (surfaced as [`HapError::Http`]).
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`] if the accessory cannot be reached;
+    /// [`HapError::Http`] if it rejects the request.
+    pub async fn identify(&self, accessory: &DiscoveredAccessory) -> Result<()> {
+        let mut conn = HapConnection::connect(accessory.addr).await?;
+        let resp = conn
+            .request("POST", "/identify", "application/hap+json", b"")
+            .await?;
+        if !(200..300).contains(&resp.status) {
+            return Err(HapError::Http {
+                status: resp.status,
+            });
+        }
+        Ok(())
+    }
+
     /// Register another controller's long-term public key on the accessory
     /// (multi-admin). `controller_id` and `ltpk` identify the controller added.
     ///
