@@ -11,6 +11,7 @@ use hap_model::{CharacteristicType, ServiceType};
 use std::collections::HashMap;
 use std::sync::Arc;
 use crate::session::BleSession;
+use tokio_stream::StreamExt as _;
 
 /// A characteristic value-change event.
 #[derive(Debug, Clone, PartialEq)]
@@ -34,12 +35,14 @@ pub struct BleAccessory {
     /// (aid, iid) -> characteristic UUID, format.
     chars: HashMap<(u64, u64), (String, CharFormat)>,
     tid: u8,
+    events_tx: tokio::sync::broadcast::Sender<CharacteristicEvent>,
 }
 
 impl BleAccessory {
     /// Wrap an established GATT link + session. Call [`BleAccessory::refresh_db`]
     /// before use.
     pub fn new(gatt: Arc<dyn GattConnection>, session: BleSession, frag_size: usize) -> Self {
+        let (events_tx, _) = tokio::sync::broadcast::channel(64);
         Self {
             gatt,
             session,
@@ -47,6 +50,7 @@ impl BleAccessory {
             accessories: Vec::new(),
             chars: HashMap::new(),
             tid: 0,
+            events_tx,
         }
     }
 
@@ -132,6 +136,43 @@ impl BleAccessory {
         let raw = pdu::value_param(&resp.body)?;
         db::decode_value(format, &raw)
     }
+
+    /// Subscribe to value-change events for a characteristic. The accessory's
+    /// notifications are decoded and published on [`BleAccessory::events`]. For
+    /// this milestone, notification payloads are treated as unencrypted
+    /// read-style PDUs (connected-event security is reconciled on hardware
+    /// later).
+    ///
+    /// # Errors
+    /// [`BleError::CharacteristicNotFound`] if unknown; otherwise GATT errors.
+    pub async fn subscribe(&mut self, aid: u64, iid: u64) -> Result<()> {
+        let (uuid, format) = self
+            .chars
+            .get(&(aid, iid))
+            .cloned()
+            .ok_or(BleError::CharacteristicNotFound { aid, iid })?;
+        let mut rx = self.gatt.subscribe(&uuid).await?;
+        let tx = self.events_tx.clone();
+        tokio::spawn(async move {
+            while let Some(raw) = rx.recv().await {
+                if let Ok(resp) = pdu::decode_response(&raw) {
+                    if let Ok(value_bytes) = pdu::value_param(&resp.body) {
+                        if let Ok(value) = db::decode_value(format, &value_bytes) {
+                            let _ = tx.send(CharacteristicEvent { aid, iid, value });
+                        }
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
+    /// An async stream of characteristic events. Each call returns a fresh
+    /// subscriber to the shared event channel.
+    pub fn events(&self) -> impl tokio_stream::Stream<Item = CharacteristicEvent> {
+        tokio_stream::wrappers::BroadcastStream::new(self.events_tx.subscribe())
+            .filter_map(std::result::Result::ok)
+    }
 }
 
 #[cfg(test)]
@@ -198,5 +239,30 @@ mod tests {
         let (h, _g) = handle_with_db().await;
         let err = h.find(ServiceType::LightBulb, CharacteristicType::Brightness).unwrap_err();
         assert!(matches!(err, BleError::CharacteristicNotFound { .. }));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn subscribe_then_event_decodes_value() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+        h.subscribe(1, 11).await.unwrap();
+        let mut events = h.events();
+
+        // The accessory pushes a notification: a Characteristic-Read-style
+        // response PDU (unencrypted in this test) with value param [0x01].
+        let body = crate::pdu::encode_value_param(&[0x01]);
+        let mut notif = vec![0x02, 0x00, 0x00];
+        notif.extend_from_slice(&u16::try_from(body.len()).unwrap().to_le_bytes());
+        notif.extend_from_slice(&body);
+        gatt.notifier("00000025-0000-1000-8000-0026bb765291")
+            .unwrap()
+            .send(notif)
+            .await
+            .unwrap();
+
+        let ev = events.next().await.unwrap();
+        assert_eq!(ev.iid, 11);
+        assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
     }
 }
