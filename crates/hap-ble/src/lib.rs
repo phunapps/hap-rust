@@ -16,6 +16,7 @@ mod pairing;
 mod db;
 mod discovery;
 mod accessory;
+mod controller;
 
 pub use error::{BleError, Result};
 pub use gatt::{BtleplugConnection, GattCharacteristic, GattConnection, GattService};
@@ -24,5 +25,13 @@ pub use pdu::param;
 pub use session::BleSession;
 pub use pairing::{exchange, pair_setup, pair_verify};
 pub use db::{build_db, decode_value};
-pub use discovery::{parse_hap_advert, DiscoveredBleAccessory};
+pub use discovery::{connect_gatt, parse_hap_advert, scan, DiscoveredBleAccessory};
 pub use accessory::{BleAccessory, CharacteristicEvent};
+pub use controller::BleController;
+// Public re-exports of lower-crate types that appear in this crate's API.
+pub use hap_crypto::{AccessoryPairing, ControllerKeypair};
+pub use hap_model::{
+    format::{CharFormat, CharValue},
+    tree::{Accessory, Characteristic, Service},
+    CharacteristicType, ServiceType,
+};

@@ -1,6 +1,65 @@
 //! BLE discovery: parse the HAP manufacturer advertisement and scan for
 //! accessories.
 
+use crate::error::Result;
+use crate::gatt::BtleplugConnection;
+use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
+use btleplug::platform::Manager;
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Apple's Bluetooth company identifier; HAP advertisements live under it.
+const APPLE_COMPANY_ID: u16 = 0x004C;
+
+/// Scan for HAP accessories advertising over BLE for `timeout`.
+///
+/// # Errors
+/// Returns [`crate::error::BleError::Bluetooth`] on adapter/scan failures.
+pub async fn scan(timeout: Duration) -> Result<Vec<DiscoveredBleAccessory>> {
+    let manager = Manager::new().await?;
+    let adapters = manager.adapters().await?;
+    let central = adapters
+        .into_iter()
+        .next()
+        .ok_or(crate::error::BleError::AccessoryNotFound)?;
+    central.start_scan(ScanFilter::default()).await?;
+    tokio::time::sleep(timeout).await;
+
+    let mut found = Vec::new();
+    for p in central.peripherals().await? {
+        let Some(props) = p.properties().await? else { continue };
+        if let Some(mfg) = props.manufacturer_data.get(&APPLE_COMPANY_ID) {
+            if let Some(acc) = parse_hap_advert(mfg, p.id().to_string()) {
+                found.push(acc);
+            }
+        }
+    }
+    central.stop_scan().await?;
+    Ok(found)
+}
+
+/// Connect to a discovered accessory and return a GATT link to it.
+///
+/// # Errors
+/// Returns [`crate::error::BleError`] on connect/discovery failure.
+pub async fn connect_gatt(accessory: &DiscoveredBleAccessory) -> Result<Arc<BtleplugConnection>> {
+    let manager = Manager::new().await?;
+    let central = manager
+        .adapters()
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(crate::error::BleError::AccessoryNotFound)?;
+    for p in central.peripherals().await? {
+        if p.id().to_string() == accessory.peripheral_id {
+            p.connect().await?;
+            p.discover_services().await?;
+            return Ok(Arc::new(BtleplugConnection::new(p)));
+        }
+    }
+    Err(crate::error::BleError::AccessoryNotFound)
+}
+
 /// A HAP accessory found while scanning over BLE.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredBleAccessory {
