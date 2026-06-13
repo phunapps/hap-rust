@@ -86,10 +86,15 @@ pub(crate) struct ReconnectingSession {
     current_rx: watch::Receiver<Arc<dyn Session>>,
     reconnector: Box<dyn Reconnector>,
     state_tx: broadcast::Sender<ConnectionState>,
+    request_timeout: Duration,
 }
 
 impl ReconnectingSession {
-    pub(crate) fn new(initial: Arc<dyn Session>, reconnector: Box<dyn Reconnector>) -> Self {
+    pub(crate) fn new(
+        initial: Arc<dyn Session>,
+        reconnector: Box<dyn Reconnector>,
+        request_timeout: Duration,
+    ) -> Self {
         let (current_tx, current_rx) = watch::channel(initial);
         let (state_tx, _) = broadcast::channel(16);
         Self {
@@ -97,6 +102,7 @@ impl ReconnectingSession {
             current_rx,
             reconnector,
             state_tx,
+            request_timeout,
         }
     }
 
@@ -123,9 +129,10 @@ impl ReconnectingSession {
         self.state_tx.subscribe()
     }
 
-    /// Run a request; if the current session is dead, wait (bounded) for the
-    /// supervisor task to publish a fresh session, then retry on it once.
-    /// Returns [`HapError::ConnectionLost`] if no fresh session arrives in time.
+    /// Run a request; if the session hangs past `request_timeout` or returns a
+    /// dead-session error, wait (bounded) for the supervisor to publish a fresh
+    /// session and retry on it. Returns [`HapError::ConnectionLost`] if no fresh
+    /// session arrives in time.
     pub(crate) async fn request(
         &self,
         method: &str,
@@ -134,26 +141,55 @@ impl ReconnectingSession {
         body: &[u8],
     ) -> Result<SessionResponse> {
         let sess = self.current();
-        match sess.request(method, path, content_type, body).await {
-            Ok(r) => Ok(r),
-            Err(e) if is_session_dead(&e) => {
-                let mut rx = self.current_tx.subscribe();
-                loop {
-                    let fresh = rx.borrow_and_update().clone();
-                    if !Arc::ptr_eq(&fresh, &sess) {
-                        return fresh.request(method, path, content_type, body).await;
-                    }
-                    // Wait (bounded) for the supervisor to publish a new session.
-                    // Any timeout or closed channel means it never arrived.
-                    if !matches!(
-                        tokio::time::timeout(FOREGROUND_WAIT, rx.changed()).await,
-                        Ok(Ok(()))
-                    ) {
-                        return Err(HapError::ConnectionLost);
-                    }
+        match tokio::time::timeout(
+            self.request_timeout,
+            sess.request(method, path, content_type, body),
+        )
+        .await
+        {
+            Ok(Ok(r)) => Ok(r),
+            Ok(Err(e)) if is_session_dead(&e) => {
+                self.wait_for_fresh_then_retry(&sess, method, path, content_type, body)
+                    .await
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_elapsed) => {
+                // Hung past the bound. Retry once if the supervisor already swapped
+                // in a fresh session; otherwise fail fast (no extra FOREGROUND_WAIT).
+                let fresh = self.current();
+                if Arc::ptr_eq(&fresh, &sess) {
+                    Err(HapError::ConnectionLost)
+                } else {
+                    fresh.request(method, path, content_type, body).await
                 }
             }
-            Err(e) => Err(e),
+        }
+    }
+
+    /// Wait (bounded) for the supervisor to publish a session different from
+    /// `dead`, then retry on it; `ConnectionLost` if none arrives in time.
+    async fn wait_for_fresh_then_retry(
+        &self,
+        dead: &Arc<dyn Session>,
+        method: &str,
+        path: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<SessionResponse> {
+        let mut rx = self.current_tx.subscribe();
+        loop {
+            let fresh = rx.borrow_and_update().clone();
+            if !Arc::ptr_eq(&fresh, dead) {
+                return fresh.request(method, path, content_type, body).await;
+            }
+            // Wait (bounded) for the supervisor to publish a new session.
+            // Any timeout or closed channel means it never arrived.
+            if !matches!(
+                tokio::time::timeout(FOREGROUND_WAIT, rx.changed()).await,
+                Ok(Ok(()))
+            ) {
+                return Err(HapError::ConnectionLost);
+            }
         }
     }
 }

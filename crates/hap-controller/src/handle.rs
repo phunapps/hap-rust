@@ -16,6 +16,13 @@ use crate::error::{HapError, Result};
 use crate::event::{into_stream, CharacteristicEvent};
 use crate::reconnect::{backoff, ConnectionState, Reconnected, ReconnectingSession, Reconnector};
 
+/// Default per-request timeout applied to every new [`AccessoryHandle`].
+///
+/// A foreground operation (read, write, subscribe) that receives no response
+/// within this window fails with [`HapError::ConnectionLost`] rather than
+/// hanging until TCP's own timeout fires.
+pub(crate) const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// `(aid, iid)` → declared characteristic format, learned from `/accessories`.
 /// Shared with the event pump so it can decode `EVENT/1.0` values (which carry
 /// no `format`) with their true type instead of falling back to inference.
@@ -127,22 +134,30 @@ impl AccessoryHandle {
     /// re-establish it. Crate-internal — used by the controller after Pair
     /// Verify. Must be called from within a Tokio runtime, since it spawns the
     /// supervisor task that owns reconnection and the event pump.
-    pub(crate) fn connect(session: Arc<dyn Session>, reconnector: Box<dyn Reconnector>) -> Self {
-        Self::build(session, reconnector)
+    pub(crate) fn connect(
+        session: Arc<dyn Session>,
+        reconnector: Box<dyn Reconnector>,
+        request_timeout: std::time::Duration,
+    ) -> Self {
+        Self::build(session, reconnector, request_timeout)
     }
 
     /// Build a handle around an arbitrary [`Session`] with no reconnection.
     /// Hidden test seam — used by this crate's integration tests to wrap a mock.
     #[doc(hidden)]
     pub fn from_session(session: Box<dyn Session>) -> Self {
-        Self::build(Arc::from(session), Box::new(NoReconnect))
+        Self::build(
+            Arc::from(session),
+            Box::new(NoReconnect),
+            DEFAULT_REQUEST_TIMEOUT,
+        )
     }
 
     /// Build a handle around a session plus a custom [`Reconnector`]. Hidden test
     /// seam — used by the reconnect tests to drive a controlled reconnector.
     #[doc(hidden)]
     pub fn from_parts(session: Arc<dyn Session>, reconnector: Box<dyn Reconnector>) -> Self {
-        Self::build(session, reconnector)
+        Self::build(session, reconnector, DEFAULT_REQUEST_TIMEOUT)
     }
 
     /// Assemble the handle and spawn the supervisor task. Must be called from
@@ -154,12 +169,20 @@ impl AccessoryHandle {
     /// session for foreground ops to pick up. Foreground ops never reconnect
     /// themselves — they only wait for a restored session — so reconnection is
     /// race-free by construction.
-    fn build(session: Arc<dyn Session>, reconnector: Box<dyn Reconnector>) -> Self {
+    fn build(
+        session: Arc<dyn Session>,
+        reconnector: Box<dyn Reconnector>,
+        request_timeout: std::time::Duration,
+    ) -> Self {
         let (events_tx, _) = broadcast::channel(64);
         let formats: FormatMap = Arc::new(Mutex::new(HashMap::new()));
         let subscribed: Arc<Mutex<HashSet<(u64, u64)>>> = Arc::new(Mutex::new(HashSet::new()));
         let needs_refresh = Arc::new(AtomicBool::new(false));
-        let conn = Arc::new(ReconnectingSession::new(session, reconnector));
+        let conn = Arc::new(ReconnectingSession::new(
+            session,
+            reconnector,
+            request_timeout,
+        ));
 
         let pump = conn.clone();
         let tx = events_tx.clone();
@@ -428,6 +451,21 @@ impl AccessoryHandle {
         // Record the id so the supervisor can re-issue it after a reconnect.
         if let Ok(mut s) = self.subscribed.lock() {
             s.insert((aid, iid));
+        }
+        Ok(())
+    }
+
+    /// Stop receiving change events for a characteristic.
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
+    /// on a per-characteristic failure.
+    pub async fn unsubscribe(&mut self, aid: u64, iid: u64) -> Result<()> {
+        let body = hap_model::build_subscribe_request(&[(aid, iid)], false);
+        self.put_characteristics(&body).await?;
+        if let Ok(mut s) = self.subscribed.lock() {
+            s.remove(&(aid, iid));
         }
         Ok(())
     }

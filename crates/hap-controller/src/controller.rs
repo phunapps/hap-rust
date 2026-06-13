@@ -21,10 +21,21 @@ struct PairingReconnector {
 #[async_trait::async_trait]
 impl crate::reconnect::Reconnector for PairingReconnector {
     async fn reconnect(&self) -> Result<crate::reconnect::Reconnected> {
+        // Best-effort: read the accessory's current config number (c#) from mDNS
+        // so the handle can refresh its cached DB when the config changes.
+        let config_number = hap_transport::discover(std::time::Duration::from_secs(3))
+            .await
+            .ok()
+            .and_then(|found| {
+                found
+                    .into_iter()
+                    .find(|d| d.id == self.stored.pairing.pairing_id)
+                    .map(|d| d.config_number)
+            });
         let session = hap_pairing::connect(&self.stored, &self.keypair).await?;
         Ok(crate::reconnect::Reconnected {
             session: Arc::new(session),
-            config_number: None,
+            config_number,
         })
     }
 }
@@ -50,6 +61,7 @@ pub struct HapController {
     /// need not touch the async store. Assumes this process is the sole writer
     /// of the store (the v1.0 single-controller model).
     cached_ids: Vec<String>,
+    request_timeout: std::time::Duration,
 }
 
 impl HapController {
@@ -79,7 +91,15 @@ impl HapController {
             store,
             keypair,
             cached_ids,
+            request_timeout: crate::handle::DEFAULT_REQUEST_TIMEOUT,
         })
+    }
+
+    /// Set the per-request timeout for handles created after this call
+    /// (default 10s). Bounds how long a foreground read/write waits on a
+    /// silently-dropped connection before failing with [`HapError::ConnectionLost`].
+    pub fn set_request_timeout(&mut self, timeout: std::time::Duration) {
+        self.request_timeout = timeout;
     }
 
     /// Discover `_hap._tcp` accessories on the local network for up to
@@ -135,7 +155,11 @@ impl HapController {
             stored: stored.clone(),
             keypair: self.keypair.clone(),
         });
-        Ok(AccessoryHandle::connect(Arc::new(session), reconnector))
+        Ok(AccessoryHandle::connect(
+            Arc::new(session),
+            reconnector,
+            self.request_timeout,
+        ))
     }
 
     /// Open a new secure session to an already-paired accessory.
@@ -152,7 +176,11 @@ impl HapController {
             stored,
             keypair: self.keypair.clone(),
         });
-        Ok(AccessoryHandle::connect(Arc::new(session), reconnector))
+        Ok(AccessoryHandle::connect(
+            Arc::new(session),
+            reconnector,
+            self.request_timeout,
+        ))
     }
 
     /// Remove a pairing both from the accessory (`/pairings` remove of this
@@ -172,6 +200,62 @@ impl HapController {
         }
         self.store.delete_pairing(accessory_id).await?;
         self.cached_ids.retain(|id| id != accessory_id);
+        Ok(())
+    }
+
+    /// List every controller currently paired to the accessory.
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::UnknownAccessory`] if `accessory_id` is not in the store;
+    /// otherwise [`HapError::Pairing`]/[`HapError::Crypto`]/[`HapError::Transport`].
+    pub async fn list_pairings(&self, accessory_id: &str) -> Result<Vec<hap_pairing::PairingInfo>> {
+        let stored = self.load_stored(accessory_id).await?;
+        let mut session = hap_pairing::connect(&stored, &self.keypair).await?;
+        let mut admin = PairingsAdmin::new(&mut session);
+        Ok(admin.list().await?)
+    }
+
+    /// Ask an unpaired accessory to identify itself (blink/beep) before pairing.
+    ///
+    /// HAP only permits this on an UNPAIRED accessory; a paired accessory rejects
+    /// it (surfaced as [`HapError::Http`]).
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`] if the accessory cannot be reached;
+    /// [`HapError::Http`] if it rejects the request.
+    pub async fn identify(&self, accessory: &DiscoveredAccessory) -> Result<()> {
+        let mut conn = HapConnection::connect(accessory.addr).await?;
+        let resp = conn
+            .request("POST", "/identify", "application/hap+json", b"")
+            .await?;
+        if !(200..300).contains(&resp.status) {
+            return Err(HapError::Http {
+                status: resp.status,
+            });
+        }
+        Ok(())
+    }
+
+    /// Register another controller's long-term public key on the accessory
+    /// (multi-admin). `controller_id` and `ltpk` identify the controller added.
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::UnknownAccessory`] if `accessory_id` is not in the store;
+    /// otherwise [`HapError::Pairing`]/[`HapError::Crypto`]/[`HapError::Transport`].
+    pub async fn add_pairing(
+        &self,
+        accessory_id: &str,
+        controller_id: &str,
+        ltpk: [u8; 32],
+        admin: bool,
+    ) -> Result<()> {
+        let stored = self.load_stored(accessory_id).await?;
+        let mut session = hap_pairing::connect(&stored, &self.keypair).await?;
+        let mut a = PairingsAdmin::new(&mut session);
+        a.add(controller_id, ltpk, admin).await?;
         Ok(())
     }
 
