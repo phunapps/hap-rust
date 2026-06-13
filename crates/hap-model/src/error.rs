@@ -61,5 +61,18 @@ pub enum ModelError {
     Executor(String),
 }
 
+impl ModelError {
+    /// The named HAP status if this is a per-characteristic status error.
+    #[must_use]
+    pub fn hap_status(&self) -> Option<crate::status::HapStatus> {
+        match self {
+            ModelError::CharacteristicStatus { status, .. } => {
+                Some(crate::status::HapStatus::from_code(*status))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// `Result<T, ModelError>` for convenience.
 pub type Result<T> = core::result::Result<T, ModelError>;
