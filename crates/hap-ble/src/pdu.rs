@@ -2,6 +2,9 @@
 //! and the body param TLV + GATT format maps. Pure logic — no I/O.
 
 use crate::error::{BleError, Result};
+use hap_model::format::CharFormat;
+use hap_model::perms::Perms;
+use hap_model::CharacteristicType;
 
 /// HAP-BLE PDU opcodes used by this transport.
 // Variant names match the HAP-BLE spec verbatim and share the `Characteristic`
@@ -10,7 +13,8 @@ use crate::error::{BleError, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpCode {
     /// Read a characteristic's signature (type, properties, format).
-    // Used by future tasks (signature read); suppress dead_code until then.
+    // The opcode value is defined here for completeness; encode_request callers
+    // will use it when issuing signature reads in the BLE transport layer.
     #[allow(dead_code)]
     CharacteristicSignatureRead = 0x01,
     /// Write a characteristic value.
@@ -24,16 +28,10 @@ pub mod param {
     /// The characteristic value.
     pub const VALUE: u8 = 0x01;
     /// The characteristic type UUID.
-    // Used by future tasks (signature read); suppress dead_code until then.
-    #[allow(dead_code)]
     pub const CHAR_TYPE: u8 = 0x04;
     /// HAP characteristic properties descriptor (u16 LE bitmask).
-    // Used by future tasks (signature read); suppress dead_code until then.
-    #[allow(dead_code)]
     pub const PROPERTIES: u8 = 0x0A;
     /// GATT presentation format descriptor (7 bytes).
-    // Used by future tasks (signature read); suppress dead_code until then.
-    #[allow(dead_code)]
     pub const PRESENTATION_FORMAT: u8 = 0x0C;
 }
 
@@ -155,9 +153,138 @@ pub fn reassemble(frags: &[Vec<u8>]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// A parsed characteristic signature: the fields needed to populate a
+/// [`hap_model::tree::Characteristic`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signature {
+    /// The characteristic type.
+    pub char_type: CharacteristicType,
+    /// The value format.
+    pub format: CharFormat,
+    /// The permission set.
+    pub perms: Perms,
+}
+
+/// Map a GATT presentation-format byte to a HAP [`CharFormat`].
+pub fn char_format_from_gatt(b: u8) -> Option<CharFormat> {
+    Some(match b {
+        0x01 => CharFormat::Bool,
+        0x04 => CharFormat::Uint8,
+        0x06 => CharFormat::Uint16,
+        0x08 => CharFormat::Uint32,
+        0x0A => CharFormat::Uint64,
+        0x10 => CharFormat::Int,
+        0x14 => CharFormat::Float,
+        0x19 => CharFormat::String,
+        0x1B => CharFormat::Data,
+        _ => return None,
+    })
+}
+
+/// Map a HAP characteristic-properties bitmask to a [`Perms`] set.
+pub fn perms_from_properties(bits: u16) -> Perms {
+    Perms {
+        read: bits & 0x0001 != 0 || bits & 0x0010 != 0,
+        write: bits & 0x0002 != 0 || bits & 0x0020 != 0,
+        events: bits & 0x0080 != 0,
+        hidden: bits & 0x0040 != 0,
+        ..Perms::default()
+    }
+}
+
+/// Convert a little-endian 16-byte BLE UUID into the canonical 36-char string.
+pub(crate) fn le_bytes_to_uuid(le: &[u8]) -> Result<String> {
+    if le.len() != 16 {
+        return Err(BleError::MalformedPdu("characteristic type uuid not 16 bytes"));
+    }
+    let mut be = le.to_vec();
+    be.reverse();
+    let h = be.iter().fold(String::with_capacity(32), |mut acc, b| {
+        use std::fmt::Write as _;
+        let _ = write!(acc, "{b:02x}");
+        acc
+    });
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32]
+    ))
+}
+
+/// Parse a Characteristic-Signature-Read response body into a [`Signature`].
+///
+/// # Errors
+/// Returns [`BleError::MalformedPdu`] if required params are missing/short, or
+/// [`BleError::Model`] if the UUID does not parse.
+pub fn parse_signature(body: &[u8]) -> Result<Signature> {
+    let map = hap_tlv8::Tlv8Map::parse(body)?;
+
+    let type_le = map
+        .get(param::CHAR_TYPE)
+        .ok_or(BleError::MalformedPdu("signature missing char type"))?;
+    let uuid = hap_model::Uuid::parse(&le_bytes_to_uuid(type_le)?)?;
+    let char_type = CharacteristicType::from_uuid(&uuid);
+
+    let prop_bytes = map
+        .get(param::PROPERTIES)
+        .ok_or(BleError::MalformedPdu("signature missing properties"))?;
+    if prop_bytes.len() < 2 {
+        return Err(BleError::MalformedPdu("properties descriptor too short"));
+    }
+    let perms = perms_from_properties(u16::from_le_bytes([prop_bytes[0], prop_bytes[1]]));
+
+    let format = map
+        .get(param::PRESENTATION_FORMAT)
+        .and_then(|pf| pf.first().copied())
+        .and_then(char_format_from_gatt)
+        .or_else(|| char_type.default_format())
+        .ok_or(BleError::MalformedPdu("no usable characteristic format"))?;
+
+    Ok(Signature { char_type, format, perms })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maps_presentation_format_byte() {
+        use hap_model::format::CharFormat;
+        assert_eq!(char_format_from_gatt(0x01), Some(CharFormat::Bool));
+        assert_eq!(char_format_from_gatt(0x08), Some(CharFormat::Uint32));
+        assert_eq!(char_format_from_gatt(0x14), Some(CharFormat::Float));
+        assert_eq!(char_format_from_gatt(0x19), Some(CharFormat::String));
+        assert_eq!(char_format_from_gatt(0xEE), None);
+    }
+
+    #[test]
+    fn maps_properties_to_perms() {
+        // bit0 read, bit1 write, bit7 events.
+        let p = perms_from_properties(0b1000_0011);
+        assert!(p.read && p.write && p.events);
+        assert!(!p.hidden);
+        // secure-read bit (bit4) also grants read.
+        let p2 = perms_from_properties(0b0001_0000);
+        assert!(p2.read);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // test code: parse success is the whole point
+    fn parses_a_signature_body() {
+        use hap_model::format::CharFormat;
+        // Build a signature body: CHAR_TYPE = On (0x25 -> full uuid 16 bytes LE),
+        // PROPERTIES = 0x0003 (read+write), PRESENTATION_FORMAT byte0 = 0x01 (bool).
+        let on_uuid_le = uuid_to_le_bytes("00000025-0000-1000-8000-0026bb765291");
+        let mut body = Vec::new();
+        let mut w = hap_tlv8::Tlv8Writer::new(&mut body);
+        w.push(param::CHAR_TYPE, &on_uuid_le);
+        w.push(param::PROPERTIES, &0x0003u16.to_le_bytes());
+        w.push(param::PRESENTATION_FORMAT, &[0x01, 0, 0, 0, 0, 0, 0]);
+
+        let sig = parse_signature(&body).unwrap();
+        assert_eq!(sig.char_type, hap_model::CharacteristicType::On);
+        assert_eq!(sig.format, CharFormat::Bool);
+        assert!(sig.perms.read && sig.perms.write);
+    }
 
     #[test]
     fn encodes_bodyless_request() {
@@ -231,5 +358,15 @@ mod tests {
         let frags = fragment(&pdu, 100);
         assert_eq!(frags.len(), 1);
         assert_eq!(frags[0], pdu);
+    }
+
+    #[allow(clippy::unwrap_used)] // test helper: hex string is always valid
+    fn uuid_to_le_bytes(full: &str) -> Vec<u8> {
+        let hex: String = full.chars().filter(|c| *c != '-').collect();
+        let mut be: Vec<u8> = (0..16)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+            .collect();
+        be.reverse(); // BLE carries the 128-bit UUID little-endian
+        be
     }
 }
