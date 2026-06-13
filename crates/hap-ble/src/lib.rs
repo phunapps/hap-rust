@@ -12,5 +12,5 @@ mod error;
 mod pdu;
 
 pub use error::{BleError, Result};
-pub use pdu::{encode_request, encode_value_param, value_param, OpCode};
+pub use pdu::{decode_response, encode_request, encode_value_param, fragment, reassemble, value_param, OpCode, Response};
 pub use pdu::param;

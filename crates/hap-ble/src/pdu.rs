@@ -73,6 +73,88 @@ pub fn value_param(body: &[u8]) -> Result<Vec<u8>> {
         .ok_or(BleError::MalformedPdu("missing value param (0x01)"))
 }
 
+/// A decoded response PDU (already reassembled from its fragments).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Response {
+    /// Transaction id echoed from the request.
+    pub tid: u8,
+    /// HAP status byte (0 = success).
+    pub status: u8,
+    /// The response body (may be empty); for reads this is a param TLV8.
+    pub body: Vec<u8>,
+}
+
+/// Decode a fully-reassembled response PDU.
+///
+/// # Errors
+/// Returns [`BleError::MalformedPdu`] if the PDU is too short or its declared
+/// body length exceeds the available bytes.
+pub fn decode_response(pdu: &[u8]) -> Result<Response> {
+    if pdu.len() < 3 {
+        return Err(BleError::MalformedPdu("response shorter than 3 bytes"));
+    }
+    let tid = pdu[1];
+    let status = pdu[2];
+    let body = if pdu.len() > 3 {
+        if pdu.len() < 5 {
+            return Err(BleError::MalformedPdu("response body length truncated"));
+        }
+        let len = usize::from(u16::from_le_bytes([pdu[3], pdu[4]]));
+        let start = 5;
+        if pdu.len() < start + len {
+            return Err(BleError::MalformedPdu("response body shorter than declared"));
+        }
+        pdu[start..start + len].to_vec()
+    } else {
+        Vec::new()
+    };
+    Ok(Response { tid, status, body })
+}
+
+/// Split a PDU into GATT-sized fragments. `frag_size` is the maximum bytes per
+/// GATT write (typically ATT MTU − 3). The first fragment keeps the PDU header;
+/// each continuation is `0x80` ++ TID ++ next body chunk.
+pub fn fragment(pdu: &[u8], frag_size: usize) -> Vec<Vec<u8>> {
+    let frag_size = frag_size.max(3);
+    if pdu.len() <= frag_size {
+        return vec![pdu.to_vec()];
+    }
+    let tid = pdu[2];
+    let mut frags = vec![pdu[..frag_size].to_vec()];
+    let mut rest = &pdu[frag_size..];
+    let cont_payload = frag_size.saturating_sub(2).max(1);
+    while !rest.is_empty() {
+        let take = rest.len().min(cont_payload);
+        let mut f = Vec::with_capacity(2 + take);
+        f.push(0x80); // continuation, request
+        f.push(tid);
+        f.extend_from_slice(&rest[..take]);
+        frags.push(f);
+        rest = &rest[take..];
+    }
+    frags
+}
+
+/// Reassemble fragments produced by an accessory: the first fragment is the
+/// full header; each continuation (`0x82`/`0x80` ++ TID ++ chunk) appends its
+/// chunk after stripping the 2-byte continuation header.
+///
+/// # Errors
+/// Returns [`BleError::MalformedPdu`] if a continuation fragment is too short.
+pub fn reassemble(frags: &[Vec<u8>]) -> Result<Vec<u8>> {
+    let mut out = match frags.first() {
+        Some(first) => first.clone(),
+        None => return Err(BleError::MalformedPdu("no fragments to reassemble")),
+    };
+    for f in &frags[1..] {
+        if f.len() < 2 {
+            return Err(BleError::MalformedPdu("continuation fragment too short"));
+        }
+        out.extend_from_slice(&f[2..]);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +182,54 @@ mod tests {
         let body = encode_value_param(&[0x01, 0x02, 0x03]);
         let got = value_param(&body).unwrap();
         assert_eq!(got, vec![0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // test code: success is the whole point
+    fn decodes_bodyless_response() {
+        // control=0x02, TID=0x11, status=0x00, no body.
+        let resp = decode_response(&[0x02, 0x11, 0x00]).unwrap();
+        assert_eq!(resp.tid, 0x11);
+        assert_eq!(resp.status, 0x00);
+        assert!(resp.body.is_empty());
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // test code: success is the whole point
+    fn decodes_response_with_body() {
+        // control=0x02, TID=0x11, status=0x00, len=2, body=[0xDE,0xAD].
+        let resp = decode_response(&[0x02, 0x11, 0x00, 0x02, 0x00, 0xDE, 0xAD]).unwrap();
+        assert_eq!(resp.status, 0x00);
+        assert_eq!(resp.body, vec![0xDE, 0xAD]);
+    }
+
+    #[test]
+    fn rejects_short_response() {
+        assert!(matches!(
+            decode_response(&[0x02, 0x11]),
+            Err(crate::error::BleError::MalformedPdu(_))
+        ));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // test code: roundtrip success is the whole point
+    fn fragments_and_reassembles_a_large_pdu() {
+        // A 300-byte PDU at MTU body-size 100 must split, then reassemble.
+        let pdu: Vec<u8> = (0..300u32).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        let frags = fragment(&pdu, 100);
+        assert!(frags.len() > 1);
+        // First fragment keeps the original header byte; continuations start 0x80.
+        assert_eq!(frags[0][0], pdu[0]);
+        assert_eq!(frags[1][0], 0x80);
+        let back = reassemble(&frags).unwrap();
+        assert_eq!(back, pdu);
+    }
+
+    #[test]
+    fn single_fragment_when_it_fits() {
+        let pdu = vec![0x00, 0x03, 0x11, 0x03, 0x02];
+        let frags = fragment(&pdu, 100);
+        assert_eq!(frags.len(), 1);
+        assert_eq!(frags[0], pdu);
     }
 }
