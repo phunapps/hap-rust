@@ -72,6 +72,10 @@ impl BleAccessory {
         .await?;
         self.chars.clear();
         let gatt_services = self.gatt.enumerate().await?;
+        // `build_db` models a single accessory (aid 1 — BLE accessories are not
+        // bridges in this milestone), so characteristic iids are unique and a
+        // plain iid->uuid map is sufficient. Revisit if multi-accessory bridges
+        // are ever modeled.
         let mut uuid_by_iid: HashMap<u64, String> = HashMap::new();
         for gs in gatt_services {
             for gc in gs.characteristics {
@@ -130,7 +134,11 @@ impl BleAccessory {
             .cloned()
             .ok_or(BleError::CharacteristicNotFound { aid, iid })?;
         self.tid = self.tid.wrapping_add(1);
-        let iid16 = u16::try_from(iid).unwrap_or(0);
+        // HAP-BLE instance ids are 16-bit on the wire; the cache only ever holds
+        // ids that came from a `u16`, so this never fails — but surface an error
+        // rather than silently addressing characteristic 0 if that ever changes.
+        let iid16 =
+            u16::try_from(iid).map_err(|_| BleError::CharacteristicNotFound { aid, iid })?;
         let resp = pdu::request_secure(
             self.gatt.as_ref(),
             &mut self.session,
