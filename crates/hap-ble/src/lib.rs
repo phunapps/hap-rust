@@ -9,8 +9,10 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod gatt;
 mod pdu;
 
 pub use error::{BleError, Result};
+pub use gatt::{GattCharacteristic, GattConnection, GattService};
 pub use pdu::{char_format_from_gatt, decode_response, encode_request, encode_value_param, fragment, parse_signature, perms_from_properties, reassemble, value_param, OpCode, Response, Signature};
 pub use pdu::param;
