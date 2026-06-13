@@ -21,10 +21,21 @@ struct PairingReconnector {
 #[async_trait::async_trait]
 impl crate::reconnect::Reconnector for PairingReconnector {
     async fn reconnect(&self) -> Result<crate::reconnect::Reconnected> {
+        // Best-effort: read the accessory's current config number (c#) from mDNS
+        // so the handle can refresh its cached DB when the config changes.
+        let config_number = hap_transport::discover(std::time::Duration::from_secs(3))
+            .await
+            .ok()
+            .and_then(|found| {
+                found
+                    .into_iter()
+                    .find(|d| d.id == self.stored.pairing.pairing_id)
+                    .map(|d| d.config_number)
+            });
         let session = hap_pairing::connect(&self.stored, &self.keypair).await?;
         Ok(crate::reconnect::Reconnected {
             session: Arc::new(session),
-            config_number: None,
+            config_number,
         })
     }
 }

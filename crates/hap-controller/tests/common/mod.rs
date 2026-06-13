@@ -234,19 +234,30 @@ impl Session for MockSession {
     }
 }
 
-/// A [`Reconnector`] that hands out a fixed sequence of sessions, returning
+/// A [`Reconnector`] that hands out a fixed sequence of sessions (each paired
+/// with its own config number), returning
 /// [`hap_controller::HapError::ConnectionLost`] once the list is exhausted.
 pub struct MockReconnector {
-    sessions: std::sync::Mutex<std::vec::IntoIter<MockSession>>,
-    config_number: Option<u32>,
+    sessions: std::sync::Mutex<std::vec::IntoIter<(MockSession, Option<u32>)>>,
 }
 
 impl MockReconnector {
+    /// Build a reconnector where every session returns the same `config_number`.
     #[allow(clippy::unnecessary_box_returns)]
     pub fn new(sessions: Vec<MockSession>, config_number: Option<u32>) -> Box<Self> {
+        let pairs: Vec<(MockSession, Option<u32>)> =
+            sessions.into_iter().map(|s| (s, config_number)).collect();
         Box::new(Self {
-            sessions: std::sync::Mutex::new(sessions.into_iter()),
-            config_number,
+            sessions: std::sync::Mutex::new(pairs.into_iter()),
+        })
+    }
+
+    /// Build a reconnector where each session carries its own config number
+    /// (for c#-refresh tests).
+    #[allow(clippy::unnecessary_box_returns)]
+    pub fn with_config_numbers(pairs: Vec<(MockSession, Option<u32>)>) -> Box<Self> {
+        Box::new(Self {
+            sessions: std::sync::Mutex::new(pairs.into_iter()),
         })
     }
 }
@@ -256,9 +267,9 @@ impl hap_controller::Reconnector for MockReconnector {
     async fn reconnect(&self) -> hap_controller::Result<hap_controller::Reconnected> {
         let next = self.sessions.lock().unwrap().next();
         match next {
-            Some(s) => Ok(hap_controller::Reconnected {
+            Some((s, cn)) => Ok(hap_controller::Reconnected {
                 session: std::sync::Arc::new(s),
-                config_number: self.config_number,
+                config_number: cn,
             }),
             None => Err(hap_controller::HapError::ConnectionLost),
         }
