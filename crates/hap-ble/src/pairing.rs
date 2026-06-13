@@ -26,9 +26,16 @@ pub(crate) async fn exchange<G: GattConnection + ?Sized>(
     frag_size: usize,
 ) -> Result<Vec<u8>> {
     let body = pdu::encode_value_param(tlv);
-    let resp =
-        pdu::request(gatt, char_uuid, OpCode::CharacteristicWrite, tid, iid, &body, frag_size)
-            .await?;
+    let resp = pdu::request(
+        gatt,
+        char_uuid,
+        OpCode::CharacteristicWrite,
+        tid,
+        iid,
+        &body,
+        frag_size,
+    )
+    .await?;
     if resp.status != 0 {
         return Err(BleError::PairingRejected(resp.status));
     }

@@ -27,7 +27,9 @@ pub async fn scan(timeout: Duration) -> Result<Vec<DiscoveredBleAccessory>> {
 
     let mut found = Vec::new();
     for p in central.peripherals().await? {
-        let Some(props) = p.properties().await? else { continue };
+        let Some(props) = p.properties().await? else {
+            continue;
+        };
         if let Some(mfg) = props.manufacturer_data.get(&APPLE_COMPANY_ID) {
             if let Some(acc) = parse_hap_advert(mfg, p.id().to_string()) {
                 found.push(acc);
@@ -80,7 +82,10 @@ pub struct DiscoveredBleAccessory {
 
 /// Parse a HAP manufacturer-data payload (the bytes after the 0x004C company id)
 /// into a [`DiscoveredBleAccessory`]. Returns `None` if it is not a HAP advert.
-pub(crate) fn parse_hap_advert(mfg: &[u8], peripheral_id: String) -> Option<DiscoveredBleAccessory> {
+pub(crate) fn parse_hap_advert(
+    mfg: &[u8],
+    peripheral_id: String,
+) -> Option<DiscoveredBleAccessory> {
     // Byte 0 must be the HomeKit advertising type (0x06); minimum length 17.
     if mfg.len() < 17 || mfg[0] != 0x06 {
         return None;

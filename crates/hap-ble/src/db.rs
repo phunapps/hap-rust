@@ -46,9 +46,28 @@ pub(crate) async fn build_db<G: GattConnection + ?Sized>(
         for gc in gs.characteristics {
             tid = tid.wrapping_add(1);
             let resp = if encrypted {
-                pdu::request_secure(gatt, session, &gc.uuid, OpCode::CharacteristicSignatureRead, tid, gc.iid, &[], frag_size).await?
+                pdu::request_secure(
+                    gatt,
+                    session,
+                    &gc.uuid,
+                    OpCode::CharacteristicSignatureRead,
+                    tid,
+                    gc.iid,
+                    &[],
+                    frag_size,
+                )
+                .await?
             } else {
-                pdu::request(gatt, &gc.uuid, OpCode::CharacteristicSignatureRead, tid, gc.iid, &[], frag_size).await?
+                pdu::request(
+                    gatt,
+                    &gc.uuid,
+                    OpCode::CharacteristicSignatureRead,
+                    tid,
+                    gc.iid,
+                    &[],
+                    frag_size,
+                )
+                .await?
             };
             let sig = pdu::parse_signature(&resp.body)?;
             chars.push(Characteristic {
@@ -64,7 +83,11 @@ pub(crate) async fn build_db<G: GattConnection + ?Sized>(
                 max_len: None,
             });
         }
-        services.push(Service { iid: u64::from(gs.iid), service_type: svc_type, characteristics: chars });
+        services.push(Service {
+            iid: u64::from(gs.iid),
+            service_type: svc_type,
+            characteristics: chars,
+        });
     }
 
     Ok(vec![Accessory { aid: 1, services }])
@@ -78,7 +101,9 @@ pub(crate) async fn build_db<G: GattConnection + ?Sized>(
 pub(crate) fn decode_value(format: CharFormat, raw: &[u8]) -> Result<CharValue> {
     let need = |n: usize| -> Result<()> {
         if raw.len() < n {
-            Err(BleError::MalformedPdu("value shorter than its format width"))
+            Err(BleError::MalformedPdu(
+                "value shorter than its format width",
+            ))
         } else {
             Ok(())
         }
@@ -98,7 +123,9 @@ pub(crate) fn decode_value(format: CharFormat, raw: &[u8]) -> Result<CharValue> 
         }
         CharFormat::Uint32 => {
             need(4)?;
-            CharValue::Uint(u64::from(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])))
+            CharValue::Uint(u64::from(u32::from_le_bytes([
+                raw[0], raw[1], raw[2], raw[3],
+            ])))
         }
         CharFormat::Uint64 => {
             need(8)?;
@@ -108,11 +135,15 @@ pub(crate) fn decode_value(format: CharFormat, raw: &[u8]) -> Result<CharValue> 
         }
         CharFormat::Int => {
             need(4)?;
-            CharValue::Int(i64::from(i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])))
+            CharValue::Int(i64::from(i32::from_le_bytes([
+                raw[0], raw[1], raw[2], raw[3],
+            ])))
         }
         CharFormat::Float => {
             need(4)?;
-            CharValue::Float(f64::from(f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])))
+            CharValue::Float(f64::from(f32::from_le_bytes([
+                raw[0], raw[1], raw[2], raw[3],
+            ])))
         }
         CharFormat::String => CharValue::Str(String::from_utf8_lossy(raw).into_owned()),
         // CharFormat is #[non_exhaustive]; Tlv8, Data, and any future format
@@ -144,7 +175,10 @@ mod tests {
         let mut w = hap_tlv8::Tlv8Writer::new(&mut body);
         w.push(crate::pdu::param::CHAR_TYPE, &on_le);
         w.push(crate::pdu::param::PROPERTIES, &0x0003u16.to_le_bytes());
-        w.push(crate::pdu::param::PRESENTATION_FORMAT, &[0x01, 0, 0, 0, 0, 0, 0]);
+        w.push(
+            crate::pdu::param::PRESENTATION_FORMAT,
+            &[0x01, 0, 0, 0, 0, 0, 0],
+        );
         body
     }
 
@@ -152,9 +186,18 @@ mod tests {
     #[test]
     fn decodes_values_by_format() {
         use hap_model::format::{CharFormat, CharValue};
-        assert_eq!(decode_value(CharFormat::Bool, &[0x01]).unwrap(), CharValue::Bool(true));
-        assert_eq!(decode_value(CharFormat::Bool, &[0x00]).unwrap(), CharValue::Bool(false));
-        assert_eq!(decode_value(CharFormat::Uint8, &[0x2A]).unwrap(), CharValue::Uint(42));
+        assert_eq!(
+            decode_value(CharFormat::Bool, &[0x01]).unwrap(),
+            CharValue::Bool(true)
+        );
+        assert_eq!(
+            decode_value(CharFormat::Bool, &[0x00]).unwrap(),
+            CharValue::Bool(false)
+        );
+        assert_eq!(
+            decode_value(CharFormat::Uint8, &[0x2A]).unwrap(),
+            CharValue::Uint(42)
+        );
         assert_eq!(
             decode_value(CharFormat::Uint16, &[0x01, 0x01]).unwrap(),
             CharValue::Uint(257)
@@ -200,7 +243,10 @@ mod tests {
         resp.extend_from_slice(&body);
         gatt.queue_read("00000025-0000-1000-8000-0026bb765291", resp);
 
-        let mut session = BleSession::new(SessionKeys { read_key: [0; 32], write_key: [0; 32] });
+        let mut session = BleSession::new(SessionKeys {
+            read_key: [0; 32],
+            write_key: [0; 32],
+        });
         let accs = build_db(&gatt, &mut session, 512, /*encrypted=*/ false)
             .await
             .unwrap();

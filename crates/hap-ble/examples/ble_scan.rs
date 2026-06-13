@@ -13,7 +13,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for a in &found {
         println!(
             "- device_id={} category={} paired={} c#={} gsn={} ({})",
-            a.device_id, a.category, a.paired, a.config_number, a.global_state_number, a.peripheral_id
+            a.device_id,
+            a.category,
+            a.paired,
+            a.config_number,
+            a.global_state_number,
+            a.peripheral_id
         );
     }
     Ok(())

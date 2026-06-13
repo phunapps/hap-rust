@@ -5,12 +5,12 @@ use crate::db;
 use crate::error::{BleError, Result};
 use crate::gatt::GattConnection;
 use crate::pdu::{self, OpCode};
+use crate::session::BleSession;
 use hap_model::format::{CharFormat, CharValue};
 use hap_model::tree::Accessory;
 use hap_model::{CharacteristicType, ServiceType};
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::session::BleSession;
 use tokio_stream::StreamExt as _;
 
 /// A characteristic value-change event.
@@ -41,7 +41,11 @@ pub struct BleAccessory {
 impl BleAccessory {
     /// Wrap an established GATT link + session. Call [`BleAccessory::refresh_db`]
     /// before use.
-    pub(crate) fn new(gatt: Arc<dyn GattConnection>, session: BleSession, frag_size: usize) -> Self {
+    pub(crate) fn new(
+        gatt: Arc<dyn GattConnection>,
+        session: BleSession,
+        frag_size: usize,
+    ) -> Self {
         let (events_tx, _) = tokio::sync::broadcast::channel(64);
         Self {
             gatt,
@@ -59,8 +63,13 @@ impl BleAccessory {
     /// # Errors
     /// Propagates GATT/PDU/model errors.
     pub async fn refresh_db(&mut self, encrypted: bool) -> Result<()> {
-        self.accessories =
-            db::build_db(self.gatt.as_ref(), &mut self.session, self.frag_size, encrypted).await?;
+        self.accessories = db::build_db(
+            self.gatt.as_ref(),
+            &mut self.session,
+            self.frag_size,
+            encrypted,
+        )
+        .await?;
         self.chars.clear();
         let gatt_services = self.gatt.enumerate().await?;
         let mut uuid_by_iid: HashMap<u64, String> = HashMap::new();
@@ -208,7 +217,10 @@ mod tests {
         let mut w = hap_tlv8::Tlv8Writer::new(&mut body);
         w.push(crate::pdu::param::CHAR_TYPE, &on_le());
         w.push(crate::pdu::param::PROPERTIES, &0x0083u16.to_le_bytes()); // read+write+events
-        w.push(crate::pdu::param::PRESENTATION_FORMAT, &[0x01, 0, 0, 0, 0, 0, 0]);
+        w.push(
+            crate::pdu::param::PRESENTATION_FORMAT,
+            &[0x01, 0, 0, 0, 0, 0, 0],
+        );
         let mut resp = vec![0x02, 0x01, 0x00];
         resp.extend_from_slice(&u16::try_from(body.len()).unwrap().to_le_bytes());
         resp.extend_from_slice(&body);
@@ -219,7 +231,10 @@ mod tests {
     async fn handle_with_db() -> (BleAccessory, Arc<MockGatt>) {
         let gatt = Arc::new(MockGatt::new().with_services(vec![on_service()]));
         gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sig_resp());
-        let session = BleSession::new(SessionKeys { read_key: [0; 32], write_key: [0; 32] });
+        let session = BleSession::new(SessionKeys {
+            read_key: [0; 32],
+            write_key: [0; 32],
+        });
         let mut h = BleAccessory::new(gatt.clone(), session, 512);
         h.refresh_db(/*encrypted=*/ false).await.unwrap();
         (h, gatt)
@@ -229,7 +244,9 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     async fn find_locates_characteristic() {
         let (h, _g) = handle_with_db().await;
-        let (aid, iid) = h.find(ServiceType::LightBulb, CharacteristicType::On).unwrap();
+        let (aid, iid) = h
+            .find(ServiceType::LightBulb, CharacteristicType::On)
+            .unwrap();
         assert_eq!((aid, iid), (1, 11));
     }
 
@@ -237,7 +254,9 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     async fn find_missing_errors() {
         let (h, _g) = handle_with_db().await;
-        let err = h.find(ServiceType::LightBulb, CharacteristicType::Brightness).unwrap_err();
+        let err = h
+            .find(ServiceType::LightBulb, CharacteristicType::Brightness)
+            .unwrap_err();
         assert!(matches!(err, BleError::CharacteristicNotFound { .. }));
     }
 

@@ -31,7 +31,9 @@ impl BleController {
 
     /// Generate a fresh controller identity with the given pairing id.
     pub fn generate(id: String) -> Self {
-        Self { keypair: ControllerKeypair::generate(id) }
+        Self {
+            keypair: ControllerKeypair::generate(id),
+        }
     }
 
     /// The controller's pairing identity.

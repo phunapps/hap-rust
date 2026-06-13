@@ -101,7 +101,9 @@ pub(crate) fn decode_response(pdu: &[u8]) -> Result<Response> {
         let len = usize::from(u16::from_le_bytes([pdu[3], pdu[4]]));
         let start = 5;
         if pdu.len() < start + len {
-            return Err(BleError::MalformedPdu("response body shorter than declared"));
+            return Err(BleError::MalformedPdu(
+                "response body shorter than declared",
+            ));
         }
         pdu[start..start + len].to_vec()
     } else {
@@ -249,7 +251,9 @@ pub(crate) fn perms_from_properties(bits: u16) -> Perms {
 /// Convert a little-endian 16-byte BLE UUID into the canonical 36-char string.
 pub(crate) fn le_bytes_to_uuid(le: &[u8]) -> Result<String> {
     if le.len() != 16 {
-        return Err(BleError::MalformedPdu("characteristic type uuid not 16 bytes"));
+        return Err(BleError::MalformedPdu(
+            "characteristic type uuid not 16 bytes",
+        ));
     }
     let mut be = le.to_vec();
     be.reverse();
@@ -260,7 +264,11 @@ pub(crate) fn le_bytes_to_uuid(le: &[u8]) -> Result<String> {
     });
     Ok(format!(
         "{}-{}-{}-{}-{}",
-        &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32]
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
     ))
 }
 
@@ -293,7 +301,11 @@ pub(crate) fn parse_signature(body: &[u8]) -> Result<Signature> {
         .or_else(|| char_type.default_format())
         .ok_or(BleError::MalformedPdu("no usable characteristic format"))?;
 
-    Ok(Signature { char_type, format, perms })
+    Ok(Signature {
+        char_type,
+        format,
+        perms,
+    })
 }
 
 #[cfg(test)]
@@ -396,7 +408,9 @@ mod tests {
     #[allow(clippy::unwrap_used)] // test code: roundtrip success is the whole point
     fn fragments_and_reassembles_a_large_pdu() {
         // A 300-byte PDU at MTU body-size 100 must split, then reassemble.
-        let pdu: Vec<u8> = (0..300u32).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        let pdu: Vec<u8> = (0..300u32)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
         let frags = fragment(&pdu, 100);
         assert!(frags.len() > 1);
         // First fragment keeps the original header byte; continuations start 0x80.

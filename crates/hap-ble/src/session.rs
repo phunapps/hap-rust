@@ -24,7 +24,11 @@ pub(crate) struct BleSession {
 impl BleSession {
     /// Create a session from Pair-Verify keys, both counters at zero.
     pub(crate) fn new(keys: SessionKeys) -> Self {
-        Self { keys, send_counter: 0, recv_counter: 0 }
+        Self {
+            keys,
+            send_counter: 0,
+            recv_counter: 0,
+        }
     }
 
     /// Encrypt an outgoing PDU and advance the send counter.
@@ -68,7 +72,10 @@ mod tests {
     fn seal_then_peer_open_roundtrips() {
         // Controller seals with write_key/send_counter; the peer opens with the
         // same key as its read_key and the same counter.
-        let keys = SessionKeys { read_key: [7u8; 32], write_key: [9u8; 32] };
+        let keys = SessionKeys {
+            read_key: [7u8; 32],
+            write_key: [9u8; 32],
+        };
         let mut ctrl = BleSession::new(keys);
         let pdu = vec![0x00, 0x03, 0x11, 0x03, 0x02];
 
@@ -84,7 +91,10 @@ mod tests {
 
     #[test]
     fn counters_advance_per_message() {
-        let keys = SessionKeys { read_key: [1u8; 32], write_key: [2u8; 32] };
+        let keys = SessionKeys {
+            read_key: [1u8; 32],
+            write_key: [2u8; 32],
+        };
         let mut s = BleSession::new(keys);
         let a = s.seal(&[1, 2, 3]).unwrap();
         let b = s.seal(&[1, 2, 3]).unwrap();
@@ -93,7 +103,10 @@ mod tests {
 
     #[test]
     fn open_uses_read_key_and_recv_counter() {
-        let keys = SessionKeys { read_key: [5u8; 32], write_key: [6u8; 32] };
+        let keys = SessionKeys {
+            read_key: [5u8; 32],
+            write_key: [6u8; 32],
+        };
         let mut s = BleSession::new(keys);
         // Simulate the accessory sealing with the controller's read_key, counter 0.
         let cipher =

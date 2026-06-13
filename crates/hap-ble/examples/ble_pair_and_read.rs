@@ -19,8 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("Pairing with {}...", target.device_id);
 
-    let gatt: std::sync::Arc<dyn hap_ble::GattConnection> =
-        hap_ble::connect_gatt(target).await?;
+    let gatt: std::sync::Arc<dyn hap_ble::GattConnection> = hap_ble::connect_gatt(target).await?;
     let controller = hap_ble::BleController::generate("hap-ble-example".into());
     let (accessory, _pairing) = controller.pair(gatt, target, &setup_code).await?;
 

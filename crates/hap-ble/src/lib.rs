@@ -8,15 +8,15 @@
 //! `hap_controller` under one `HapController` is Milestone B.
 #![forbid(unsafe_code)]
 
-mod error;
-mod gatt;
-mod pdu;
-mod session;
-mod pairing;
-mod db;
-mod discovery;
 mod accessory;
 mod controller;
+mod db;
+mod discovery;
+mod error;
+mod gatt;
+mod pairing;
+mod pdu;
+mod session;
 
 pub use accessory::{BleAccessory, CharacteristicEvent};
 pub use controller::BleController;

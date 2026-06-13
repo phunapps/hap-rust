@@ -33,7 +33,9 @@ impl BtleplugConnection {
             .characteristics()
             .into_iter()
             .find(|c| c.uuid.to_string().to_ascii_lowercase() == target)
-            .ok_or(crate::error::BleError::MalformedPdu("gatt characteristic not found"))
+            .ok_or(crate::error::BleError::MalformedPdu(
+                "gatt characteristic not found",
+            ))
     }
 }
 
@@ -135,7 +137,8 @@ pub trait GattConnection: Send + Sync {
 #[derive(Default)]
 pub(crate) struct MockGatt {
     values: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
-    queued: std::sync::Mutex<std::collections::HashMap<String, std::collections::VecDeque<Vec<u8>>>>,
+    queued:
+        std::sync::Mutex<std::collections::HashMap<String, std::collections::VecDeque<Vec<u8>>>>,
     services: std::sync::Mutex<Vec<GattService>>,
     senders: std::sync::Mutex<std::collections::HashMap<String, mpsc::Sender<Vec<u8>>>>,
 }
@@ -230,7 +233,10 @@ mod tests {
         let svc = GattService {
             uuid: "svc".into(),
             iid: 1,
-            characteristics: vec![GattCharacteristic { uuid: "c".into(), iid: 2 }],
+            characteristics: vec![GattCharacteristic {
+                uuid: "c".into(),
+                iid: 2,
+            }],
         };
         let gatt = MockGatt::new().with_services(vec![svc.clone()]);
         assert_eq!(gatt.enumerate().await.unwrap(), vec![svc]);
