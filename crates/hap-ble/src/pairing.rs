@@ -17,7 +17,7 @@ use hap_crypto::{
 /// # Errors
 /// [`BleError::PairingRejected`] on a non-zero PDU status; otherwise GATT or
 /// TLV/PDU errors.
-pub async fn exchange<G: GattConnection + ?Sized>(
+pub(crate) async fn exchange<G: GattConnection + ?Sized>(
     gatt: &G,
     char_uuid: &str,
     tid: u8,
@@ -39,7 +39,7 @@ pub async fn exchange<G: GattConnection + ?Sized>(
 ///
 /// # Errors
 /// Propagates pairing/crypto/GATT errors.
-pub async fn pair_setup<G: GattConnection + ?Sized>(
+pub(crate) async fn pair_setup<G: GattConnection + ?Sized>(
     gatt: &G,
     char_uuid: &str,
     iid: u16,
@@ -64,7 +64,7 @@ pub async fn pair_setup<G: GattConnection + ?Sized>(
 ///
 /// # Errors
 /// Propagates pairing/crypto/GATT errors.
-pub async fn pair_verify<G: GattConnection + ?Sized>(
+pub(crate) async fn pair_verify<G: GattConnection + ?Sized>(
     gatt: &G,
     char_uuid: &str,
     iid: u16,

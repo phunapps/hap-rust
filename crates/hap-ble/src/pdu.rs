@@ -12,7 +12,7 @@ use hap_model::CharacteristicType;
 // prefix intentionally — renaming them would diverge from the spec.
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpCode {
+pub(crate) enum OpCode {
     /// Read a characteristic's signature (type, properties, format).
     // The opcode value is defined here for completeness; encode_request callers
     // will use it when issuing signature reads in the BLE transport layer.
@@ -25,20 +25,20 @@ pub enum OpCode {
 }
 
 /// HAP body param type bytes (the TLV8 carried inside a PDU body).
-pub mod param {
+pub(crate) mod param {
     /// The characteristic value.
-    pub const VALUE: u8 = 0x01;
+    pub(crate) const VALUE: u8 = 0x01;
     /// The characteristic type UUID.
-    pub const CHAR_TYPE: u8 = 0x04;
+    pub(crate) const CHAR_TYPE: u8 = 0x04;
     /// HAP characteristic properties descriptor (u16 LE bitmask).
-    pub const PROPERTIES: u8 = 0x0A;
+    pub(crate) const PROPERTIES: u8 = 0x0A;
     /// GATT presentation format descriptor (7 bytes).
-    pub const PRESENTATION_FORMAT: u8 = 0x0C;
+    pub(crate) const PRESENTATION_FORMAT: u8 = 0x0C;
 }
 
 /// Encode a request PDU first fragment (header + optional body), unfragmented.
 /// Fragmentation for large bodies is applied separately by [`fragment`].
-pub fn encode_request(op: OpCode, tid: u8, iid: u16, body: &[u8]) -> Vec<u8> {
+pub(crate) fn encode_request(op: OpCode, tid: u8, iid: u16, body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(7 + body.len());
     out.push(0x00); // control: request, first fragment
     out.push(op as u8);
@@ -53,7 +53,7 @@ pub fn encode_request(op: OpCode, tid: u8, iid: u16, body: &[u8]) -> Vec<u8> {
 }
 
 /// Wrap a raw value in a `Value` (0x01) param TLV8 — the body of a read/write.
-pub fn encode_value_param(value: &[u8]) -> Vec<u8> {
+pub(crate) fn encode_value_param(value: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut w = hap_tlv8::Tlv8Writer::new(&mut out);
     w.push(param::VALUE, value);
@@ -65,7 +65,7 @@ pub fn encode_value_param(value: &[u8]) -> Vec<u8> {
 /// # Errors
 /// Returns [`BleError::Tlv8`] if the body is not valid TLV8, or
 /// [`BleError::MalformedPdu`] if the value param is absent.
-pub fn value_param(body: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn value_param(body: &[u8]) -> Result<Vec<u8>> {
     let map = hap_tlv8::Tlv8Map::parse(body)?;
     map.get(param::VALUE)
         .map(<[u8]>::to_vec)
@@ -74,7 +74,7 @@ pub fn value_param(body: &[u8]) -> Result<Vec<u8>> {
 
 /// A decoded response PDU (already reassembled from its fragments).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Response {
+pub(crate) struct Response {
     /// Transaction id echoed from the request.
     pub tid: u8,
     /// HAP status byte (0 = success).
@@ -88,7 +88,7 @@ pub struct Response {
 /// # Errors
 /// Returns [`BleError::MalformedPdu`] if the PDU is too short or its declared
 /// body length exceeds the available bytes.
-pub fn decode_response(pdu: &[u8]) -> Result<Response> {
+pub(crate) fn decode_response(pdu: &[u8]) -> Result<Response> {
     if pdu.len() < 3 {
         return Err(BleError::MalformedPdu("response shorter than 3 bytes"));
     }
@@ -113,7 +113,7 @@ pub fn decode_response(pdu: &[u8]) -> Result<Response> {
 /// Split a PDU into GATT-sized fragments. `frag_size` is the maximum bytes per
 /// GATT write (typically ATT MTU − 3). The first fragment keeps the PDU header;
 /// each continuation is `0x80` ++ TID ++ next body chunk.
-pub fn fragment(pdu: &[u8], frag_size: usize) -> Vec<Vec<u8>> {
+pub(crate) fn fragment(pdu: &[u8], frag_size: usize) -> Vec<Vec<u8>> {
     let frag_size = frag_size.max(3);
     if pdu.len() <= frag_size {
         return vec![pdu.to_vec()];
@@ -140,7 +140,8 @@ pub fn fragment(pdu: &[u8], frag_size: usize) -> Vec<Vec<u8>> {
 ///
 /// # Errors
 /// Returns [`BleError::MalformedPdu`] if a continuation fragment is too short.
-pub fn reassemble(frags: &[Vec<u8>]) -> Result<Vec<u8>> {
+#[allow(dead_code)] // wired into the multi-fragment response read path during hardware reconciliation
+pub(crate) fn reassemble(frags: &[Vec<u8>]) -> Result<Vec<u8>> {
     let mut out = match frags.first() {
         Some(first) => first.clone(),
         None => return Err(BleError::MalformedPdu("no fragments to reassemble")),
@@ -163,7 +164,7 @@ pub fn reassemble(frags: &[Vec<u8>]) -> Result<Vec<u8>> {
 ///
 /// # Errors
 /// Propagates GATT I/O errors and [`BleError::MalformedPdu`] on a bad response.
-pub async fn request<G: GattConnection + ?Sized>(
+pub(crate) async fn request<G: GattConnection + ?Sized>(
     gatt: &G,
     char_uuid: &str,
     op: OpCode,
@@ -186,7 +187,7 @@ pub async fn request<G: GattConnection + ?Sized>(
 /// # Errors
 /// Propagates AEAD, GATT, and PDU errors.
 #[allow(clippy::too_many_arguments)] // transport call carries the full PDU addressing tuple
-pub async fn request_secure<G: GattConnection + ?Sized>(
+pub(crate) async fn request_secure<G: GattConnection + ?Sized>(
     gatt: &G,
     session: &mut crate::session::BleSession,
     char_uuid: &str,
@@ -209,7 +210,7 @@ pub async fn request_secure<G: GattConnection + ?Sized>(
 /// A parsed characteristic signature: the fields needed to populate a
 /// [`hap_model::tree::Characteristic`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Signature {
+pub(crate) struct Signature {
     /// The characteristic type.
     pub char_type: CharacteristicType,
     /// The value format.
@@ -219,7 +220,7 @@ pub struct Signature {
 }
 
 /// Map a GATT presentation-format byte to a HAP [`CharFormat`].
-pub fn char_format_from_gatt(b: u8) -> Option<CharFormat> {
+pub(crate) fn char_format_from_gatt(b: u8) -> Option<CharFormat> {
     Some(match b {
         0x01 => CharFormat::Bool,
         0x04 => CharFormat::Uint8,
@@ -235,7 +236,7 @@ pub fn char_format_from_gatt(b: u8) -> Option<CharFormat> {
 }
 
 /// Map a HAP characteristic-properties bitmask to a [`Perms`] set.
-pub fn perms_from_properties(bits: u16) -> Perms {
+pub(crate) fn perms_from_properties(bits: u16) -> Perms {
     Perms {
         read: bits & 0x0001 != 0 || bits & 0x0010 != 0,
         write: bits & 0x0002 != 0 || bits & 0x0020 != 0,
@@ -268,7 +269,7 @@ pub(crate) fn le_bytes_to_uuid(le: &[u8]) -> Result<String> {
 /// # Errors
 /// Returns [`BleError::MalformedPdu`] if required params are missing/short, or
 /// [`BleError::Model`] if the UUID does not parse.
-pub fn parse_signature(body: &[u8]) -> Result<Signature> {
+pub(crate) fn parse_signature(body: &[u8]) -> Result<Signature> {
     let map = hap_tlv8::Tlv8Map::parse(body)?;
 
     let type_le = map

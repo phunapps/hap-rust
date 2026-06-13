@@ -41,7 +41,7 @@ pub struct BleAccessory {
 impl BleAccessory {
     /// Wrap an established GATT link + session. Call [`BleAccessory::refresh_db`]
     /// before use.
-    pub fn new(gatt: Arc<dyn GattConnection>, session: BleSession, frag_size: usize) -> Self {
+    pub(crate) fn new(gatt: Arc<dyn GattConnection>, session: BleSession, frag_size: usize) -> Self {
         let (events_tx, _) = tokio::sync::broadcast::channel(64);
         Self {
             gatt,

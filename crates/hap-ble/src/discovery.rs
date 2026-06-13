@@ -80,7 +80,7 @@ pub struct DiscoveredBleAccessory {
 
 /// Parse a HAP manufacturer-data payload (the bytes after the 0x004C company id)
 /// into a [`DiscoveredBleAccessory`]. Returns `None` if it is not a HAP advert.
-pub fn parse_hap_advert(mfg: &[u8], peripheral_id: String) -> Option<DiscoveredBleAccessory> {
+pub(crate) fn parse_hap_advert(mfg: &[u8], peripheral_id: String) -> Option<DiscoveredBleAccessory> {
     // Byte 0 must be the HomeKit advertising type (0x06); minimum length 17.
     if mfg.len() < 17 || mfg[0] != 0x06 {
         return None;

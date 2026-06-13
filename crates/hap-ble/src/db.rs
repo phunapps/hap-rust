@@ -30,7 +30,7 @@ fn service_type_of(uuid: &str) -> ServiceType {
 ///
 /// # Errors
 /// Propagates GATT, PDU, and model errors.
-pub async fn build_db<G: GattConnection + ?Sized>(
+pub(crate) async fn build_db<G: GattConnection + ?Sized>(
     gatt: &G,
     session: &mut BleSession,
     frag_size: usize,
@@ -75,7 +75,7 @@ pub async fn build_db<G: GattConnection + ?Sized>(
 ///
 /// # Errors
 /// Returns [`BleError::MalformedPdu`] if the bytes are too short for the format.
-pub fn decode_value(format: CharFormat, raw: &[u8]) -> Result<CharValue> {
+pub(crate) fn decode_value(format: CharFormat, raw: &[u8]) -> Result<CharValue> {
     let need = |n: usize| -> Result<()> {
         if raw.len() < n {
             Err(BleError::MalformedPdu("value shorter than its format width"))

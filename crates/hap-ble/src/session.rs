@@ -15,7 +15,7 @@ fn nonce(counter: u64) -> [u8; 12] {
 /// An established BLE secure session. Seals whole PDUs with the controller's
 /// `write_key` and opens responses with the `read_key`, each direction carrying
 /// its own monotonically increasing counter.
-pub struct BleSession {
+pub(crate) struct BleSession {
     keys: SessionKeys,
     send_counter: u64,
     recv_counter: u64,
@@ -23,7 +23,7 @@ pub struct BleSession {
 
 impl BleSession {
     /// Create a session from Pair-Verify keys, both counters at zero.
-    pub fn new(keys: SessionKeys) -> Self {
+    pub(crate) fn new(keys: SessionKeys) -> Self {
         Self { keys, send_counter: 0, recv_counter: 0 }
     }
 
@@ -31,7 +31,7 @@ impl BleSession {
     ///
     /// # Errors
     /// Returns [`crate::error::BleError::Crypto`] if the AEAD seal fails.
-    pub fn seal(&mut self, pdu: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn seal(&mut self, pdu: &[u8]) -> Result<Vec<u8>> {
         let out = hap_crypto::aead::chacha20poly1305_seal(
             &self.keys.write_key,
             &nonce(self.send_counter),
@@ -46,7 +46,7 @@ impl BleSession {
     ///
     /// # Errors
     /// Returns [`crate::error::BleError::Crypto`] if authentication fails.
-    pub fn open(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn open(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         let out = hap_crypto::aead::chacha20poly1305_open(
             &self.keys.read_key,
             &nonce(self.recv_counter),
