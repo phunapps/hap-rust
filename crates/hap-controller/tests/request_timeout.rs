@@ -13,5 +13,8 @@ async fn hung_request_returns_connection_lost() {
     // read -> conn.request hangs; the 10s request_timeout auto-advances and fires;
     // no fresh session is available -> ConnectionLost.
     let err = handle.read(1, 10).await.unwrap_err();
-    assert!(matches!(err, hap_controller::HapError::ConnectionLost), "got {err:?}");
+    assert!(
+        matches!(err, hap_controller::HapError::ConnectionLost),
+        "got {err:?}"
+    );
 }

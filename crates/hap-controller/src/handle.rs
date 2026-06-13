@@ -21,8 +21,7 @@ use crate::reconnect::{backoff, ConnectionState, Reconnected, ReconnectingSessio
 /// A foreground operation (read, write, subscribe) that receives no response
 /// within this window fails with [`HapError::ConnectionLost`] rather than
 /// hanging until TCP's own timeout fires.
-pub(crate) const DEFAULT_REQUEST_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(10);
+pub(crate) const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// `(aid, iid)` → declared characteristic format, learned from `/accessories`.
 /// Shared with the event pump so it can decode `EVENT/1.0` values (which carry
@@ -147,7 +146,11 @@ impl AccessoryHandle {
     /// Hidden test seam — used by this crate's integration tests to wrap a mock.
     #[doc(hidden)]
     pub fn from_session(session: Box<dyn Session>) -> Self {
-        Self::build(Arc::from(session), Box::new(NoReconnect), DEFAULT_REQUEST_TIMEOUT)
+        Self::build(
+            Arc::from(session),
+            Box::new(NoReconnect),
+            DEFAULT_REQUEST_TIMEOUT,
+        )
     }
 
     /// Build a handle around a session plus a custom [`Reconnector`]. Hidden test
@@ -175,7 +178,11 @@ impl AccessoryHandle {
         let formats: FormatMap = Arc::new(Mutex::new(HashMap::new()));
         let subscribed: Arc<Mutex<HashSet<(u64, u64)>>> = Arc::new(Mutex::new(HashSet::new()));
         let needs_refresh = Arc::new(AtomicBool::new(false));
-        let conn = Arc::new(ReconnectingSession::new(session, reconnector, request_timeout));
+        let conn = Arc::new(ReconnectingSession::new(
+            session,
+            reconnector,
+            request_timeout,
+        ));
 
         let pump = conn.clone();
         let tx = events_tx.clone();

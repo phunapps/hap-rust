@@ -81,7 +81,10 @@ mod tests {
 
     #[test]
     fn round_trips_every_named_code_and_unknown() {
-        for code in [0, -70401, -70402, -70403, -70404, -70405, -70406, -70407, -70408, -70409, -70410, -70411, -99999] {
+        for code in [
+            0, -70401, -70402, -70403, -70404, -70405, -70406, -70407, -70408, -70409, -70410,
+            -70411, -99999,
+        ] {
             assert_eq!(HapStatus::from_code(code).code(), code);
         }
         assert_eq!(HapStatus::from_code(-70405), HapStatus::ReadFromWriteOnly);

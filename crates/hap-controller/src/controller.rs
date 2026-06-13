@@ -155,7 +155,11 @@ impl HapController {
             stored: stored.clone(),
             keypair: self.keypair.clone(),
         });
-        Ok(AccessoryHandle::connect(Arc::new(session), reconnector, self.request_timeout))
+        Ok(AccessoryHandle::connect(
+            Arc::new(session),
+            reconnector,
+            self.request_timeout,
+        ))
     }
 
     /// Open a new secure session to an already-paired accessory.
@@ -172,7 +176,11 @@ impl HapController {
             stored,
             keypair: self.keypair.clone(),
         });
-        Ok(AccessoryHandle::connect(Arc::new(session), reconnector, self.request_timeout))
+        Ok(AccessoryHandle::connect(
+            Arc::new(session),
+            reconnector,
+            self.request_timeout,
+        ))
     }
 
     /// Remove a pairing both from the accessory (`/pairings` remove of this

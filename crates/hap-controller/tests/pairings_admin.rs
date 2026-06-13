@@ -16,6 +16,9 @@ async fn list_pairings_unknown_id_errors() {
 #[tokio::test]
 async fn add_pairing_unknown_id_errors() {
     let controller = HapController::new(common::MockStore::new()).await.unwrap();
-    let err = controller.add_pairing("nope", "ctrl-2", [0u8; 32], false).await.unwrap_err();
+    let err = controller
+        .add_pairing("nope", "ctrl-2", [0u8; 32], false)
+        .await
+        .unwrap_err();
     assert!(matches!(err, hap_controller::HapError::UnknownAccessory(id) if id == "nope"));
 }

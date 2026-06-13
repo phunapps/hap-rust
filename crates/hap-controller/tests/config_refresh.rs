@@ -61,7 +61,8 @@ async fn config_number_change_refreshes_the_cached_db() {
             r#"{"characteristics":[{"aid":1,"iid":10,"value":true}]}"#,
         );
 
-    let reconnector = common::MockReconnector::with_config_numbers(vec![(s2, Some(5)), (s3, Some(6))]);
+    let reconnector =
+        common::MockReconnector::with_config_numbers(vec![(s2, Some(5)), (s3, Some(6))]);
     let mut handle = common::handle_with_reconnector(initial, reconnector);
 
     // Fetch the initial tree (TREE_A, value=false) and populate the cache.
