@@ -7,6 +7,7 @@ members = [
     "crates/hap-pairing",
     "crates/hap-model",
     "crates/hap-controller",
+    "crates/hap-ble",
     "xtask",
 ]
 
@@ -95,6 +96,8 @@ mdns-sd = "0.20"
 # Dev-only: RFC 5054 known-answer test uses SHA-1 (sha1) and hex fixtures.
 sha-1 = "0.10"
 hex = "0.4"
+# BLE central for the hap-ble transport (macOS CoreBluetooth / Linux BlueZ).
+btleplug = "0.11"
 
 # Release profile defaults. Keep these conservative; consumers can override.
 [profile.release]
