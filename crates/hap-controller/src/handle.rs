@@ -432,6 +432,21 @@ impl AccessoryHandle {
         Ok(())
     }
 
+    /// Stop receiving change events for a characteristic.
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
+    /// on a per-characteristic failure.
+    pub async fn unsubscribe(&mut self, aid: u64, iid: u64) -> Result<()> {
+        let body = hap_model::build_subscribe_request(&[(aid, iid)], false);
+        self.put_characteristics(&body).await?;
+        if let Ok(mut s) = self.subscribed.lock() {
+            s.remove(&(aid, iid));
+        }
+        Ok(())
+    }
+
     /// A stream of [`ConnectionState`] transitions, for health reporting.
     ///
     /// Each call returns an independent receiver; transitions that arrive while
