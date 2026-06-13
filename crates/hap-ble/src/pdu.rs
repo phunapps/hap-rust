@@ -180,6 +180,32 @@ pub async fn request<G: GattConnection + ?Sized>(
     decode_response(&raw)
 }
 
+/// Like [`request`] but seals the request and opens the response through an
+/// established [`BleSession`] (used after Pair Verify).
+///
+/// # Errors
+/// Propagates AEAD, GATT, and PDU errors.
+#[allow(clippy::too_many_arguments)] // transport call carries the full PDU addressing tuple
+pub async fn request_secure<G: GattConnection + ?Sized>(
+    gatt: &G,
+    session: &mut crate::session::BleSession,
+    char_uuid: &str,
+    op: OpCode,
+    tid: u8,
+    iid: u16,
+    body: &[u8],
+    frag_size: usize,
+) -> Result<Response> {
+    let pdu = encode_request(op, tid, iid, body);
+    let sealed = session.seal(&pdu)?;
+    for frag in fragment(&sealed, frag_size) {
+        gatt.write(char_uuid, &frag).await?;
+    }
+    let raw = gatt.read(char_uuid).await?;
+    let opened = session.open(&raw)?;
+    decode_response(&opened)
+}
+
 /// A parsed characteristic signature: the fields needed to populate a
 /// [`hap_model::tree::Characteristic`].
 #[derive(Debug, Clone, PartialEq, Eq)]
