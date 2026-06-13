@@ -63,7 +63,7 @@ pub use handle::{Session, SessionResponse};
 // Re-export the lower-crate types that appear in this crate's public
 // signatures, so consumers depend only on `hap-controller`.
 pub use hap_model::{
-    Accessory, CharValue, Characteristic, CharacteristicType, Service, ServiceType,
+    Accessory, CharValue, Characteristic, CharacteristicType, HapStatus, Service, ServiceType,
 };
 pub use hap_pairing::{JsonFileStore, PairingInfo, PairingStore, StoredAccessory};
 pub use hap_transport::DiscoveredAccessory;
