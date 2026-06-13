@@ -481,11 +481,15 @@ impl AccessoryHandle {
 
     /// Write requesting the post-write value back (the HAP `r` flag).
     ///
+    /// The `r` flag is optional in HAP: accessories that don't support it reject
+    /// the write with a per-characteristic status (surfaced as [`HapError::Model`]).
+    /// Some shipping firmware (e.g. LIFX) declines it with status `-70405`.
+    ///
     /// # Errors
     ///
     /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
-    /// if the response cannot be decoded, [`HapError::CharacteristicNotFound`] if the
-    /// accessory returns no value.
+    /// if the response cannot be decoded or the accessory rejects the read-response,
+    /// [`HapError::CharacteristicNotFound`] if the accessory returns no value.
     pub async fn write_with_response(
         &mut self,
         aid: u64,
