@@ -15,3 +15,78 @@ row here) is in [`runbooks/m5-first-pairing.md`](runbooks/m5-first-pairing.md).
 
 **Deferred:** any BLE-only accessory — blocked on the BLE transport (post-v1.0).
 HAP-IP accessories only for v1.0.
+
+## Devices tested over BLE (`hap-ble`, Milestone A)
+
+| Accessory (make/model) | Category | Date | Result |
+|---|---|---|---|
+| Onvis Smart Motion Sensor SMS2 | Sensor (10) | 2026-06-14 | **Fully validated** — discover → pair → full 65-char database → encrypted read → connected events. |
+
+**Full success (with the `bluest` backend + reconnect-and-resume supervisor):**
+discover → Pair Setup → Pair Verify → the entire ~65-characteristic attribute
+database → an encrypted value read (`read(aid=1, iid=3) → "Onvis"`) → **connected
+events** (subscribed to MotionDetected; each motion trigger produced
+`EVENT iid=3074 value=Bool(true)`). The typed model decoded correctly
+(MotionDetected→Bool, CurrentTemperature→Float, CurrentRelativeHumidity→Float,
+BatteryLevel→Uint8, …). Run via
+`cargo run --release -p hap-ble --example ble_pair_bluest -- <setup-code>`.
+
+HAP-BLE connected events use the GATT notification only as a **trigger**; the new
+value is fetched with an encrypted Characteristic-Read in response (not carried in
+the notification).
+
+The earlier-recorded findings below were the path to that result.
+
+**What validated on the real Onvis SMS2:**
+
+- **BLE scan + HAP advertisement parsing** — manufacturer-data (company `0x004C`)
+  parsed exactly: device id, category 10 (Sensor), GSN, `c#`, unpaired flag. (The
+  Onvis rotates its advertised HAP device id between adverts; the CoreBluetooth
+  peripheral UUID is stable, so match/connect by that.)
+- **GATT connect + discovery** (14 services) and **Instance-ID descriptor
+  resolution** for every characteristic (Pair-Setup `…004c`→iid 34, Pair-Verify
+  `…004e`→iid 35, plus temp/humidity/motion/battery services).
+- **Full Pair Setup (M1→M6) and Pair Verify (M1→M4) on the wire.** Trace: M1→read
+  418 (M2 salt+pubkey), M3→read 104 (M4), M5→read 147 (M6); verify M1→read 147,
+  M3→read 10 (M4). The SRP-6a + X25519/Ed25519 handshake from `hap-crypto` drives
+  correctly over BLE.
+
+**Three real HAP-BLE bugs found & fixed via an aiohomekit/bleak reference capture
+of the same device** (`xtask/scripts/capture-pair-setup/ble_pair_capture.py`):
+
+1. **Missing Return-Response param.** A Characteristic-Write over BLE must include
+   HAP-Param Return-Response (`0x09`=1) before the Value param, or the accessory
+   replies with only a status (the bare `02 01 00` we saw) and never returns the
+   body. This single missing TLV param blocked the entire handshake. (Not needed
+   over IP, which is why Pair Setup worked there.)
+2. **Fragment size.** PDUs must be fragmented to the ATT MTU (the Onvis negotiated
+   ~290); our 512 produced an oversized single write that hung at M3. Now 180.
+3. **Per-fragment encryption.** The secure session encrypts each fragment
+   separately (plaintext fragmented then sealed), not the whole PDU once.
+
+**What finished the job (the database build + read):** the Onvis drops the link
+every few operations during the long ~65-characteristic structure sweep. This is
+a sleepy-accessory trait, not a protocol gap — aiohomekit (cross-checked on the
+same device: it read all 65 characteristics across ~10 disconnects via
+`bleak-retry-connector`) handles it by reconnecting through the drops. Four
+changes closed it:
+
+4. **Reconnect-and-resume supervisor** (`BluestConnection`): each operation
+   reconnects (re-discovering handles by UUID) and retries on a clean disconnect,
+   resuming the sweep where it left off.
+5. **`bluest` backend instead of `btleplug`** on macOS: btleplug *hung* on these
+   disconnects (no timeout, unrecoverable); bluest returns clean errors a
+   supervisor can act on. (btleplug's CoreBluetooth backend is its least mature.)
+6. **Order:** read only the Pair-Setup iid, Pair Setup, *then* the resilient
+   tree walk + signature reads, *then* Pair Verify — so the stateful handshakes
+   run before the long sweep and a mid-sweep reconnect can't corrupt them.
+7. **Unencrypted structure fetch:** signature reads happen after Pair Setup but
+   before Pair Verify (no session yet), matching HAP; only values are encrypted.
+
+Plus a **factory reset** of the device — a successfully-paired accessory rejects a
+fresh Pair Setup ("pairing error"); a power-cycle keeps the pairing, a factory
+reset returns it to pairable.
+
+**Connected events** were the last piece: a HAP-BLE notification is only a
+trigger, so on each one the controller issues an encrypted Characteristic-Read for
+the value. With that, MotionDetected events flowed on every motion trigger.
