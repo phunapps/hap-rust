@@ -326,18 +326,28 @@ impl BleAccessory {
     /// accessory's Pairing-Pairings characteristic; a reconnect-invalidated
     /// session is re-verified first.
     ///
+    /// Removing this controller's **own** pairing is a special case: the
+    /// accessory removes the pairing and tears down the secure session as part
+    /// of the same operation, so the encrypted M2 response is frequently lost or
+    /// undecryptable (the link drops, or the reply is no longer sealed under the
+    /// now-defunct session). Per the HAP self-removal semantics, once the request
+    /// has been written the removal has taken effect, so a transport/crypto
+    /// failure *reading the response* on self-removal is reported as success.
+    ///
     /// # Errors
     /// [`BleError::PairingRejected`] if the accessory rejects the request (PDU
-    /// status or a `kTLVType_Error` in the M2 reply); otherwise GATT/PDU/crypto.
+    /// status or a `kTLVType_Error` in the M2 reply); otherwise GATT/PDU/crypto
+    /// errors (except the tolerated self-removal teardown described above).
     pub async fn remove_pairing(&mut self, controller_id: &str) -> Result<()> {
         let (uuid, iid) = self.pairings.clone();
+        let removing_self = controller_id == self.reviver.keypair.id;
         let tlv = encode_remove_pairing(controller_id);
         let body = pdu::encode_write_body(&tlv);
         let mut s = self.secure.lock().await;
         revive_if_stale(self.gatt.as_ref(), &mut s, &self.reviver).await?;
         s.tid = s.tid.wrapping_add(1);
         let tid = s.tid;
-        let resp = pdu::request_secure(
+        let result = pdu::request_secure(
             self.gatt.as_ref(),
             &mut s.session,
             &uuid,
@@ -347,11 +357,16 @@ impl BleAccessory {
             &body,
             self.frag_size,
         )
-        .await?;
-        if resp.status != 0 {
-            return Err(BleError::PairingRejected(resp.status));
+        .await;
+        match result {
+            Ok(resp) if resp.status != 0 => Err(BleError::PairingRejected(resp.status)),
+            Ok(resp) => expect_remove_m2(&pdu::value_param(&resp.body)?),
+            // The request was written, but reading the sealed M2 back failed.
+            // On self-removal that is the expected session teardown — the
+            // pairing is gone — so swallow the teardown-shaped error.
+            Err(BleError::Disconnected | BleError::Crypto(_)) if removing_self => Ok(()),
+            Err(e) => Err(e),
         }
-        expect_remove_m2(&pdu::value_param(&resp.body)?)
     }
 
     /// Subscribe to value-change events for a characteristic. HAP-BLE connected
@@ -531,6 +546,29 @@ mod tests {
         gatt.queue_read("00000050-0000-1000-8000-0026bb765291", sealed);
 
         h.remove_pairing("AE:EC:86:C0:BF:D7").await.unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn remove_own_pairing_tolerates_session_teardown() {
+        // handle_with_db pairs as controller id "test-controller".
+        let (mut h, gatt) = handle_with_db().await;
+        // The accessory tears down the session as it removes us, so the reply is
+        // not validly sealed — open() fails with a crypto error. Removing our OWN
+        // id must still succeed (the removal took effect on write).
+        gatt.queue_read("00000050-0000-1000-8000-0026bb765291", vec![0u8; 24]);
+        h.remove_pairing("test-controller").await.unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn remove_other_pairing_propagates_teardown_error() {
+        // The same undecryptable reply when removing a DIFFERENT controller must
+        // NOT be swallowed — only self-removal tolerates a teardown.
+        let (mut h, gatt) = handle_with_db().await;
+        gatt.queue_read("00000050-0000-1000-8000-0026bb765291", vec![0u8; 24]);
+        let err = h.remove_pairing("some-other-controller").await.unwrap_err();
+        assert!(matches!(err, BleError::Crypto(_)));
     }
 
     #[tokio::test]

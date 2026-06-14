@@ -13,11 +13,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
 
-    let found = hap_ble::scan(Duration::from_secs(10)).await?;
-    let Some(target) = found.iter().find(|a| !a.paired).or_else(|| found.first()) else {
-        println!("No accessory found.");
+    // Sleepy BLE sensors advertise intermittently, so scan in a retry loop
+    // (one process / one BT session) until an unpaired accessory appears rather
+    // than giving up after a single window.
+    let mut target = None;
+    for attempt in 1..=8 {
+        let found = hap_ble::scan(Duration::from_secs(8)).await?;
+        if let Some(t) = found.into_iter().find(|a| !a.paired) {
+            target = Some(t);
+            break;
+        }
+        println!("scan {attempt}: no unpaired accessory yet, retrying...");
+    }
+    let Some(target) = target else {
+        println!("No unpaired accessory found.");
         return Ok(());
     };
+    let target = &target;
     println!("Pairing with {}...", target.device_id);
 
     let gatt: std::sync::Arc<dyn hap_ble::GattConnection> = hap_ble::connect_gatt(target).await?;
