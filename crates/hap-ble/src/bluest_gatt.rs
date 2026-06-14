@@ -13,10 +13,11 @@ use async_trait::async_trait;
 use bluest::error::ErrorKind;
 use bluest::{Adapter, Characteristic, Device};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{mpsc, Mutex};
 
 /// Total reconnects allowed across a connection's lifetime (a runaway backstop).
-const MAX_RECONNECTS: u32 = 60;
+const MAX_RECONNECTS: u64 = 60;
 
 /// Map a bluest error to a [`BleError`], classifying link-loss conditions as
 /// [`BleError::Disconnected`] (so the supervisor reconnects) from bluest's typed
@@ -56,7 +57,9 @@ pub struct BluestConnection {
     chars: Mutex<HashMap<String, Characteristic>>,
     /// The service/characteristic UUID structure (stable across reconnects).
     shape: Vec<ServiceShape>,
-    reconnects: Mutex<u32>,
+    /// Increments on every reconnect — also the backstop count. A change since a
+    /// secure session was established means the accessory dropped that session.
+    generation: AtomicU64,
 }
 
 impl BluestConnection {
@@ -72,7 +75,7 @@ impl BluestConnection {
             device,
             chars: Mutex::new(chars),
             shape,
-            reconnects: Mutex::new(0),
+            generation: AtomicU64::new(0),
         })
     }
 
@@ -99,13 +102,10 @@ impl BluestConnection {
     /// Re-establish the link and rebuild the characteristic handle map. The
     /// UUID structure ([`shape`](Self::shape)) is unchanged.
     async fn reconnect(&self) -> Result<()> {
-        {
-            let mut n = self.reconnects.lock().await;
-            if *n >= MAX_RECONNECTS {
-                return Err(BleError::Disconnected);
-            }
-            *n += 1;
+        if self.generation.load(Ordering::SeqCst) >= MAX_RECONNECTS {
+            return Err(BleError::Disconnected);
         }
+        self.generation.fetch_add(1, Ordering::SeqCst);
         let _ = self.adapter.disconnect_device(&self.device).await;
         let _ = self.adapter.wait_available().await;
         self.adapter
@@ -165,6 +165,10 @@ impl GattConnection for BluestConnection {
         let ch = self.chars.lock().await.values().next().cloned();
         ch.and_then(|c| c.max_write_len().ok())
             .map_or(crate::gatt::DEFAULT_FRAGMENT_SIZE, |n| n.clamp(20, 512))
+    }
+
+    async fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
     }
 
     async fn write(&self, char_uuid: &str, value: &[u8]) -> Result<()> {

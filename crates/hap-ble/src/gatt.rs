@@ -65,6 +65,14 @@ pub trait GattConnection: Send + Sync {
     async fn max_write(&self) -> usize {
         DEFAULT_FRAGMENT_SIZE
     }
+    /// A monotonically increasing link-generation counter that advances on every
+    /// reconnect. A secure session minted at generation *g* is invalidated when
+    /// the accessory drops the link (the count moves past *g*), so the holder
+    /// must re-run Pair Verify before its next encrypted operation. Backends
+    /// without a reconnect supervisor never invalidate sessions and return 0.
+    async fn generation(&self) -> u64 {
+        0
+    }
 }
 
 /// Conservative HAP-BLE fragment size when the negotiated ATT MTU is unknown;
@@ -84,6 +92,7 @@ pub(crate) struct MockGatt {
         std::sync::Mutex<std::collections::HashMap<String, std::collections::VecDeque<Vec<u8>>>>,
     services: std::sync::Mutex<Vec<GattService>>,
     senders: std::sync::Mutex<std::collections::HashMap<String, mpsc::Sender<Vec<u8>>>>,
+    generation: std::sync::atomic::AtomicU64,
 }
 
 #[cfg(test)]
@@ -114,6 +123,14 @@ impl MockGatt {
     #[allow(dead_code)] // used by later tasks (events)
     pub(crate) fn notifier(&self, char_uuid: &str) -> Option<mpsc::Sender<Vec<u8>>> {
         self.senders.lock().unwrap().get(char_uuid).cloned()
+    }
+
+    /// Advance the link generation, simulating a reconnect that invalidated any
+    /// secure session minted at an earlier generation.
+    #[allow(dead_code)] // used by the reconnect tests
+    pub(crate) fn bump_generation(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -166,6 +183,10 @@ impl GattConnection for MockGatt {
 
     async fn enumerate(&self) -> Result<Vec<GattService>> {
         Ok(self.services.lock().unwrap().clone())
+    }
+
+    async fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

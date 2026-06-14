@@ -106,12 +106,21 @@ impl BleController {
             frag,
         )
         .await?;
+        // The generation the session was minted at — a later reconnect past this
+        // means the accessory dropped the session and the BleAccessory must
+        // re-verify before its next encrypted op (events surviving a reconnect).
+        let session_generation = gatt.generation().await;
         Ok(BleAccessory::new(
             gatt,
             session,
+            session_generation,
             frag,
             &services,
             accessories,
+            self.keypair.clone(),
+            pairing.clone(),
+            PAIR_VERIFY_CHAR.to_string(),
+            verify_iid,
         ))
     }
 }

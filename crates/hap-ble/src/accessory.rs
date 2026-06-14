@@ -4,8 +4,10 @@
 use crate::db;
 use crate::error::{BleError, Result};
 use crate::gatt::{GattConnection, GattService};
+use crate::pairing;
 use crate::pdu::{self, OpCode};
 use crate::session::BleSession;
+use hap_crypto::{AccessoryPairing, ControllerKeypair};
 use hap_model::format::{CharFormat, CharValue};
 use hap_model::tree::Accessory;
 use hap_model::{CharacteristicType, ServiceType};
@@ -13,6 +15,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt as _;
+
+/// The maximum number of mid-operation re-verify retries before giving up — a
+/// backstop against a link that reconnects on every attempt.
+const MAX_REVIVE_RETRIES: u32 = 3;
 
 /// A characteristic value-change event.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,32 +36,94 @@ pub struct CharacteristicEvent {
 struct Secure {
     session: BleSession,
     tid: u8,
+    /// The link generation at which `session` was established. When the
+    /// connection's generation advances past this (a reconnect), the accessory
+    /// has dropped the session and it must be re-minted via Pair Verify.
+    generation: u64,
 }
 
-/// Issue one encrypted Characteristic-Read and return the raw value bytes.
+/// Everything needed to re-establish a secure session (re-run Pair Verify) after
+/// a reconnect invalidates the accessory's session. Shared with event tasks.
+struct Reviver {
+    keypair: ControllerKeypair,
+    pairing: AccessoryPairing,
+    verify_char: String,
+    verify_iid: u16,
+    frag_size: usize,
+}
+
+/// If the link has reconnected since the secure session was minted, the
+/// accessory dropped that session — re-run Pair Verify and adopt the fresh keys
+/// (resetting the transaction counter). A no-op when the session is still live.
+async fn revive_if_stale(
+    gatt: &dyn GattConnection,
+    s: &mut Secure,
+    reviver: &Reviver,
+) -> Result<()> {
+    if gatt.generation().await <= s.generation {
+        return Ok(());
+    }
+    let session = pairing::pair_verify(
+        gatt,
+        &reviver.verify_char,
+        reviver.verify_iid,
+        &reviver.keypair,
+        &reviver.pairing,
+        reviver.frag_size,
+    )
+    .await?;
+    s.session = session;
+    s.tid = 0;
+    // Capture the generation *after* the handshake: Pair Verify itself fails if
+    // the link drops mid-handshake, so reaching here means this is current.
+    s.generation = gatt.generation().await;
+    Ok(())
+}
+
+/// Issue one encrypted Characteristic-Read and return the raw value bytes,
+/// re-establishing the secure session if a reconnect invalidated it (before the
+/// read, and again if the link drops mid-read — retried a bounded number of
+/// times).
 async fn read_char_raw(
     gatt: &dyn GattConnection,
     secure: &Mutex<Secure>,
+    reviver: &Reviver,
     uuid: &str,
     iid: u64,
     frag_size: usize,
 ) -> Result<Vec<u8>> {
     let iid16 = u16::try_from(iid).map_err(|_| BleError::CharacteristicNotFound { aid: 0, iid })?;
     let mut s = secure.lock().await;
-    s.tid = s.tid.wrapping_add(1);
-    let tid = s.tid;
-    let resp = pdu::request_secure(
-        gatt,
-        &mut s.session,
-        uuid,
-        OpCode::CharacteristicRead,
-        tid,
-        iid16,
-        &[],
-        frag_size,
-    )
-    .await?;
-    pdu::value_param(&resp.body)
+    let mut attempts = 0;
+    loop {
+        revive_if_stale(gatt, &mut s, reviver).await?;
+        s.tid = s.tid.wrapping_add(1);
+        let tid = s.tid;
+        match pdu::request_secure(
+            gatt,
+            &mut s.session,
+            uuid,
+            OpCode::CharacteristicRead,
+            tid,
+            iid16,
+            &[],
+            frag_size,
+        )
+        .await
+        {
+            Ok(resp) => return pdu::value_param(&resp.body),
+            // A reconnect during the read kills the session mid-stream; if the
+            // generation advanced, re-verify and retry rather than surfacing the
+            // transient failure.
+            Err(e) => {
+                attempts += 1;
+                if attempts < MAX_REVIVE_RETRIES && gatt.generation().await > s.generation {
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
 }
 
 /// A connected BLE accessory: holds the GATT link, the secure session, the
@@ -64,6 +132,7 @@ async fn read_char_raw(
 pub struct BleAccessory {
     gatt: Arc<dyn GattConnection>,
     secure: Arc<Mutex<Secure>>,
+    reviver: Arc<Reviver>,
     frag_size: usize,
     accessories: Vec<Accessory>,
     /// (aid, iid) -> characteristic UUID, format.
@@ -85,12 +154,22 @@ impl BleAccessory {
     /// Wrap an established GATT link + session with a pre-built attribute
     /// database (fetched unencrypted before Pair Verify). Builds the
     /// `(aid, iid) -> (uuid, format)` map used to address characteristics.
+    ///
+    /// `session_generation` is the link generation at which `session` was
+    /// minted, and `verify_iid` / `keypair` / `pairing` are the material to
+    /// re-run Pair Verify if a reconnect later invalidates the session.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         gatt: Arc<dyn GattConnection>,
         session: BleSession,
+        session_generation: u64,
         frag_size: usize,
         gatt_services: &[GattService],
         accessories: Vec<Accessory>,
+        keypair: ControllerKeypair,
+        pairing: AccessoryPairing,
+        verify_char: String,
+        verify_iid: u16,
     ) -> Self {
         let (events_tx, _) = tokio::sync::broadcast::channel(64);
         // `accessories` models a single accessory (aid 1 — BLE accessories are
@@ -114,7 +193,18 @@ impl BleAccessory {
         }
         Self {
             gatt,
-            secure: Arc::new(Mutex::new(Secure { session, tid: 0 })),
+            secure: Arc::new(Mutex::new(Secure {
+                session,
+                tid: 0,
+                generation: session_generation,
+            })),
+            reviver: Arc::new(Reviver {
+                keypair,
+                pairing,
+                verify_char,
+                verify_iid,
+                frag_size,
+            }),
             frag_size,
             accessories,
             chars,
@@ -161,8 +251,15 @@ impl BleAccessory {
             .get(&(aid, iid))
             .cloned()
             .ok_or(BleError::CharacteristicNotFound { aid, iid })?;
-        let raw =
-            read_char_raw(self.gatt.as_ref(), &self.secure, &uuid, iid, self.frag_size).await?;
+        let raw = read_char_raw(
+            self.gatt.as_ref(),
+            &self.secure,
+            &self.reviver,
+            &uuid,
+            iid,
+            self.frag_size,
+        )
+        .await?;
         db::decode_value(format, &raw)
     }
 
@@ -183,11 +280,13 @@ impl BleAccessory {
         let tx = self.events_tx.clone();
         let gatt = self.gatt.clone();
         let secure = self.secure.clone();
+        let reviver = self.reviver.clone();
         let frag_size = self.frag_size;
         let task = tokio::spawn(async move {
             // The notification carries no value; it signals "read me".
             while rx.recv().await.is_some() {
-                if let Ok(raw) = read_char_raw(gatt.as_ref(), &secure, &uuid, iid, frag_size).await
+                if let Ok(raw) =
+                    read_char_raw(gatt.as_ref(), &secure, &reviver, &uuid, iid, frag_size).await
                 {
                     if let Ok(value) = db::decode_value(format, &raw) {
                         let _ = tx.send(CharacteristicEvent { aid, iid, value });
@@ -262,7 +361,21 @@ mod tests {
         let accessories = crate::db::build_db(gatt.as_ref(), &services, 512)
             .await
             .unwrap();
-        let h = BleAccessory::new(gatt.clone(), session, 512, &services, accessories);
+        let h = BleAccessory::new(
+            gatt.clone(),
+            session,
+            0,
+            512,
+            &services,
+            accessories,
+            ControllerKeypair::generate("test-controller".into()),
+            AccessoryPairing {
+                pairing_id: "AE:EC:86:C0:BF:D7".into(),
+                ltpk: [0; 32],
+            },
+            "0000004e-0000-1000-8000-0026bb765291".into(),
+            1,
+        );
         (h, gatt)
     }
 
@@ -316,5 +429,32 @@ mod tests {
         let ev = events.next().await.unwrap();
         assert_eq!(ev.iid, 11);
         assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn read_after_reconnect_re_verifies_before_using_session() {
+        let (mut h, gatt) = handle_with_db().await;
+
+        // Queue a perfectly valid sealed read response (recv counter 0) — it
+        // would decode cleanly if the session were used directly.
+        let mut plain = vec![0x02, 0x01, 0x00];
+        let vbody = crate::pdu::encode_value_param(&[0x01]);
+        plain.extend_from_slice(&u16::try_from(vbody.len()).unwrap().to_le_bytes());
+        plain.extend_from_slice(&vbody);
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+
+        // Simulate a reconnect: the accessory dropped the session. The read must
+        // now re-run Pair Verify *before* touching the session. The mock can't
+        // complete that handshake, so the read surfaces an error rather than
+        // silently decoding with the dead session.
+        gatt.bump_generation();
+        let err = h.read(1, 11).await.unwrap_err();
+        assert!(
+            !matches!(err, BleError::CharacteristicNotFound { .. }),
+            "expected a verify/transport error from the re-verify attempt, got {err:?}"
+        );
     }
 }
