@@ -22,6 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let gatt: std::sync::Arc<dyn hap_ble::GattConnection> = hap_ble::connect_gatt(target).await?;
     let controller = hap_ble::BleController::generate("hap-ble-example".into());
+    let controller_id = controller.keypair().id.clone();
     let (mut accessory, _pairing) = controller.pair(gatt, target, &setup_code).await?;
 
     println!("Paired. Attribute database:");
@@ -64,6 +65,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("EVENT: aid={} iid={} value={:?}", ev.aid, ev.iid, ev.value);
         }
         println!("done watching events.");
+    }
+
+    // Clean up: remove this controller's pairing so the example can be re-run
+    // without exhausting the accessory's pairing slots.
+    println!("removing this controller's pairing ({controller_id})...");
+    match accessory.remove_pairing(&controller_id).await {
+        Ok(()) => println!("pairing removed."),
+        Err(e) => println!("remove_pairing failed: {e}"),
     }
     Ok(())
 }

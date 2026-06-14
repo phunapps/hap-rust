@@ -13,6 +13,7 @@ use std::sync::Arc;
 /// The HAP Pairing-Service characteristic UUIDs (HAP-defined, fixed).
 const PAIR_SETUP_CHAR: &str = "0000004c-0000-1000-8000-0026bb765291";
 const PAIR_VERIFY_CHAR: &str = "0000004e-0000-1000-8000-0026bb765291";
+const PAIRINGS_CHAR: &str = "00000050-0000-1000-8000-0026bb765291";
 
 /// A BLE HAP controller: holds the long-term controller identity used for
 /// pairing and verification.
@@ -110,18 +111,18 @@ impl BleController {
         // means the accessory dropped the session and the BleAccessory must
         // re-verify before its next encrypted op (events surviving a reconnect).
         let session_generation = gatt.generation().await;
-        Ok(BleAccessory::new(
-            gatt,
+        let pairings_iid = iid_of(&services, PAIRINGS_CHAR)?;
+        let ctx = crate::accessory::SecureContext {
             session,
             session_generation,
-            frag,
-            &services,
-            accessories,
-            self.keypair.clone(),
-            pairing.clone(),
-            PAIR_VERIFY_CHAR.to_string(),
+            keypair: self.keypair.clone(),
+            pairing: pairing.clone(),
+            verify_char: PAIR_VERIFY_CHAR.to_string(),
             verify_iid,
-        ))
+            pairings_char: PAIRINGS_CHAR.to_string(),
+            pairings_iid,
+        };
+        Ok(BleAccessory::new(gatt, ctx, frag, &services, accessories))
     }
 }
 
