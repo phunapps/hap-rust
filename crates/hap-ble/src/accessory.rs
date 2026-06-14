@@ -36,68 +36,48 @@ pub struct BleAccessory {
     chars: HashMap<(u64, u64), (String, CharFormat)>,
     tid: u8,
     events_tx: tokio::sync::broadcast::Sender<CharacteristicEvent>,
-    /// The GATT structure (with resolved iids) enumerated once at connect time
-    /// and reused for signature reads, so the link isn't re-walked per refresh.
-    gatt_services: Vec<GattService>,
 }
 
 impl BleAccessory {
-    /// Wrap an established GATT link + session. Call [`BleAccessory::refresh_db`]
-    /// before use.
+    /// Wrap an established GATT link + session with a pre-built attribute
+    /// database (fetched unencrypted before Pair Verify). Builds the
+    /// `(aid, iid) -> (uuid, format)` map used to address characteristics.
     pub(crate) fn new(
         gatt: Arc<dyn GattConnection>,
         session: BleSession,
         frag_size: usize,
-        gatt_services: Vec<GattService>,
+        gatt_services: &[GattService],
+        accessories: Vec<Accessory>,
     ) -> Self {
         let (events_tx, _) = tokio::sync::broadcast::channel(64);
-        Self {
-            gatt,
-            session,
-            frag_size,
-            accessories: Vec::new(),
-            chars: HashMap::new(),
-            tid: 0,
-            events_tx,
-            gatt_services,
-        }
-    }
-
-    /// (Re)build the cached attribute database from characteristic signatures.
-    ///
-    /// # Errors
-    /// Propagates GATT/PDU/model errors.
-    pub async fn refresh_db(&mut self, encrypted: bool) -> Result<()> {
-        self.accessories = db::build_db(
-            self.gatt.as_ref(),
-            &self.gatt_services,
-            &mut self.session,
-            self.frag_size,
-            encrypted,
-        )
-        .await?;
-        self.chars.clear();
-        // `build_db` models a single accessory (aid 1 — BLE accessories are not
-        // bridges in this milestone), so characteristic iids are unique and a
-        // plain iid->uuid map is sufficient. Revisit if multi-accessory bridges
-        // are ever modeled.
+        // `accessories` models a single accessory (aid 1 — BLE accessories are
+        // not bridges in this milestone), so characteristic iids are unique and
+        // a plain iid->uuid map is sufficient.
         let mut uuid_by_iid: HashMap<u64, String> = HashMap::new();
-        for gs in &self.gatt_services {
+        for gs in gatt_services {
             for gc in &gs.characteristics {
                 uuid_by_iid.insert(u64::from(gc.iid), gc.uuid.clone());
             }
         }
-        for acc in &self.accessories {
+        let mut chars = HashMap::new();
+        for acc in &accessories {
             for svc in &acc.services {
                 for ch in &svc.characteristics {
                     if let Some(uuid) = uuid_by_iid.get(&ch.iid) {
-                        self.chars
-                            .insert((acc.aid, ch.iid), (uuid.clone(), ch.format));
+                        chars.insert((acc.aid, ch.iid), (uuid.clone(), ch.format));
                     }
                 }
             }
         }
-        Ok(())
+        Self {
+            gatt,
+            session,
+            frag_size,
+            accessories,
+            chars,
+            tid: 0,
+            events_tx,
+        }
     }
 
     /// The cached attribute database.
@@ -249,8 +229,10 @@ mod tests {
             write_key: [0; 32],
         });
         let services = gatt.enumerate().await.unwrap();
-        let mut h = BleAccessory::new(gatt.clone(), session, 512, services);
-        h.refresh_db(/*encrypted=*/ false).await.unwrap();
+        let accessories = crate::db::build_db(gatt.as_ref(), &services, 512)
+            .await
+            .unwrap();
+        let h = BleAccessory::new(gatt.clone(), session, 512, &services, accessories);
         (h, gatt)
     }
 

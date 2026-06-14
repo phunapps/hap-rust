@@ -24,6 +24,7 @@ btleplug = { workspace = true }
 hap-tlv8 = { path = "../hap-tlv8", version = "1.0.0" }
 hap-crypto = { path = "../hap-crypto", version = "1.0.0" }
 hap-model = { path = "../hap-model", version = "1.2.0" }
+bluest = "0.6.9"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }

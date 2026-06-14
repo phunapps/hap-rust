@@ -56,12 +56,11 @@ impl BleController {
         _accessory: &DiscoveredBleAccessory,
         setup_code: &str,
     ) -> Result<(BleAccessory, AccessoryPairing)> {
-        // Enumerate the whole tree up front over plain GATT (resolving every
-        // iid). This MUST happen before Pair Verify establishes the secure
-        // session, since the accessory then rejects unencrypted GATT reads. The
-        // result is reused for the pairing characteristics and the DB build.
-        let services = gatt.enumerate().await?;
-        let setup_iid = iid_of(&services, PAIR_SETUP_CHAR)?;
+        // Pair first (reading only the Pair-Setup characteristic's iid, one
+        // descriptor read) — the long database sweep must not run before the
+        // stateful Pair Setup handshake, which can't survive a mid-handshake
+        // reconnect.
+        let setup_iid = gatt.instance_id(PAIR_SETUP_CHAR).await?;
         let pairing = pairing::pair_setup(
             gatt.as_ref(),
             PAIR_SETUP_CHAR,
@@ -71,7 +70,7 @@ impl BleController {
             DEFAULT_FRAG_SIZE,
         )
         .await?;
-        let acc = self.verify_and_build(gatt, services, &pairing).await?;
+        let acc = self.verify_and_build(gatt, &pairing).await?;
         Ok((acc, pairing))
     }
 
@@ -84,16 +83,23 @@ impl BleController {
         gatt: Arc<dyn crate::gatt::GattConnection>,
         pairing: &AccessoryPairing,
     ) -> Result<BleAccessory> {
-        let services = gatt.enumerate().await?;
-        self.verify_and_build(gatt, services, pairing).await
+        self.verify_and_build(gatt, pairing).await
     }
 
     async fn verify_and_build(
         &self,
         gatt: Arc<dyn crate::gatt::GattConnection>,
-        services: Vec<crate::gatt::GattService>,
         pairing: &AccessoryPairing,
     ) -> Result<BleAccessory> {
+        // After pairing, walk the full tree (resilient) for iids, then build the
+        // typed database from UNENCRYPTED characteristic-signature reads — HAP
+        // reads the database structure after Pair Setup but before Pair Verify
+        // (no secure session yet). The resilient GattConnection reconnects +
+        // resumes through the accessory's periodic disconnects.
+        let services = gatt.enumerate().await?;
+        let accessories = crate::db::build_db(gatt.as_ref(), &services, DEFAULT_FRAG_SIZE).await?;
+
+        // Now establish the secure session for value reads / events.
         let verify_iid = iid_of(&services, PAIR_VERIFY_CHAR)?;
         let session: BleSession = pairing::pair_verify(
             gatt.as_ref(),
@@ -104,11 +110,13 @@ impl BleController {
             DEFAULT_FRAG_SIZE,
         )
         .await?;
-        // The tree was enumerated before the session (plain GATT); build the
-        // typed database from encrypted characteristic-signature reads.
-        let mut acc = BleAccessory::new(gatt, session, DEFAULT_FRAG_SIZE, services);
-        acc.refresh_db(/*encrypted=*/ true).await?;
-        Ok(acc)
+        Ok(BleAccessory::new(
+            gatt,
+            session,
+            DEFAULT_FRAG_SIZE,
+            &services,
+            accessories,
+        ))
     }
 }
 

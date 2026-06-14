@@ -36,6 +36,9 @@ pub enum BleError {
     /// The BLE link dropped mid-operation.
     #[error("the accessory disconnected")]
     Disconnected,
+    /// An error from the BLE backend (transport-library specific).
+    #[error("BLE backend error: {0}")]
+    Backend(String),
 }
 
 /// The crate result alias.

@@ -4,7 +4,6 @@
 use crate::error::{BleError, Result};
 use crate::gatt::{GattConnection, GattService};
 use crate::pdu::{self, OpCode};
-use crate::session::BleSession;
 use hap_model::format::{CharFormat, CharValue};
 use hap_model::tree::{Accessory, Characteristic, Service};
 use hap_model::{ServiceType, Uuid};
@@ -26,17 +25,17 @@ fn service_type_of(uuid: &str) -> ServiceType {
 /// assemble a single [`Accessory`] (aid 1 — BLE accessories are not bridges in
 /// this milestone).
 ///
-/// When `encrypted` is true, signature PDUs are sealed/opened through
-/// `session`; before Pair Verify they are sent in the clear.
+/// Signature reads are sent **unencrypted**: HAP reads the database structure
+/// after Pair Setup but before Pair Verify, so no secure session exists yet.
+/// (The resilient [`GattConnection`] reconnects + resumes if the accessory
+/// drops the link during this long sweep.)
 ///
 /// # Errors
 /// Propagates GATT, PDU, and model errors.
 pub(crate) async fn build_db<G: GattConnection + ?Sized>(
     gatt: &G,
     gatt_services: &[GattService],
-    session: &mut BleSession,
     frag_size: usize,
-    encrypted: bool,
 ) -> Result<Vec<Accessory>> {
     let mut services = Vec::new();
     let mut tid: u8 = 0;
@@ -46,30 +45,16 @@ pub(crate) async fn build_db<G: GattConnection + ?Sized>(
         let mut chars = Vec::new();
         for gc in &gs.characteristics {
             tid = tid.wrapping_add(1);
-            let resp = if encrypted {
-                pdu::request_secure(
-                    gatt,
-                    session,
-                    &gc.uuid,
-                    OpCode::CharacteristicSignatureRead,
-                    tid,
-                    gc.iid,
-                    &[],
-                    frag_size,
-                )
-                .await?
-            } else {
-                pdu::request(
-                    gatt,
-                    &gc.uuid,
-                    OpCode::CharacteristicSignatureRead,
-                    tid,
-                    gc.iid,
-                    &[],
-                    frag_size,
-                )
-                .await?
-            };
+            let resp = pdu::request(
+                gatt,
+                &gc.uuid,
+                OpCode::CharacteristicSignatureRead,
+                tid,
+                gc.iid,
+                &[],
+                frag_size,
+            )
+            .await?;
             let sig = pdu::parse_signature(&resp.body)?;
             chars.push(Characteristic {
                 iid: u64::from(gc.iid),
@@ -157,8 +142,6 @@ pub(crate) fn decode_value(format: CharFormat, raw: &[u8]) -> Result<CharValue> 
 mod tests {
     use super::*;
     use crate::gatt::{GattCharacteristic, GattService, MockGatt};
-    use crate::session::BleSession;
-    use hap_crypto::SessionKeys;
     use hap_model::format::CharFormat;
 
     #[allow(clippy::unwrap_used)]
@@ -244,20 +227,8 @@ mod tests {
         resp.extend_from_slice(&body);
         gatt.queue_read("00000025-0000-1000-8000-0026bb765291", resp);
 
-        let mut session = BleSession::new(SessionKeys {
-            read_key: [0; 32],
-            write_key: [0; 32],
-        });
         let services = gatt.enumerate().await.unwrap();
-        let accs = build_db(
-            &gatt,
-            &services,
-            &mut session,
-            512,
-            /*encrypted=*/ false,
-        )
-        .await
-        .unwrap();
+        let accs = build_db(&gatt, &services, 512).await.unwrap();
         assert_eq!(accs.len(), 1);
         let ch = &accs[0].services[0].characteristics[0];
         assert_eq!(ch.iid, 11);

@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod accessory;
+mod bluest_gatt;
 mod controller;
 mod db;
 mod discovery;
@@ -19,6 +20,7 @@ mod pdu;
 mod session;
 
 pub use accessory::{BleAccessory, CharacteristicEvent};
+pub use bluest_gatt::BluestConnection;
 pub use controller::BleController;
 pub use discovery::{connect_gatt, scan, DiscoveredBleAccessory};
 pub use error::{BleError, Result};

@@ -11,11 +11,11 @@ use btleplug::platform::Peripheral;
 /// The HAP Characteristic-Instance-ID GATT descriptor. Each HAP characteristic
 /// carries one; its value is the characteristic's 16-bit instance id (LE), which
 /// HAP-BLE PDUs address by.
-const HAP_INSTANCE_ID_DESC: &str = "dc46f0fe-81d2-4616-b5d9-6abdd796939a";
+pub(crate) const HAP_INSTANCE_ID_DESC: &str = "dc46f0fe-81d2-4616-b5d9-6abdd796939a";
 
 /// The HAP Service-Instance-ID characteristic (read-only, no descriptor) that
 /// appears in every HAP service; its value is the service's 16-bit instance id.
-const HAP_SERVICE_ID_CHAR: &str = "e604e95d-a759-4817-87d3-aa005083a0d1";
+pub(crate) const HAP_SERVICE_ID_CHAR: &str = "e604e95d-a759-4817-87d3-aa005083a0d1";
 
 /// A [`GattConnection`] backed by an already-connected btleplug [`Peripheral`].
 ///
@@ -75,6 +75,22 @@ impl GattConnection for BtleplugConnection {
         Ok(rx)
     }
 
+    async fn instance_id(&self, char_uuid: &str) -> Result<u16> {
+        let ch = self.characteristic(char_uuid)?;
+        let desc = ch
+            .descriptors
+            .iter()
+            .find(|d| {
+                d.uuid
+                    .to_string()
+                    .eq_ignore_ascii_case(HAP_INSTANCE_ID_DESC)
+            })
+            .ok_or(crate::error::BleError::CharacteristicNotFound { aid: 0, iid: 0 })?;
+        u16_le(&self.peripheral.read_descriptor(desc).await?).ok_or(
+            crate::error::BleError::MalformedPdu("instance id descriptor too short"),
+        )
+    }
+
     async fn enumerate(&self) -> Result<Vec<GattService>> {
         self.peripheral.discover_services().await?;
         let mut services = Vec::new();
@@ -115,7 +131,7 @@ impl GattConnection for BtleplugConnection {
 }
 
 /// Read a 16-bit little-endian value from the first two bytes, if present.
-fn u16_le(v: &[u8]) -> Option<u16> {
+pub(crate) fn u16_le(v: &[u8]) -> Option<u16> {
     match v {
         [lo, hi, ..] => Some(u16::from_le_bytes([*lo, *hi])),
         _ => None,
@@ -153,6 +169,10 @@ pub trait GattConnection: Send + Sync {
     /// Subscribe to notifications on a characteristic; the receiver yields raw
     /// notification payloads.
     async fn subscribe(&self, char_uuid: &str) -> Result<mpsc::Receiver<Vec<u8>>>;
+    /// Read one characteristic's HAP instance id (its Instance-ID descriptor)
+    /// without walking the whole tree — used to address the pairing
+    /// characteristics before the (slow) full database sweep.
+    async fn instance_id(&self, char_uuid: &str) -> Result<u16>;
     /// Enumerate the accessory's services and characteristics (with iids).
     async fn enumerate(&self) -> Result<Vec<GattService>>;
 }
@@ -207,6 +227,17 @@ impl MockGatt {
 #[allow(clippy::unwrap_used)] // test double: lock poisoning is not a real concern in single-process tests
 #[async_trait]
 impl GattConnection for MockGatt {
+    async fn instance_id(&self, char_uuid: &str) -> Result<u16> {
+        self.services
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|s| &s.characteristics)
+            .find(|c| c.uuid.eq_ignore_ascii_case(char_uuid))
+            .map(|c| c.iid)
+            .ok_or(crate::error::BleError::CharacteristicNotFound { aid: 0, iid: 0 })
+    }
+
     async fn write(&self, char_uuid: &str, value: &[u8]) -> Result<()> {
         self.values
             .lock()
