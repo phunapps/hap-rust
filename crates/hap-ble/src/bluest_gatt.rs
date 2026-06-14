@@ -16,12 +16,20 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{mpsc, Mutex};
 
-/// Total reconnects allowed across a connection's lifetime (a runaway backstop).
-const MAX_RECONNECTS: u64 = 60;
+/// Consecutive reconnects allowed *within a single operation* before it gives up
+/// (a runaway backstop). This bounds one stuck read/write, not the connection's
+/// lifetime — a sleepy accessory may legitimately drop the link on most
+/// operations, so a healthy long-lived subscription can far exceed this in
+/// aggregate; only a link that will not stay up for one op long enough to make
+/// progress trips it.
+const MAX_OP_RECONNECTS: u32 = 8;
 
 /// Map a bluest error to a [`BleError`], classifying link-loss conditions as
 /// [`BleError::Disconnected`] (so the supervisor reconnects) from bluest's typed
-/// [`ErrorKind`] rather than by string-matching.
+/// [`ErrorKind`] rather than by string-matching. A [`Timeout`](ErrorKind::Timeout)
+/// is treated as a disconnect: on some platforms a dropped link surfaces as a
+/// read/write timeout, and a reconnect+retry against a merely-slow accessory is
+/// cheap and self-correcting.
 // By value for ergonomic `.map_err(be)`.
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn be(e: bluest::Error) -> BleError {
@@ -30,7 +38,8 @@ pub(crate) fn be(e: bluest::Error) -> BleError {
         | ErrorKind::AdapterUnavailable
         | ErrorKind::ConnectionFailed
         | ErrorKind::ServiceChanged
-        | ErrorKind::NotReady => BleError::Disconnected,
+        | ErrorKind::NotReady
+        | ErrorKind::Timeout => BleError::Disconnected,
         _ => BleError::Backend(e.to_string()),
     }
 }
@@ -99,12 +108,10 @@ impl BluestConnection {
         Ok((chars, shape))
     }
 
-    /// Re-establish the link and rebuild the characteristic handle map. The
-    /// UUID structure ([`shape`](Self::shape)) is unchanged.
+    /// Re-establish the link and rebuild the characteristic handle map, advancing
+    /// the link [`generation`](Self::generation). The UUID structure
+    /// ([`shape`](Self::shape)) is unchanged.
     async fn reconnect(&self) -> Result<()> {
-        if self.generation.load(Ordering::SeqCst) >= MAX_RECONNECTS {
-            return Err(BleError::Disconnected);
-        }
         self.generation.fetch_add(1, Ordering::SeqCst);
         let _ = self.adapter.disconnect_device(&self.device).await;
         let _ = self.adapter.wait_available().await;
@@ -115,6 +122,19 @@ impl BluestConnection {
         let (fresh, _shape) = Self::discover(&self.device).await?;
         *self.chars.lock().await = fresh;
         Ok(())
+    }
+
+    /// Reconnect for one in-flight operation, giving up once a single operation
+    /// has forced [`MAX_OP_RECONNECTS`] reconnects without making progress (the
+    /// link will not stay up long enough to complete it). `attempts` is the
+    /// per-operation reconnect count, owned by the caller's retry loop — it does
+    /// not bound the connection's lifetime.
+    async fn reconnect_bounded(&self, attempts: &mut u32) -> Result<()> {
+        *attempts += 1;
+        if *attempts > MAX_OP_RECONNECTS {
+            return Err(BleError::Disconnected);
+        }
+        self.reconnect().await
     }
 
     /// Look up the current handle for a characteristic UUID.
@@ -129,6 +149,7 @@ impl BluestConnection {
 
     /// Read a characteristic's HAP instance-id descriptor, reconnecting on drop.
     async fn read_iid(&self, char_uuid: &str) -> Result<Option<u16>> {
+        let mut attempts = 0;
         loop {
             let ch = self.handle(char_uuid).await?;
             let attempt = async {
@@ -145,7 +166,7 @@ impl BluestConnection {
             .await;
             match attempt {
                 Ok(v) => return Ok(v),
-                Err(ref e) if is_disconnect(e) => self.reconnect().await?,
+                Err(ref e) if is_disconnect(e) => self.reconnect_bounded(&mut attempts).await?,
                 Err(e) => return Err(e),
             }
         }
@@ -172,22 +193,24 @@ impl GattConnection for BluestConnection {
     }
 
     async fn write(&self, char_uuid: &str, value: &[u8]) -> Result<()> {
+        let mut attempts = 0;
         loop {
             let ch = self.handle(char_uuid).await?;
             match ch.write(value).await.map_err(be) {
                 Ok(()) => return Ok(()),
-                Err(ref e) if is_disconnect(e) => self.reconnect().await?,
+                Err(ref e) if is_disconnect(e) => self.reconnect_bounded(&mut attempts).await?,
                 Err(e) => return Err(e),
             }
         }
     }
 
     async fn read(&self, char_uuid: &str) -> Result<Vec<u8>> {
+        let mut attempts = 0;
         loop {
             let ch = self.handle(char_uuid).await?;
             match ch.read().await.map_err(be) {
                 Ok(v) => return Ok(v),
-                Err(ref e) if is_disconnect(e) => self.reconnect().await?,
+                Err(ref e) if is_disconnect(e) => self.reconnect_bounded(&mut attempts).await?,
                 Err(e) => return Err(e),
             }
         }
