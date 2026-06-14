@@ -53,11 +53,29 @@ async def main() -> int:
         finish = await discovery.async_start_pairing(ALIAS)
         print(">>> M1->M2 SUCCEEDED (salt + accessory pubkey retrieved)", flush=True)
 
-        print("finishing pairing (M3->M6) with PIN...", flush=True)
-        pairing = await finish(PIN)
+        # aiohomekit wants the PIN as XXX-XX-XXX.
+        pin = PIN
+        if len(pin) == 8 and "-" not in pin:
+            pin = f"{pin[:3]}-{pin[3:5]}-{pin[5:]}"
+        print(f"finishing pairing (M3->M6) with PIN {pin}...", flush=True)
+        pairing = await finish(pin)
         print(">>> PAIRING COMPLETE", flush=True)
-        data = pairing.pairing_data
-        print("pairing id:", data.get("iOSPairingId"), "accessory:", data.get("AccessoryPairingID"), flush=True)
+
+        # The decisive test: fetch the FULL attribute database (the ~80-read
+        # sweep our code can't get through). Does aiohomekit complete it on THIS
+        # device, and how (reconnects)?
+        print(">>> fetching full GATT database (list_accessories_and_characteristics)...", flush=True)
+        accs = await pairing.list_accessories_and_characteristics()
+        n_chars = sum(len(s.get("characteristics", [])) for a in accs for s in a.get("services", []))
+        print(f">>> DB FETCH COMPLETE: {len(accs)} accessories, {n_chars} characteristics", flush=True)
+
+        # Remove our pairing so we leave the device as we found it.
+        print("removing pairing (cleanup)...", flush=True)
+        try:
+            await pairing.remove_pairing(pairing.id)
+            print(">>> pairing removed", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"remove_pairing failed (factory-reset the device): {e}", flush=True)
         return 0
     finally:
         await controller.async_stop()
