@@ -14,8 +14,11 @@ use std::sync::Arc;
 const PAIR_SETUP_CHAR: &str = "0000004c-0000-1000-8000-0026bb765291";
 const PAIR_VERIFY_CHAR: &str = "0000004e-0000-1000-8000-0026bb765291";
 
-/// Default GATT fragment size before MTU negotiation (conservative).
-const DEFAULT_FRAG_SIZE: usize = 512;
+/// HAP-BLE PDU fragment size (max bytes per GATT write). btleplug 0.11 doesn't
+/// expose the negotiated ATT MTU, so this is a conservative fixed value that
+/// fits any MTU >= 183; larger PDUs (e.g. Pair Setup M3/M5) are split across
+/// writes. Deriving this from the real MTU is a future improvement.
+const DEFAULT_FRAG_SIZE: usize = 180;
 
 /// A BLE HAP controller: holds the long-term controller identity used for
 /// pairing and verification.
@@ -53,10 +56,12 @@ impl BleController {
         _accessory: &DiscoveredBleAccessory,
         setup_code: &str,
     ) -> Result<(BleAccessory, AccessoryPairing)> {
-        // Read just the Pair-Setup characteristic's instance id (one descriptor
-        // read) — pairing must not wait on a full tree walk, which is slow and
-        // fragile on sleepy accessories.
-        let setup_iid = gatt.instance_id(PAIR_SETUP_CHAR).await?;
+        // Enumerate the whole tree up front over plain GATT (resolving every
+        // iid). This MUST happen before Pair Verify establishes the secure
+        // session, since the accessory then rejects unencrypted GATT reads. The
+        // result is reused for the pairing characteristics and the DB build.
+        let services = gatt.enumerate().await?;
+        let setup_iid = iid_of(&services, PAIR_SETUP_CHAR)?;
         let pairing = pairing::pair_setup(
             gatt.as_ref(),
             PAIR_SETUP_CHAR,
@@ -66,7 +71,7 @@ impl BleController {
             DEFAULT_FRAG_SIZE,
         )
         .await?;
-        let acc = self.verify_and_build(gatt, &pairing).await?;
+        let acc = self.verify_and_build(gatt, services, &pairing).await?;
         Ok((acc, pairing))
     }
 
@@ -79,15 +84,17 @@ impl BleController {
         gatt: Arc<dyn crate::gatt::GattConnection>,
         pairing: &AccessoryPairing,
     ) -> Result<BleAccessory> {
-        self.verify_and_build(gatt, pairing).await
+        let services = gatt.enumerate().await?;
+        self.verify_and_build(gatt, services, pairing).await
     }
 
     async fn verify_and_build(
         &self,
         gatt: Arc<dyn crate::gatt::GattConnection>,
+        services: Vec<crate::gatt::GattService>,
         pairing: &AccessoryPairing,
     ) -> Result<BleAccessory> {
-        let verify_iid = gatt.instance_id(PAIR_VERIFY_CHAR).await?;
+        let verify_iid = iid_of(&services, PAIR_VERIFY_CHAR)?;
         let session: BleSession = pairing::pair_verify(
             gatt.as_ref(),
             PAIR_VERIFY_CHAR,
@@ -97,13 +104,22 @@ impl BleController {
             DEFAULT_FRAG_SIZE,
         )
         .await?;
-        // Now that the session is up, walk the full tree (resolving every iid)
-        // and build the typed database from characteristic signatures.
-        let services = gatt.enumerate().await?;
+        // The tree was enumerated before the session (plain GATT); build the
+        // typed database from encrypted characteristic-signature reads.
         let mut acc = BleAccessory::new(gatt, session, DEFAULT_FRAG_SIZE, services);
         acc.refresh_db(/*encrypted=*/ true).await?;
         Ok(acc)
     }
+}
+
+/// Find a characteristic's HAP instance id by UUID in an enumerated GATT tree.
+fn iid_of(services: &[crate::gatt::GattService], char_uuid: &str) -> Result<u16> {
+    services
+        .iter()
+        .flat_map(|s| &s.characteristics)
+        .find(|c| c.uuid.eq_ignore_ascii_case(char_uuid))
+        .map(|c| c.iid)
+        .ok_or(crate::error::BleError::CharacteristicNotFound { aid: 0, iid: 0 })
 }
 
 #[cfg(test)]

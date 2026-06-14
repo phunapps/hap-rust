@@ -25,7 +25,7 @@ pub(crate) async fn exchange<G: GattConnection + ?Sized>(
     tlv: &[u8],
     frag_size: usize,
 ) -> Result<Vec<u8>> {
-    let body = pdu::encode_value_param(tlv);
+    let body = pdu::encode_write_body(tlv);
     let resp = pdu::request(
         gatt,
         char_uuid,

@@ -30,6 +30,10 @@ pub(crate) mod param {
     pub(crate) const VALUE: u8 = 0x01;
     /// The characteristic type UUID.
     pub(crate) const CHAR_TYPE: u8 = 0x04;
+    /// Return-Response: set to 1 on a Characteristic-Write so the accessory
+    /// returns the response body (over BLE a plain write replies with only a
+    /// status — required to retrieve e.g. the Pair Setup M2 payload).
+    pub(crate) const RETURN_RESPONSE: u8 = 0x09;
     /// HAP characteristic properties descriptor (u16 LE bitmask).
     pub(crate) const PROPERTIES: u8 = 0x0A;
     /// GATT presentation format descriptor (7 bytes).
@@ -52,10 +56,24 @@ pub(crate) fn encode_request(op: OpCode, tid: u8, iid: u16, body: &[u8]) -> Vec<
     out
 }
 
-/// Wrap a raw value in a `Value` (0x01) param TLV8 — the body of a read/write.
+/// Wrap a raw value in a `Value` (0x01) param TLV8. Used by tests to synthesize
+/// the value-param body an accessory returns in a response.
+#[cfg(test)]
 pub(crate) fn encode_value_param(value: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut w = hap_tlv8::Tlv8Writer::new(&mut out);
+    w.push(param::VALUE, value);
+    out
+}
+
+/// Build a Characteristic-Write request body: a Return-Response (0x09) param so
+/// the accessory replies with a body, followed by the `Value` (0x01) param. Over
+/// BLE a write without Return-Response returns only a status, so this is required
+/// to receive the response payload (e.g. each Pair Setup/Verify reply).
+pub(crate) fn encode_write_body(value: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut w = hap_tlv8::Tlv8Writer::new(&mut out);
+    w.push_u8(param::RETURN_RESPONSE, 1);
     w.push(param::VALUE, value);
     out
 }
@@ -200,9 +218,12 @@ pub(crate) async fn request_secure<G: GattConnection + ?Sized>(
     frag_size: usize,
 ) -> Result<Response> {
     let pdu = encode_request(op, tid, iid, body);
-    let sealed = session.seal(&pdu)?;
-    for frag in fragment(&sealed, frag_size) {
-        gatt.write(char_uuid, &frag).await?;
+    // Fragment the plaintext (leaving room for each fragment's 16-byte tag),
+    // then encrypt EACH fragment separately — the accessory decrypts and
+    // reassembles per fragment.
+    for frag in fragment(&pdu, frag_size.saturating_sub(16).max(1)) {
+        let sealed = session.seal(&frag)?;
+        gatt.write(char_uuid, &sealed).await?;
     }
     let raw = gatt.read(char_uuid).await?;
     let opened = session.open(&raw)?;
@@ -375,6 +396,18 @@ mod tests {
         let body = encode_value_param(&[0x01, 0x02, 0x03]);
         let got = value_param(&body).unwrap();
         assert_eq!(got, vec![0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn write_body_has_return_response_then_value() {
+        // Matches a real aiohomekit Pair Setup M1 body captured from an Onvis
+        // SMS2: a Return-Response (0x09=1) param followed by the Value (0x01)
+        // param wrapping the pairing TLV `06 01 01 00 01 00` (State=M1, Method).
+        let body = encode_write_body(&[0x06, 0x01, 0x01, 0x00, 0x01, 0x00]);
+        assert_eq!(
+            body,
+            vec![0x09, 0x01, 0x01, 0x01, 0x06, 0x06, 0x01, 0x01, 0x00, 0x01, 0x00]
+        );
     }
 
     #[test]
