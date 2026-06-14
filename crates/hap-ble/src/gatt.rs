@@ -175,7 +175,17 @@ pub trait GattConnection: Send + Sync {
     async fn instance_id(&self, char_uuid: &str) -> Result<u16>;
     /// Enumerate the accessory's services and characteristics (with iids).
     async fn enumerate(&self) -> Result<Vec<GattService>>;
+    /// The maximum bytes that fit in a single GATT write — the HAP-BLE PDU
+    /// fragment size. Backends that can't determine the negotiated MTU return a
+    /// conservative default.
+    async fn max_write(&self) -> usize {
+        DEFAULT_FRAGMENT_SIZE
+    }
 }
+
+/// Conservative HAP-BLE fragment size when the negotiated ATT MTU is unknown;
+/// fits any MTU >= 183.
+pub(crate) const DEFAULT_FRAGMENT_SIZE: usize = 180;
 
 /// An in-memory `GattConnection` for tests. Reads return the last written value
 /// per characteristic; `subscribe` returns a channel whose `Sender` is exposed

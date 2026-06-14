@@ -14,12 +14,6 @@ use std::sync::Arc;
 const PAIR_SETUP_CHAR: &str = "0000004c-0000-1000-8000-0026bb765291";
 const PAIR_VERIFY_CHAR: &str = "0000004e-0000-1000-8000-0026bb765291";
 
-/// HAP-BLE PDU fragment size (max bytes per GATT write). btleplug 0.11 doesn't
-/// expose the negotiated ATT MTU, so this is a conservative fixed value that
-/// fits any MTU >= 183; larger PDUs (e.g. Pair Setup M3/M5) are split across
-/// writes. Deriving this from the real MTU is a future improvement.
-const DEFAULT_FRAG_SIZE: usize = 180;
-
 /// A BLE HAP controller: holds the long-term controller identity used for
 /// pairing and verification.
 pub struct BleController {
@@ -60,6 +54,7 @@ impl BleController {
         // descriptor read) — the long database sweep must not run before the
         // stateful Pair Setup handshake, which can't survive a mid-handshake
         // reconnect.
+        let frag = gatt.max_write().await;
         let setup_iid = gatt.instance_id(PAIR_SETUP_CHAR).await?;
         let pairing = pairing::pair_setup(
             gatt.as_ref(),
@@ -67,7 +62,7 @@ impl BleController {
             setup_iid,
             setup_code,
             self.keypair.clone(),
-            DEFAULT_FRAG_SIZE,
+            frag,
         )
         .await?;
         let acc = self.verify_and_build(gatt, &pairing).await?;
@@ -96,8 +91,9 @@ impl BleController {
         // reads the database structure after Pair Setup but before Pair Verify
         // (no secure session yet). The resilient GattConnection reconnects +
         // resumes through the accessory's periodic disconnects.
+        let frag = gatt.max_write().await;
         let services = gatt.enumerate().await?;
-        let accessories = crate::db::build_db(gatt.as_ref(), &services, DEFAULT_FRAG_SIZE).await?;
+        let accessories = crate::db::build_db(gatt.as_ref(), &services, frag).await?;
 
         // Now establish the secure session for value reads / events.
         let verify_iid = iid_of(&services, PAIR_VERIFY_CHAR)?;
@@ -107,13 +103,13 @@ impl BleController {
             verify_iid,
             &self.keypair,
             pairing,
-            DEFAULT_FRAG_SIZE,
+            frag,
         )
         .await?;
         Ok(BleAccessory::new(
             gatt,
             session,
-            DEFAULT_FRAG_SIZE,
+            frag,
             &services,
             accessories,
         ))

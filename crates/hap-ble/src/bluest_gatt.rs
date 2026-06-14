@@ -10,6 +10,7 @@ use crate::gatt::{
     HAP_SERVICE_ID_CHAR,
 };
 use async_trait::async_trait;
+use bluest::error::ErrorKind;
 use bluest::{Adapter, Characteristic, Device};
 use std::collections::HashMap;
 use tokio::sync::{mpsc, Mutex};
@@ -17,22 +18,25 @@ use tokio::sync::{mpsc, Mutex};
 /// Total reconnects allowed across a connection's lifetime (a runaway backstop).
 const MAX_RECONNECTS: u32 = 60;
 
-// By value for ergonomic `.map_err(be)`; the error is only formatted.
+/// Map a bluest error to a [`BleError`], classifying link-loss conditions as
+/// [`BleError::Disconnected`] (so the supervisor reconnects) from bluest's typed
+/// [`ErrorKind`] rather than by string-matching.
+// By value for ergonomic `.map_err(be)`.
 #[allow(clippy::needless_pass_by_value)]
 fn be(e: bluest::Error) -> BleError {
-    BleError::Backend(e.to_string())
+    match e.kind() {
+        ErrorKind::NotConnected
+        | ErrorKind::AdapterUnavailable
+        | ErrorKind::ConnectionFailed
+        | ErrorKind::ServiceChanged
+        | ErrorKind::NotReady => BleError::Disconnected,
+        _ => BleError::Backend(e.to_string()),
+    }
 }
 
-/// Whether a backend error means the link dropped (so reconnecting may recover).
+/// Whether an error means the link dropped (so reconnecting may recover).
 fn is_disconnect(e: &BleError) -> bool {
-    match e {
-        BleError::Disconnected => true,
-        BleError::Backend(m) => {
-            let m = m.to_ascii_lowercase();
-            m.contains("disconnect") || m.contains("not connected") || m.contains("not available")
-        }
-        _ => false,
-    }
+    matches!(e, BleError::Disconnected)
 }
 
 /// The discovered structure of one service: its UUID and its characteristics'
@@ -154,6 +158,13 @@ impl GattConnection for BluestConnection {
         self.read_iid(char_uuid)
             .await?
             .ok_or(BleError::MalformedPdu("no instance id descriptor"))
+    }
+
+    async fn max_write(&self) -> usize {
+        // The MTU is connection-wide, so any characteristic's max write works.
+        let ch = self.chars.lock().await.values().next().cloned();
+        ch.and_then(|c| c.max_write_len().ok())
+            .map_or(crate::gatt::DEFAULT_FRAGMENT_SIZE, |n| n.clamp(20, 512))
     }
 
     async fn write(&self, char_uuid: &str, value: &[u8]) -> Result<()> {
