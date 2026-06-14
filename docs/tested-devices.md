@@ -20,32 +20,38 @@ HAP-IP accessories only for v1.0.
 
 | Accessory (make/model) | Category | Date | Result |
 |---|---|---|---|
-| Onvis Smart Motion Sensor SMS2 | Sensor (10) | 2026-06-14 | **Partial** — discovery + GATT + Pair Setup M1 validated on the wire; M2 retrieval blocked (see below) |
+| Onvis Smart Motion Sensor SMS2 | Sensor (10) | 2026-06-14 | **Pairing validated** — full Pair Setup + Pair Verify complete on the wire; post-pairing DB build not yet confirmed (device stability) |
 
-**What validated on the real Onvis SMS2** (device id `a3:ca:fb:f0:db:7e`):
+**What validated on the real Onvis SMS2:**
 
-- **BLE scan + HAP advertisement parsing.** Raw manufacturer-data (company
-  `0x004C`) `063101a3cafbf0db7e0a00010001029568b90d` parsed exactly: device id,
-  category 10 (Sensor), GSN, config number `c#=1`, and the unpaired flag
-  (status bit0 set). `parse_hap_advert` matches the device byte-for-byte.
-- **GATT connect + service/characteristic discovery** (14 services).
-- **HAP Instance-ID descriptor resolution.** Reading each characteristic's
-  Instance-ID descriptor (`DC46F0FE-…`) returns real iids — e.g. Pair-Setup
-  (`…004c`) → iid 34, Pair-Verify (`…004e`) → iid 35, plus the sensor services
-  (temperature/humidity/motion/battery). `BtleplugConnection::{instance_id,
-  enumerate}` work end-to-end.
-- **Pair Setup M1 on the wire.** The framed write PDU
-  `00 02 01 22 00 08 00 | 01 06 06 01 01 00 01 00` (CharWrite, tid 1, iid 34,
-  value-param-wrapped `State=M1, Method=PairSetup`) is accepted — the accessory
-  responds with a HAP response PDU, status `0x00` (success).
+- **BLE scan + HAP advertisement parsing** — manufacturer-data (company `0x004C`)
+  parsed exactly: device id, category 10 (Sensor), GSN, `c#`, unpaired flag. (The
+  Onvis rotates its advertised HAP device id between adverts; the CoreBluetooth
+  peripheral UUID is stable, so match/connect by that.)
+- **GATT connect + discovery** (14 services) and **Instance-ID descriptor
+  resolution** for every characteristic (Pair-Setup `…004c`→iid 34, Pair-Verify
+  `…004e`→iid 35, plus temp/humidity/motion/battery services).
+- **Full Pair Setup (M1→M6) and Pair Verify (M1→M4) on the wire.** Trace: M1→read
+  418 (M2 salt+pubkey), M3→read 104 (M4), M5→read 147 (M6); verify M1→read 147,
+  M3→read 10 (M4). The SRP-6a + X25519/Ed25519 handshake from `hap-crypto` drives
+  correctly over BLE.
 
-**Blocked: Pair Setup M2 retrieval.** The accessory's response to M1 is a bare
-3-byte `02 01 00` (response, tid 1, status success) with **no body**, where M2
-must carry the SRP salt + public key. A second read of the pairing
-characteristic consistently triggers an immediate `Device disconnected`. This
-Onvis also advertises only in brief bursts and drops the link within ~1 read,
-making iteration slow. Root cause unresolved — needs a reference HAP-BLE
-pairing capture (e.g. aiohomekit/bleak against the same device) to reconcile
-the read-response semantics, and/or a less aggressively-sleepy BLE accessory.
-The pairing crypto/PDU logic itself is CI-validated and reaches the wire
-correctly; this is a transport-reconciliation gap, not a crypto gap.
+**Three real HAP-BLE bugs found & fixed via an aiohomekit/bleak reference capture
+of the same device** (`xtask/scripts/capture-pair-setup/ble_pair_capture.py`):
+
+1. **Missing Return-Response param.** A Characteristic-Write over BLE must include
+   HAP-Param Return-Response (`0x09`=1) before the Value param, or the accessory
+   replies with only a status (the bare `02 01 00` we saw) and never returns the
+   body. This single missing TLV param blocked the entire handshake. (Not needed
+   over IP, which is why Pair Setup worked there.)
+2. **Fragment size.** PDUs must be fragmented to the ATT MTU (the Onvis negotiated
+   ~290); our 512 produced an oversized single write that hung at M3. Now 180.
+3. **Per-fragment encryption.** The secure session encrypts each fragment
+   separately (plaintext fragmented then sealed), not the whole PDU once.
+
+**Not yet confirmed end-to-end:** the post-pairing attribute-database build
+(enumerate + encrypted signature reads). The Onvis drops the link during the
+~40-read instance-ID descriptor sweep — a device connection-stability issue (it
+advertises in brief bursts and is aggressive about dropping), not a protocol gap.
+Needs a steadier BLE accessory or a reconnect/retry strategy to finish read +
+events validation.
