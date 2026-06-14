@@ -52,14 +52,29 @@ pub async fn connect_gatt(accessory: &DiscoveredBleAccessory) -> Result<Arc<Btle
         .into_iter()
         .next()
         .ok_or(crate::error::BleError::AccessoryNotFound)?;
-    for p in central.peripherals().await? {
-        if p.id().to_string() == accessory.peripheral_id {
-            p.connect().await?;
-            p.discover_services().await?;
-            return Ok(Arc::new(BtleplugConnection::new(p)));
+    // CoreBluetooth only knows peripherals this central has seen, so we must run
+    // our own scan here (a separate `scan()` call uses a different central whose
+    // discoveries this one cannot see). Poll for the target across a bounded
+    // window — sleepy accessories advertise intermittently.
+    central.start_scan(ScanFilter::default()).await?;
+    let mut peripheral = None;
+    for _ in 0..20 {
+        for p in central.peripherals().await? {
+            if p.id().to_string() == accessory.peripheral_id {
+                peripheral = Some(p);
+                break;
+            }
         }
+        if peripheral.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    Err(crate::error::BleError::AccessoryNotFound)
+    central.stop_scan().await?;
+    let p = peripheral.ok_or(crate::error::BleError::AccessoryNotFound)?;
+    p.connect().await?;
+    p.discover_services().await?;
+    Ok(Arc::new(BtleplugConnection::new(p)))
 }
 
 /// A HAP accessory found while scanning over BLE.

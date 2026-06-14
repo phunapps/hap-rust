@@ -53,18 +53,21 @@ impl BleController {
         _accessory: &DiscoveredBleAccessory,
         setup_code: &str,
     ) -> Result<(BleAccessory, AccessoryPairing)> {
-        // iid=0: the HAP Instance-ID descriptor is resolved per-characteristic
-        // on hardware in a later task; 0 is the placeholder used until then.
+        // Enumerate once (plain GATT, pre-pairing): resolves real characteristic
+        // iids from their Instance-ID descriptors. Reused for the DB build so the
+        // link isn't walked again.
+        let services = gatt.enumerate().await?;
+        let setup_iid = iid_of(&services, PAIR_SETUP_CHAR)?;
         let pairing = pairing::pair_setup(
             gatt.as_ref(),
             PAIR_SETUP_CHAR,
-            0,
+            setup_iid,
             setup_code,
             self.keypair.clone(),
             DEFAULT_FRAG_SIZE,
         )
         .await?;
-        let acc = self.verify_and_build(gatt, &pairing).await?;
+        let acc = self.verify_and_build(gatt, services, &pairing).await?;
         Ok((acc, pairing))
     }
 
@@ -77,29 +80,40 @@ impl BleController {
         gatt: Arc<dyn crate::gatt::GattConnection>,
         pairing: &AccessoryPairing,
     ) -> Result<BleAccessory> {
-        self.verify_and_build(gatt, pairing).await
+        let services = gatt.enumerate().await?;
+        self.verify_and_build(gatt, services, pairing).await
     }
 
     async fn verify_and_build(
         &self,
         gatt: Arc<dyn crate::gatt::GattConnection>,
+        services: Vec<crate::gatt::GattService>,
         pairing: &AccessoryPairing,
     ) -> Result<BleAccessory> {
-        // iid=0: resolved from the verify characteristic's Instance-ID descriptor
-        // on hardware in a later task.
+        let verify_iid = iid_of(&services, PAIR_VERIFY_CHAR)?;
         let session: BleSession = pairing::pair_verify(
             gatt.as_ref(),
             PAIR_VERIFY_CHAR,
-            0,
+            verify_iid,
             &self.keypair,
             pairing,
             DEFAULT_FRAG_SIZE,
         )
         .await?;
-        let mut acc = BleAccessory::new(gatt, session, DEFAULT_FRAG_SIZE);
+        let mut acc = BleAccessory::new(gatt, session, DEFAULT_FRAG_SIZE, services);
         acc.refresh_db(/*encrypted=*/ true).await?;
         Ok(acc)
     }
+}
+
+/// Find a characteristic's HAP instance id by UUID in an enumerated GATT tree.
+fn iid_of(services: &[crate::gatt::GattService], char_uuid: &str) -> Result<u16> {
+    services
+        .iter()
+        .flat_map(|s| &s.characteristics)
+        .find(|c| c.uuid.eq_ignore_ascii_case(char_uuid))
+        .map(|c| c.iid)
+        .ok_or(crate::error::BleError::CharacteristicNotFound { aid: 0, iid: 0 })
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 //! signatures (BLE has no `/accessories` JSON).
 
 use crate::error::{BleError, Result};
-use crate::gatt::GattConnection;
+use crate::gatt::{GattConnection, GattService};
 use crate::pdu::{self, OpCode};
 use crate::session::BleSession;
 use hap_model::format::{CharFormat, CharValue};
@@ -21,9 +21,10 @@ fn service_type_of(uuid: &str) -> ServiceType {
     }
 }
 
-/// Issue a Characteristic-Signature-Read for every characteristic in the GATT
-/// database and assemble a single [`Accessory`] (aid 1 — BLE accessories are
-/// not bridges in this milestone).
+/// Issue a Characteristic-Signature-Read for every characteristic in the
+/// already-enumerated GATT database (`gatt_services`, with resolved iids) and
+/// assemble a single [`Accessory`] (aid 1 — BLE accessories are not bridges in
+/// this milestone).
 ///
 /// When `encrypted` is true, signature PDUs are sealed/opened through
 /// `session`; before Pair Verify they are sent in the clear.
@@ -32,18 +33,18 @@ fn service_type_of(uuid: &str) -> ServiceType {
 /// Propagates GATT, PDU, and model errors.
 pub(crate) async fn build_db<G: GattConnection + ?Sized>(
     gatt: &G,
+    gatt_services: &[GattService],
     session: &mut BleSession,
     frag_size: usize,
     encrypted: bool,
 ) -> Result<Vec<Accessory>> {
-    let gatt_services = gatt.enumerate().await?;
     let mut services = Vec::new();
     let mut tid: u8 = 0;
 
     for gs in gatt_services {
         let svc_type = service_type_of(&gs.uuid);
         let mut chars = Vec::new();
-        for gc in gs.characteristics {
+        for gc in &gs.characteristics {
             tid = tid.wrapping_add(1);
             let resp = if encrypted {
                 pdu::request_secure(
@@ -247,9 +248,16 @@ mod tests {
             read_key: [0; 32],
             write_key: [0; 32],
         });
-        let accs = build_db(&gatt, &mut session, 512, /*encrypted=*/ false)
-            .await
-            .unwrap();
+        let services = gatt.enumerate().await.unwrap();
+        let accs = build_db(
+            &gatt,
+            &services,
+            &mut session,
+            512,
+            /*encrypted=*/ false,
+        )
+        .await
+        .unwrap();
         assert_eq!(accs.len(), 1);
         let ch = &accs[0].services[0].characteristics[0];
         assert_eq!(ch.iid, 11);

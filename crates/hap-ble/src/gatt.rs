@@ -8,10 +8,14 @@ use tokio::sync::mpsc;
 use btleplug::api::{Characteristic as BtleChar, Peripheral as _, WriteType};
 use btleplug::platform::Peripheral;
 
-// Instance-ID (iid) placeholders: the HAP Instance-ID descriptor
-// (UUID DC46F0FE-81D2-4616-B5D9-6ABDD796939A) is read per-characteristic on
-// hardware to populate real iid values. That resolution is deferred to a later
-// task; all iids here are set to 0 until then.
+/// The HAP Characteristic-Instance-ID GATT descriptor. Each HAP characteristic
+/// carries one; its value is the characteristic's 16-bit instance id (LE), which
+/// HAP-BLE PDUs address by.
+const HAP_INSTANCE_ID_DESC: &str = "dc46f0fe-81d2-4616-b5d9-6abdd796939a";
+
+/// The HAP Service-Instance-ID characteristic (read-only, no descriptor) that
+/// appears in every HAP service; its value is the service's 16-bit instance id.
+const HAP_SERVICE_ID_CHAR: &str = "e604e95d-a759-4817-87d3-aa005083a0d1";
 
 /// A [`GattConnection`] backed by an already-connected btleplug [`Peripheral`].
 ///
@@ -75,21 +79,48 @@ impl GattConnection for BtleplugConnection {
         self.peripheral.discover_services().await?;
         let mut services = Vec::new();
         for svc in self.peripheral.services() {
-            let characteristics = svc
-                .characteristics
-                .iter()
-                .map(|c| GattCharacteristic {
-                    uuid: c.uuid.to_string(),
-                    iid: 0,
-                })
-                .collect();
+            let mut svc_iid = 0u16;
+            let mut characteristics = Vec::new();
+            for c in &svc.characteristics {
+                let uuid = c.uuid.to_string();
+                // The Service-Instance-ID characteristic carries the service's
+                // iid as its readable value; it is not itself a HAP characteristic.
+                if uuid.eq_ignore_ascii_case(HAP_SERVICE_ID_CHAR) {
+                    if let Ok(v) = self.peripheral.read(c).await {
+                        svc_iid = u16_le(&v).unwrap_or(0);
+                    }
+                    continue;
+                }
+                // A HAP characteristic addresses itself by the iid in its
+                // Instance-ID descriptor. Characteristics without one are not
+                // HAP-addressable, so skip them.
+                let Some(desc) = c.descriptors.iter().find(|d| {
+                    d.uuid
+                        .to_string()
+                        .eq_ignore_ascii_case(HAP_INSTANCE_ID_DESC)
+                }) else {
+                    continue;
+                };
+                let Some(iid) = u16_le(&self.peripheral.read_descriptor(desc).await?) else {
+                    continue;
+                };
+                characteristics.push(GattCharacteristic { uuid, iid });
+            }
             services.push(GattService {
                 uuid: svc.uuid.to_string(),
-                iid: 0,
+                iid: svc_iid,
                 characteristics,
             });
         }
         Ok(services)
+    }
+}
+
+/// Read a 16-bit little-endian value from the first two bytes, if present.
+fn u16_le(v: &[u8]) -> Option<u16> {
+    match v {
+        [lo, hi, ..] => Some(u16::from_le_bytes([*lo, *hi])),
+        _ => None,
     }
 }
 

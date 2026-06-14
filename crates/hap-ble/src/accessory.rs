@@ -3,7 +3,7 @@
 
 use crate::db;
 use crate::error::{BleError, Result};
-use crate::gatt::GattConnection;
+use crate::gatt::{GattConnection, GattService};
 use crate::pdu::{self, OpCode};
 use crate::session::BleSession;
 use hap_model::format::{CharFormat, CharValue};
@@ -36,6 +36,9 @@ pub struct BleAccessory {
     chars: HashMap<(u64, u64), (String, CharFormat)>,
     tid: u8,
     events_tx: tokio::sync::broadcast::Sender<CharacteristicEvent>,
+    /// The GATT structure (with resolved iids) enumerated once at connect time
+    /// and reused for signature reads, so the link isn't re-walked per refresh.
+    gatt_services: Vec<GattService>,
 }
 
 impl BleAccessory {
@@ -45,6 +48,7 @@ impl BleAccessory {
         gatt: Arc<dyn GattConnection>,
         session: BleSession,
         frag_size: usize,
+        gatt_services: Vec<GattService>,
     ) -> Self {
         let (events_tx, _) = tokio::sync::broadcast::channel(64);
         Self {
@@ -55,6 +59,7 @@ impl BleAccessory {
             chars: HashMap::new(),
             tid: 0,
             events_tx,
+            gatt_services,
         }
     }
 
@@ -65,21 +70,21 @@ impl BleAccessory {
     pub async fn refresh_db(&mut self, encrypted: bool) -> Result<()> {
         self.accessories = db::build_db(
             self.gatt.as_ref(),
+            &self.gatt_services,
             &mut self.session,
             self.frag_size,
             encrypted,
         )
         .await?;
         self.chars.clear();
-        let gatt_services = self.gatt.enumerate().await?;
         // `build_db` models a single accessory (aid 1 — BLE accessories are not
         // bridges in this milestone), so characteristic iids are unique and a
         // plain iid->uuid map is sufficient. Revisit if multi-accessory bridges
         // are ever modeled.
         let mut uuid_by_iid: HashMap<u64, String> = HashMap::new();
-        for gs in gatt_services {
-            for gc in gs.characteristics {
-                uuid_by_iid.insert(u64::from(gc.iid), gc.uuid);
+        for gs in &self.gatt_services {
+            for gc in &gs.characteristics {
+                uuid_by_iid.insert(u64::from(gc.iid), gc.uuid.clone());
             }
         }
         for acc in &self.accessories {
@@ -243,7 +248,8 @@ mod tests {
             read_key: [0; 32],
             write_key: [0; 32],
         });
-        let mut h = BleAccessory::new(gatt.clone(), session, 512);
+        let services = gatt.enumerate().await.unwrap();
+        let mut h = BleAccessory::new(gatt.clone(), session, 512, services);
         h.refresh_db(/*encrypted=*/ false).await.unwrap();
         (h, gatt)
     }
