@@ -20,7 +20,16 @@ HAP-IP accessories only for v1.0.
 
 | Accessory (make/model) | Category | Date | Result |
 |---|---|---|---|
-| Onvis Smart Motion Sensor SMS2 | Sensor (10) | 2026-06-14 | **Pairing validated** — full Pair Setup + Pair Verify complete on the wire; post-pairing DB build not yet confirmed (device stability) |
+| Onvis Smart Motion Sensor SMS2 | Sensor (10) | 2026-06-14 | **Validated end-to-end** — discover → pair → full 65-char database → encrypted read. (Events not yet tested.) |
+
+**Full success (with the `bluest` backend + reconnect-and-resume supervisor):**
+discover → Pair Setup → Pair Verify → the entire ~65-characteristic attribute
+database → an encrypted value read (`read(aid=1, iid=3) → "Onvis"`). The typed
+model decoded correctly (MotionDetected→Bool, CurrentTemperature→Float,
+CurrentRelativeHumidity→Float, BatteryLevel→Uint8, …). Run via
+`cargo run --release -p hap-ble --example ble_pair_bluest -- <setup-code>`.
+
+The earlier-recorded findings below were the path to that result.
 
 **What validated on the real Onvis SMS2:**
 
@@ -49,9 +58,27 @@ of the same device** (`xtask/scripts/capture-pair-setup/ble_pair_capture.py`):
 3. **Per-fragment encryption.** The secure session encrypts each fragment
    separately (plaintext fragmented then sealed), not the whole PDU once.
 
-**Not yet confirmed end-to-end:** the post-pairing attribute-database build
-(enumerate + encrypted signature reads). The Onvis drops the link during the
-~40-read instance-ID descriptor sweep — a device connection-stability issue (it
-advertises in brief bursts and is aggressive about dropping), not a protocol gap.
-Needs a steadier BLE accessory or a reconnect/retry strategy to finish read +
-events validation.
+**What finished the job (the database build + read):** the Onvis drops the link
+every few operations during the long ~65-characteristic structure sweep. This is
+a sleepy-accessory trait, not a protocol gap — aiohomekit (cross-checked on the
+same device: it read all 65 characteristics across ~10 disconnects via
+`bleak-retry-connector`) handles it by reconnecting through the drops. Four
+changes closed it:
+
+4. **Reconnect-and-resume supervisor** (`BluestConnection`): each operation
+   reconnects (re-discovering handles by UUID) and retries on a clean disconnect,
+   resuming the sweep where it left off.
+5. **`bluest` backend instead of `btleplug`** on macOS: btleplug *hung* on these
+   disconnects (no timeout, unrecoverable); bluest returns clean errors a
+   supervisor can act on. (btleplug's CoreBluetooth backend is its least mature.)
+6. **Order:** read only the Pair-Setup iid, Pair Setup, *then* the resilient
+   tree walk + signature reads, *then* Pair Verify — so the stateful handshakes
+   run before the long sweep and a mid-sweep reconnect can't corrupt them.
+7. **Unencrypted structure fetch:** signature reads happen after Pair Setup but
+   before Pair Verify (no session yet), matching HAP; only values are encrypted.
+
+Plus a **factory reset** of the device — earlier partial runs that completed Pair
+Setup each left a stored pairing, eventually hitting its max-pairings limit
+("pairing error"); a power-cycle doesn't clear those, a factory reset does.
+
+**Still untested:** `subscribe`/events on hardware.
