@@ -69,6 +69,16 @@ pub struct BleAccessory {
     /// (aid, iid) -> characteristic UUID, format.
     chars: HashMap<(u64, u64), (String, CharFormat)>,
     events_tx: tokio::sync::broadcast::Sender<CharacteristicEvent>,
+    /// Background event-forwarding tasks, aborted when the handle is dropped.
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for BleAccessory {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
 }
 
 impl BleAccessory {
@@ -109,6 +119,7 @@ impl BleAccessory {
             accessories,
             chars,
             events_tx,
+            tasks: Vec::new(),
         }
     }
 
@@ -173,7 +184,7 @@ impl BleAccessory {
         let gatt = self.gatt.clone();
         let secure = self.secure.clone();
         let frag_size = self.frag_size;
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             // The notification carries no value; it signals "read me".
             while rx.recv().await.is_some() {
                 if let Ok(raw) = read_char_raw(gatt.as_ref(), &secure, &uuid, iid, frag_size).await
@@ -184,6 +195,7 @@ impl BleAccessory {
                 }
             }
         });
+        self.tasks.push(task);
         Ok(())
     }
 

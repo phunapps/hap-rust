@@ -160,7 +160,6 @@ pub(crate) fn fragment(pdu: &[u8], frag_size: usize) -> Vec<Vec<u8>> {
 ///
 /// # Errors
 /// Returns [`BleError::MalformedPdu`] if a continuation fragment is too short.
-#[allow(dead_code)] // wired into the multi-fragment response read path during hardware reconciliation
 pub(crate) fn reassemble(frags: &[Vec<u8>]) -> Result<Vec<u8>> {
     let mut out = match frags.first() {
         Some(first) => first.clone(),
@@ -174,6 +173,21 @@ pub(crate) fn reassemble(frags: &[Vec<u8>]) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
+
+/// The total PDU length a first response fragment declares: 5-byte header
+/// (control, tid, status, 2-byte body length) + body, or its own length for a
+/// bodyless (3-byte) response.
+fn declared_total(first: &[u8]) -> usize {
+    if first.len() >= 5 {
+        5 + usize::from(u16::from_le_bytes([first[3], first[4]]))
+    } else {
+        first.len()
+    }
+}
+
+/// Max response fragments before we treat the read as malformed (a backstop
+/// against a non-advancing read loop).
+const MAX_RESPONSE_FRAGMENTS: usize = 64;
 
 /// Send one request PDU to `char_uuid` and return the decoded response.
 ///
@@ -197,8 +211,16 @@ pub(crate) async fn request<G: GattConnection + ?Sized>(
     for frag in fragment(&pdu, frag_size) {
         gatt.write(char_uuid, &frag).await?;
     }
-    let raw = gatt.read(char_uuid).await?;
-    decode_response(&raw)
+    // Read response fragments until the declared body is complete, reassembling
+    // continuation fragments (control `0x82`).
+    let mut frags = vec![gatt.read(char_uuid).await?];
+    while reassemble(&frags)?.len() < declared_total(&frags[0]) {
+        if frags.len() >= MAX_RESPONSE_FRAGMENTS {
+            return Err(BleError::MalformedPdu("too many response fragments"));
+        }
+        frags.push(gatt.read(char_uuid).await?);
+    }
+    decode_response(&reassemble(&frags)?)
 }
 
 /// Like [`request`] but seals the request and opens the response through an
@@ -225,9 +247,17 @@ pub(crate) async fn request_secure<G: GattConnection + ?Sized>(
         let sealed = session.seal(&frag)?;
         gatt.write(char_uuid, &sealed).await?;
     }
-    let raw = gatt.read(char_uuid).await?;
-    let opened = session.open(&raw)?;
-    decode_response(&opened)
+    // Read + decrypt each response fragment (the accessory encrypts per
+    // fragment), reassembling until the declared body is complete. Decrypting
+    // every fragment keeps the receive counter in sync with the accessory.
+    let mut frags = vec![session.open(&gatt.read(char_uuid).await?)?];
+    while reassemble(&frags)?.len() < declared_total(&frags[0]) {
+        if frags.len() >= MAX_RESPONSE_FRAGMENTS {
+            return Err(BleError::MalformedPdu("too many response fragments"));
+        }
+        frags.push(session.open(&gatt.read(char_uuid).await?)?);
+    }
+    decode_response(&reassemble(&frags)?)
 }
 
 /// A parsed characteristic signature: the fields needed to populate a
@@ -497,5 +527,31 @@ mod tests {
         .unwrap();
         assert_eq!(got.status, 0x00);
         assert_eq!(value_param(&got.body).unwrap(), vec![0xAB]);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // test code: roundtrip success is the whole point
+    async fn request_reassembles_multi_fragment_response() {
+        use crate::gatt::MockGatt;
+        let gatt = MockGatt::new();
+        // A response whose 6-byte body arrives across two GATT reads:
+        // first fragment declares body length 6 but carries only 3 bytes;
+        // the continuation (control 0x82) carries the remaining 3.
+        gatt.queue_read("c", vec![0x02, 0x05, 0x00, 0x06, 0x00, 0xAA, 0xBB, 0xCC]);
+        gatt.queue_read("c", vec![0x82, 0x05, 0xDD, 0xEE, 0xFF]);
+
+        let got = request(
+            &gatt,
+            "c",
+            OpCode::CharacteristicRead,
+            0x05,
+            0x0001,
+            &[],
+            512,
+        )
+        .await
+        .unwrap();
+        assert_eq!(got.status, 0x00);
+        assert_eq!(got.body, vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
     }
 }
