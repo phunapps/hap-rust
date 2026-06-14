@@ -75,6 +75,22 @@ impl GattConnection for BtleplugConnection {
         Ok(rx)
     }
 
+    async fn instance_id(&self, char_uuid: &str) -> Result<u16> {
+        let ch = self.characteristic(char_uuid)?;
+        let desc = ch
+            .descriptors
+            .iter()
+            .find(|d| {
+                d.uuid
+                    .to_string()
+                    .eq_ignore_ascii_case(HAP_INSTANCE_ID_DESC)
+            })
+            .ok_or(crate::error::BleError::CharacteristicNotFound { aid: 0, iid: 0 })?;
+        u16_le(&self.peripheral.read_descriptor(desc).await?).ok_or(
+            crate::error::BleError::MalformedPdu("instance id descriptor too short"),
+        )
+    }
+
     async fn enumerate(&self) -> Result<Vec<GattService>> {
         self.peripheral.discover_services().await?;
         let mut services = Vec::new();
@@ -155,6 +171,10 @@ pub trait GattConnection: Send + Sync {
     /// Subscribe to notifications on a characteristic; the receiver yields raw
     /// notification payloads.
     async fn subscribe(&self, char_uuid: &str) -> Result<mpsc::Receiver<Vec<u8>>>;
+    /// Read a single characteristic's HAP instance id (from its Instance-ID
+    /// descriptor) without walking the whole tree — used to address the pairing
+    /// characteristics before the full database is enumerated.
+    async fn instance_id(&self, char_uuid: &str) -> Result<u16>;
     /// Enumerate the accessory's services and characteristics.
     async fn enumerate(&self) -> Result<Vec<GattService>>;
 }
@@ -209,6 +229,17 @@ impl MockGatt {
 #[allow(clippy::unwrap_used)] // test double: lock poisoning is not a real concern in single-process tests
 #[async_trait]
 impl GattConnection for MockGatt {
+    async fn instance_id(&self, char_uuid: &str) -> Result<u16> {
+        self.services
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|s| &s.characteristics)
+            .find(|c| c.uuid.eq_ignore_ascii_case(char_uuid))
+            .map(|c| c.iid)
+            .ok_or(crate::error::BleError::CharacteristicNotFound { aid: 0, iid: 0 })
+    }
+
     async fn write(&self, char_uuid: &str, value: &[u8]) -> Result<()> {
         self.values
             .lock()
