@@ -23,7 +23,7 @@ const MAX_RECONNECTS: u32 = 60;
 /// [`ErrorKind`] rather than by string-matching.
 // By value for ergonomic `.map_err(be)`.
 #[allow(clippy::needless_pass_by_value)]
-fn be(e: bluest::Error) -> BleError {
+pub(crate) fn be(e: bluest::Error) -> BleError {
     match e.kind() {
         ErrorKind::NotConnected
         | ErrorKind::AdapterUnavailable

@@ -9,7 +9,7 @@ use hap_model::tree::{Accessory, Characteristic, Service};
 use hap_model::{ServiceType, Uuid};
 
 /// Map a GATT service UUID string to a [`ServiceType`]. `from_uuid` returns
-/// `Unknown(uuid)` for non-HAP types. btleplug yields valid 128-bit UUID
+/// `Unknown(uuid)` for non-HAP types. bluest yields valid 128-bit UUID
 /// strings, so the parse-error arm is unreachable in practice.
 fn service_type_of(uuid: &str) -> ServiceType {
     match Uuid::parse(uuid) {

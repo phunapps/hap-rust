@@ -20,7 +20,6 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
 tokio-stream = { workspace = true, features = ["sync"] }
-btleplug = { workspace = true }
 hap-tlv8 = { path = "../hap-tlv8", version = "1.0.0" }
 hap-crypto = { path = "../hap-crypto", version = "1.0.0" }
 hap-model = { path = "../hap-model", version = "1.2.0" }

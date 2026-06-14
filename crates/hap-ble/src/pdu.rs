@@ -192,7 +192,7 @@ const MAX_RESPONSE_FRAGMENTS: usize = 64;
 /// Send one request PDU to `char_uuid` and return the decoded response.
 ///
 /// Fragments the request to `frag_size`, writes each fragment, then reads and
-/// reassembles the response. (The mock and btleplug both deliver the full
+/// reassembles the response. (The mock and bluest both deliver the full
 /// response from a single `read`; multi-fragment reads are reassembled by
 /// [`reassemble`] when an accessory splits them — see hardware notes.)
 ///
