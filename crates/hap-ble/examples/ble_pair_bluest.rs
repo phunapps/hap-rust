@@ -85,5 +85,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => println!("read failed: {e}"),
         }
     }
+
+    // Subscribe to MotionDetected and print events for 45s — trigger motion.
+    if let Ok((aid, iid)) = accessory.find(
+        hap_ble::ServiceType::MotionSensor,
+        hap_ble::CharacteristicType::MotionDetected,
+    ) {
+        println!("subscribing to MotionDetected (aid={aid} iid={iid}); WAVE at the sensor for 45s...");
+        accessory.subscribe(aid, iid).await?;
+        let mut events = accessory.events();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        while let Ok(Some(ev)) = tokio::time::timeout_at(deadline, events.next()).await {
+            println!("EVENT: aid={} iid={} value={:?}", ev.aid, ev.iid, ev.value);
+        }
+        println!("done watching events.");
+    } else {
+        println!("no MotionDetected characteristic found");
+    }
     Ok(())
 }

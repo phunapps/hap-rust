@@ -11,6 +11,7 @@ use hap_model::tree::Accessory;
 use hap_model::{CharacteristicType, ServiceType};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio_stream::StreamExt as _;
 
 /// A characteristic value-change event.
@@ -24,17 +25,49 @@ pub struct CharacteristicEvent {
     pub value: CharValue,
 }
 
+/// The encrypted-session state shared between foreground reads and the
+/// background event tasks (each event-triggered read also advances the session).
+struct Secure {
+    session: BleSession,
+    tid: u8,
+}
+
+/// Issue one encrypted Characteristic-Read and return the raw value bytes.
+async fn read_char_raw(
+    gatt: &dyn GattConnection,
+    secure: &Mutex<Secure>,
+    uuid: &str,
+    iid: u64,
+    frag_size: usize,
+) -> Result<Vec<u8>> {
+    let iid16 = u16::try_from(iid).map_err(|_| BleError::CharacteristicNotFound { aid: 0, iid })?;
+    let mut s = secure.lock().await;
+    s.tid = s.tid.wrapping_add(1);
+    let tid = s.tid;
+    let resp = pdu::request_secure(
+        gatt,
+        &mut s.session,
+        uuid,
+        OpCode::CharacteristicRead,
+        tid,
+        iid16,
+        &[],
+        frag_size,
+    )
+    .await?;
+    pdu::value_param(&resp.body)
+}
+
 /// A connected BLE accessory: holds the GATT link, the secure session, the
 /// cached attribute database, and a map from (aid, iid) to GATT characteristic
 /// UUID for issuing PDUs.
 pub struct BleAccessory {
     gatt: Arc<dyn GattConnection>,
-    session: BleSession,
+    secure: Arc<Mutex<Secure>>,
     frag_size: usize,
     accessories: Vec<Accessory>,
     /// (aid, iid) -> characteristic UUID, format.
     chars: HashMap<(u64, u64), (String, CharFormat)>,
-    tid: u8,
     events_tx: tokio::sync::broadcast::Sender<CharacteristicEvent>,
 }
 
@@ -71,11 +104,10 @@ impl BleAccessory {
         }
         Self {
             gatt,
-            session,
+            secure: Arc::new(Mutex::new(Secure { session, tid: 0 })),
             frag_size,
             accessories,
             chars,
-            tid: 0,
             events_tx,
         }
     }
@@ -118,32 +150,14 @@ impl BleAccessory {
             .get(&(aid, iid))
             .cloned()
             .ok_or(BleError::CharacteristicNotFound { aid, iid })?;
-        self.tid = self.tid.wrapping_add(1);
-        // HAP-BLE instance ids are 16-bit on the wire; the cache only ever holds
-        // ids that came from a `u16`, so this never fails — but surface an error
-        // rather than silently addressing characteristic 0 if that ever changes.
-        let iid16 =
-            u16::try_from(iid).map_err(|_| BleError::CharacteristicNotFound { aid, iid })?;
-        let resp = pdu::request_secure(
-            self.gatt.as_ref(),
-            &mut self.session,
-            &uuid,
-            OpCode::CharacteristicRead,
-            self.tid,
-            iid16,
-            &[],
-            self.frag_size,
-        )
-        .await?;
-        let raw = pdu::value_param(&resp.body)?;
+        let raw = read_char_raw(self.gatt.as_ref(), &self.secure, &uuid, iid, self.frag_size).await?;
         db::decode_value(format, &raw)
     }
 
-    /// Subscribe to value-change events for a characteristic. The accessory's
-    /// notifications are decoded and published on [`BleAccessory::events`]. For
-    /// this milestone, notification payloads are treated as unencrypted
-    /// read-style PDUs (connected-event security is reconciled on hardware
-    /// later).
+    /// Subscribe to value-change events for a characteristic. HAP-BLE connected
+    /// events use the GATT notification only as a **trigger**: when it fires we
+    /// issue an encrypted Characteristic-Read for the new value and publish it
+    /// on [`BleAccessory::events`].
     ///
     /// # Errors
     /// [`BleError::CharacteristicNotFound`] if unknown; otherwise GATT errors.
@@ -155,13 +169,15 @@ impl BleAccessory {
             .ok_or(BleError::CharacteristicNotFound { aid, iid })?;
         let mut rx = self.gatt.subscribe(&uuid).await?;
         let tx = self.events_tx.clone();
+        let gatt = self.gatt.clone();
+        let secure = self.secure.clone();
+        let frag_size = self.frag_size;
         tokio::spawn(async move {
-            while let Some(raw) = rx.recv().await {
-                if let Ok(resp) = pdu::decode_response(&raw) {
-                    if let Ok(value_bytes) = pdu::value_param(&resp.body) {
-                        if let Ok(value) = db::decode_value(format, &value_bytes) {
-                            let _ = tx.send(CharacteristicEvent { aid, iid, value });
-                        }
+            // The notification carries no value; it signals "read me".
+            while rx.recv().await.is_some() {
+                if let Ok(raw) = read_char_raw(gatt.as_ref(), &secure, &uuid, iid, frag_size).await {
+                    if let Ok(value) = db::decode_value(format, &raw) {
+                        let _ = tx.send(CharacteristicEvent { aid, iid, value });
                     }
                 }
             }
@@ -261,18 +277,25 @@ mod tests {
     async fn subscribe_then_event_decodes_value() {
         use tokio_stream::StreamExt as _;
         let (mut h, gatt) = handle_with_db().await;
+
+        // A HAP-BLE connected event is a bare notification (trigger) followed by
+        // an encrypted Characteristic-Read. Queue the sealed read response the
+        // accessory would return (zero session keys, recv counter 0).
+        let mut plain = vec![0x02, 0x01, 0x00];
+        let vbody = crate::pdu::encode_value_param(&[0x01]); // Bool true
+        plain.extend_from_slice(&u16::try_from(vbody.len()).unwrap().to_le_bytes());
+        plain.extend_from_slice(&vbody);
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+
         h.subscribe(1, 11).await.unwrap();
         let mut events = h.events();
 
-        // The accessory pushes a notification: a Characteristic-Read-style
-        // response PDU (unencrypted in this test) with value param [0x01].
-        let body = crate::pdu::encode_value_param(&[0x01]);
-        let mut notif = vec![0x02, 0x00, 0x00];
-        notif.extend_from_slice(&u16::try_from(body.len()).unwrap().to_le_bytes());
-        notif.extend_from_slice(&body);
+        // Push the (empty) notification trigger.
         gatt.notifier("00000025-0000-1000-8000-0026bb765291")
             .unwrap()
-            .send(notif)
+            .send(Vec::new())
             .await
             .unwrap();
 
