@@ -20,14 +20,20 @@ HAP-IP accessories only for v1.0.
 
 | Accessory (make/model) | Category | Date | Result |
 |---|---|---|---|
-| Onvis Smart Motion Sensor SMS2 | Sensor (10) | 2026-06-14 | **Validated end-to-end** — discover → pair → full 65-char database → encrypted read. (Events not yet tested.) |
+| Onvis Smart Motion Sensor SMS2 | Sensor (10) | 2026-06-14 | **Fully validated** — discover → pair → full 65-char database → encrypted read → connected events. |
 
 **Full success (with the `bluest` backend + reconnect-and-resume supervisor):**
 discover → Pair Setup → Pair Verify → the entire ~65-characteristic attribute
-database → an encrypted value read (`read(aid=1, iid=3) → "Onvis"`). The typed
-model decoded correctly (MotionDetected→Bool, CurrentTemperature→Float,
-CurrentRelativeHumidity→Float, BatteryLevel→Uint8, …). Run via
+database → an encrypted value read (`read(aid=1, iid=3) → "Onvis"`) → **connected
+events** (subscribed to MotionDetected; each motion trigger produced
+`EVENT iid=3074 value=Bool(true)`). The typed model decoded correctly
+(MotionDetected→Bool, CurrentTemperature→Float, CurrentRelativeHumidity→Float,
+BatteryLevel→Uint8, …). Run via
 `cargo run --release -p hap-ble --example ble_pair_bluest -- <setup-code>`.
+
+HAP-BLE connected events use the GATT notification only as a **trigger**; the new
+value is fetched with an encrypted Characteristic-Read in response (not carried in
+the notification).
 
 The earlier-recorded findings below were the path to that result.
 
@@ -77,8 +83,10 @@ changes closed it:
 7. **Unencrypted structure fetch:** signature reads happen after Pair Setup but
    before Pair Verify (no session yet), matching HAP; only values are encrypted.
 
-Plus a **factory reset** of the device — earlier partial runs that completed Pair
-Setup each left a stored pairing, eventually hitting its max-pairings limit
-("pairing error"); a power-cycle doesn't clear those, a factory reset does.
+Plus a **factory reset** of the device — a successfully-paired accessory rejects a
+fresh Pair Setup ("pairing error"); a power-cycle keeps the pairing, a factory
+reset returns it to pairable.
 
-**Still untested:** `subscribe`/events on hardware.
+**Connected events** were the last piece: a HAP-BLE notification is only a
+trigger, so on each one the controller issues an encrypted Characteristic-Read for
+the value. With that, MotionDetected events flowed on every motion trigger.
