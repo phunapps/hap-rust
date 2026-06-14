@@ -91,7 +91,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hap_ble::ServiceType::MotionSensor,
         hap_ble::CharacteristicType::MotionDetected,
     ) {
-        println!("subscribing to MotionDetected (aid={aid} iid={iid}); WAVE at the sensor for 45s...");
+        println!(
+            "subscribing to MotionDetected (aid={aid} iid={iid}); WAVE at the sensor for 45s..."
+        );
         accessory.subscribe(aid, iid).await?;
         let mut events = accessory.events();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);

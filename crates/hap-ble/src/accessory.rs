@@ -150,7 +150,8 @@ impl BleAccessory {
             .get(&(aid, iid))
             .cloned()
             .ok_or(BleError::CharacteristicNotFound { aid, iid })?;
-        let raw = read_char_raw(self.gatt.as_ref(), &self.secure, &uuid, iid, self.frag_size).await?;
+        let raw =
+            read_char_raw(self.gatt.as_ref(), &self.secure, &uuid, iid, self.frag_size).await?;
         db::decode_value(format, &raw)
     }
 
@@ -175,7 +176,8 @@ impl BleAccessory {
         tokio::spawn(async move {
             // The notification carries no value; it signals "read me".
             while rx.recv().await.is_some() {
-                if let Ok(raw) = read_char_raw(gatt.as_ref(), &secure, &uuid, iid, frag_size).await {
+                if let Ok(raw) = read_char_raw(gatt.as_ref(), &secure, &uuid, iid, frag_size).await
+                {
                     if let Ok(value) = db::decode_value(format, &raw) {
                         let _ = tx.send(CharacteristicEvent { aid, iid, value });
                     }
