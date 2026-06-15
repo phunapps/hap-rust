@@ -750,8 +750,9 @@ dependencies = [
 
 [[package]]
 name = "hap-crypto"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
+ "chacha20",
  "chacha20poly1305",
  "ed25519-dalek",
  "hap-tlv8",
@@ -759,12 +760,15 @@ dependencies = [
  "hkdf",
  "num-bigint",
  "num-traits",
+ "poly1305",
  "rand_core 0.6.4",
+ "serde_json",
  "sha-1",
  "sha2",
  "subtle",
  "thiserror",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

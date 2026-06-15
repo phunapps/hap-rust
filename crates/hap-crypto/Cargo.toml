@@ -1,7 +1,7 @@
 [package]
 name = "hap-crypto"
-version = "1.0.0"
-description = "HomeKit Accessory Protocol pairing crypto: Pair Setup (SRP-6a) and Pair Verify (X25519/Ed25519)."
+version = "1.1.0"
+description = "HomeKit Accessory Protocol pairing crypto: Pair Setup (SRP-6a) and Pair Verify (X25519/Ed25519); HAP-BLE broadcast key derivation and decryption."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -27,9 +27,13 @@ chacha20poly1305 = { workspace = true }
 ed25519-dalek = { workspace = true }
 x25519-dalek = { workspace = true }
 rand_core = { workspace = true }
+zeroize = { workspace = true }
+chacha20 = { workspace = true }
+poly1305 = { workspace = true }
 
 [dev-dependencies]
 # RFC 5054 Appendix B known-answer test (1024-bit group, SHA-1) for the generic
 # SRP-6a core; hex decodes the published vector literals.
 sha-1 = { workspace = true }
 hex = { workspace = true }
+serde_json = { workspace = true }

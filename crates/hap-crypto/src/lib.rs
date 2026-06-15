@@ -32,6 +32,7 @@
 #![forbid(unsafe_code)]
 
 pub mod aead;
+pub mod broadcast;
 mod error;
 mod kdf;
 mod keys;
@@ -41,6 +42,7 @@ mod srp;
 mod tlv_types;
 mod x25519;
 
+pub use broadcast::BroadcastKey;
 pub use error::{CryptoError, Result};
 pub use keys::{verify_ed25519, ControllerKeypair};
 pub use pair_setup::{AccessoryPairing, PairSetupClient, PairSetupStep};
