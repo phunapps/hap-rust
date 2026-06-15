@@ -1,0 +1,7 @@
+{
+  "_note": "synthetic non-secret inputs; verifies HKDF-SHA512 matches aiohomekit with info 'Broadcast-Encryption-Key'. Live Onvis derivation confirmed separately (broadcast_capture.py); real key kept local, not committed.",
+  "ikm_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "salt_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+  "info": "Broadcast-Encryption-Key",
+  "key_hex": "dbea7d7f2ed8ea0acf96d3852f47dc532a5cc0b56e4246fb8909fdc89a40e9a0"
+}

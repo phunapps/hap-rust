@@ -22,6 +22,13 @@ pub(crate) enum OpCode {
     CharacteristicWrite = 0x02,
     /// Read a characteristic value.
     CharacteristicRead = 0x03,
+    /// Characteristic Configuration (HAP-BLE) — enables per-characteristic
+    /// encrypted broadcast notifications (Properties + Broadcast-Interval TLV).
+    CharacteristicConfig = 0x07,
+    /// Protocol Configuration (HAP-BLE) — used to generate the broadcast
+    /// encryption key (enabling encrypted broadcast notifications) via a TLV
+    /// write to the Service-Signature characteristic.
+    ProtocolConfig = 0x08,
 }
 
 /// HAP body param type bytes (the TLV8 carried inside a PDU body).
@@ -192,7 +199,7 @@ const MAX_RESPONSE_FRAGMENTS: usize = 64;
 /// Send one request PDU to `char_uuid` and return the decoded response.
 ///
 /// Fragments the request to `frag_size`, writes each fragment, then reads and
-/// reassembles the response. (The mock and btleplug both deliver the full
+/// reassembles the response. (The mock and bluest both deliver the full
 /// response from a single `read`; multi-fragment reads are reassembled by
 /// [`reassemble`] when an accessory splits them — see hardware notes.)
 ///

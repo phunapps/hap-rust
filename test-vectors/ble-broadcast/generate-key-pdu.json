@@ -1,0 +1,7 @@
+{
+  "opcode": 8,
+  "opcode_name": "PROTOCOL_CONFIG",
+  "iid": 16,
+  "payload_hex": "0100",
+  "request_pdu_hex": "0008b8100002000100"
+}

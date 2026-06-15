@@ -1,12 +1,12 @@
 //! BLE discovery: parse the HAP manufacturer advertisement and scan for
 //! accessories.
 
-use crate::error::Result;
-use crate::gatt::BtleplugConnection;
-use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
-use btleplug::platform::Manager;
+use crate::bluest_gatt::{be, BluestConnection};
+use crate::error::{BleError, Result};
+use bluest::Adapter;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_stream::StreamExt as _;
 
 /// Apple's Bluetooth company identifier; HAP advertisements live under it.
 const APPLE_COMPANY_ID: u16 = 0x004C;
@@ -14,67 +14,57 @@ const APPLE_COMPANY_ID: u16 = 0x004C;
 /// Scan for HAP accessories advertising over BLE for `timeout`.
 ///
 /// # Errors
-/// Returns [`crate::error::BleError::Bluetooth`] on adapter/scan failures.
+/// Returns [`BleError::Backend`] on adapter/scan failures.
 pub async fn scan(timeout: Duration) -> Result<Vec<DiscoveredBleAccessory>> {
-    let manager = Manager::new().await?;
-    let adapters = manager.adapters().await?;
-    let central = adapters
-        .into_iter()
-        .next()
-        .ok_or(crate::error::BleError::AccessoryNotFound)?;
-    central.start_scan(ScanFilter::default()).await?;
-    tokio::time::sleep(timeout).await;
+    let adapter = Adapter::default()
+        .await
+        .ok_or(BleError::AccessoryNotFound)?;
+    adapter.wait_available().await.map_err(be)?;
+    let mut stream = adapter.scan(&[]).await.map_err(be)?;
 
     let mut found = Vec::new();
-    for p in central.peripherals().await? {
-        let Some(props) = p.properties().await? else {
+    let mut seen = std::collections::HashSet::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+    while let Ok(Some(adv)) = tokio::time::timeout_at(deadline, stream.next()).await {
+        let Some(mfg) = adv.adv_data.manufacturer_data else {
             continue;
         };
-        if let Some(mfg) = props.manufacturer_data.get(&APPLE_COMPANY_ID) {
-            if let Some(acc) = parse_hap_advert(mfg, p.id().to_string()) {
+        if mfg.company_id != APPLE_COMPANY_ID {
+            continue;
+        }
+        if let Some(acc) = parse_hap_advert(&mfg.data, adv.device.id().to_string()) {
+            if seen.insert(acc.peripheral_id.clone()) {
                 found.push(acc);
             }
         }
     }
-    central.stop_scan().await?;
     Ok(found)
 }
 
-/// Connect to a discovered accessory and return a GATT link to it.
+/// Connect to a discovered accessory and return a resilient GATT link.
 ///
 /// # Errors
-/// Returns [`crate::error::BleError`] on connect/discovery failure.
-pub async fn connect_gatt(accessory: &DiscoveredBleAccessory) -> Result<Arc<BtleplugConnection>> {
-    let manager = Manager::new().await?;
-    let central = manager
-        .adapters()
-        .await?
-        .into_iter()
-        .next()
-        .ok_or(crate::error::BleError::AccessoryNotFound)?;
-    // CoreBluetooth only knows peripherals this central has seen, so we must run
-    // our own scan here (a separate `scan()` call uses a different central whose
-    // discoveries this one cannot see). Poll for the target across a bounded
-    // window — sleepy accessories advertise intermittently.
-    central.start_scan(ScanFilter::default()).await?;
-    let mut peripheral = None;
-    for _ in 0..20 {
-        for p in central.peripherals().await? {
-            if p.id().to_string() == accessory.peripheral_id {
-                peripheral = Some(p);
-                break;
-            }
-        }
-        if peripheral.is_some() {
+/// Returns [`BleError`] on connect/discovery failure.
+pub async fn connect_gatt(accessory: &DiscoveredBleAccessory) -> Result<Arc<BluestConnection>> {
+    let adapter = Adapter::default()
+        .await
+        .ok_or(BleError::AccessoryNotFound)?;
+    adapter.wait_available().await.map_err(be)?;
+    // A fresh adapter only knows peripherals it has itself scanned, so we scan
+    // here to locate the target (sleepy accessories advertise intermittently).
+    let mut stream = adapter.scan(&[]).await.map_err(be)?;
+    let mut device = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(40);
+    while let Ok(Some(adv)) = tokio::time::timeout_at(deadline, stream.next()).await {
+        if adv.device.id().to_string() == accessory.peripheral_id {
+            device = Some(adv.device);
             break;
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    central.stop_scan().await?;
-    let p = peripheral.ok_or(crate::error::BleError::AccessoryNotFound)?;
-    p.connect().await?;
-    p.discover_services().await?;
-    Ok(Arc::new(BtleplugConnection::new(p)))
+    drop(stream);
+    let device = device.ok_or(BleError::AccessoryNotFound)?;
+    adapter.connect_device(&device).await.map_err(be)?;
+    Ok(Arc::new(BluestConnection::new(adapter, device).await?))
 }
 
 /// A HAP accessory found while scanning over BLE.
@@ -101,14 +91,22 @@ pub(crate) fn parse_hap_advert(
     mfg: &[u8],
     peripheral_id: String,
 ) -> Option<DiscoveredBleAccessory> {
-    // Byte 0 must be the HomeKit advertising type (0x06); minimum length 17.
-    if mfg.len() < 17 || mfg[0] != 0x06 {
+    // Minimum length 17 for the full discovery payload (type 0x06 only).
+    if mfg.len() < 17 {
         return None;
     }
-    let status = mfg[2];
-    let device_id = {
+    let parsed = crate::advert::HapAdvert::parse(mfg)?;
+    let crate::advert::HapAdvert::Regular {
+        device_id,
+        gsn,
+        paired,
+    } = parsed
+    else {
+        return None;
+    };
+    let device_id_str = {
         use std::fmt::Write as _;
-        mfg[3..9].iter().fold(String::new(), |mut s, b| {
+        device_id.iter().fold(String::new(), |mut s, b| {
             if !s.is_empty() {
                 s.push(':');
             }
@@ -117,16 +115,12 @@ pub(crate) fn parse_hap_advert(
         })
     };
     let category = u16::from_le_bytes([mfg[9], mfg[10]]);
-    let global_state_number = u16::from_le_bytes([mfg[11], mfg[12]]);
     let config_number = mfg[13];
-    // Status-flag bit 0 set = "not paired" advertisement (the pairing flag is
-    // inverted on the wire). Confirmed against hardware in a later task.
-    let paired = status & 0x01 == 0;
     Some(DiscoveredBleAccessory {
         peripheral_id,
-        device_id,
+        device_id: device_id_str,
         category,
-        global_state_number,
+        global_state_number: gsn,
         config_number,
         paired,
     })

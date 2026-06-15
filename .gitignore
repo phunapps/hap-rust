@@ -13,5 +13,7 @@ __pycache__/
 # Captured pairing credentials (controller long-term secret) — never commit
 pairing.local.json
 *.local.json
+# Example/runtime controller pairing store (holds the controller signing key)
+homekit-pairings.json
 # aiohomekit controller pairing store written at capture time (local runtime state)
 xtask/scripts/**/charmap.json

@@ -1,12 +1,9 @@
 //! The GATT I/O seam. `GattConnection` is the boundary the rest of the crate is
-//! written against; `MockGatt` drives it in CI, `BtleplugConnection` on hardware.
+//! written against; `MockGatt` drives it in CI, `BluestConnection` (see bluest_gatt) on hardware.
 
 use crate::error::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
-
-use btleplug::api::{Characteristic as BtleChar, Peripheral as _, WriteType};
-use btleplug::platform::Peripheral;
 
 /// The HAP Characteristic-Instance-ID GATT descriptor. Each HAP characteristic
 /// carries one; its value is the characteristic's 16-bit instance id (LE), which
@@ -16,119 +13,6 @@ pub(crate) const HAP_INSTANCE_ID_DESC: &str = "dc46f0fe-81d2-4616-b5d9-6abdd7969
 /// The HAP Service-Instance-ID characteristic (read-only, no descriptor) that
 /// appears in every HAP service; its value is the service's 16-bit instance id.
 pub(crate) const HAP_SERVICE_ID_CHAR: &str = "e604e95d-a759-4817-87d3-aa005083a0d1";
-
-/// A [`GattConnection`] backed by an already-connected btleplug [`Peripheral`].
-///
-/// Services must be discovered (via [`btleplug::api::Peripheral::discover_services`])
-/// before constructing or calling [`enumerate`](GattConnection::enumerate).
-pub struct BtleplugConnection {
-    peripheral: Peripheral,
-}
-
-impl BtleplugConnection {
-    /// Wrap an already-connected peripheral (its services must be discovered).
-    pub fn new(peripheral: Peripheral) -> Self {
-        Self { peripheral }
-    }
-
-    fn characteristic(&self, uuid: &str) -> Result<BtleChar> {
-        let target = uuid.to_ascii_lowercase();
-        self.peripheral
-            .characteristics()
-            .into_iter()
-            .find(|c| c.uuid.to_string().to_ascii_lowercase() == target)
-            .ok_or(crate::error::BleError::MalformedPdu(
-                "gatt characteristic not found",
-            ))
-    }
-}
-
-#[async_trait]
-impl GattConnection for BtleplugConnection {
-    async fn write(&self, char_uuid: &str, value: &[u8]) -> Result<()> {
-        let ch = self.characteristic(char_uuid)?;
-        self.peripheral
-            .write(&ch, value, WriteType::WithResponse)
-            .await?;
-        Ok(())
-    }
-
-    async fn read(&self, char_uuid: &str) -> Result<Vec<u8>> {
-        let ch = self.characteristic(char_uuid)?;
-        Ok(self.peripheral.read(&ch).await?)
-    }
-
-    async fn subscribe(&self, char_uuid: &str) -> Result<mpsc::Receiver<Vec<u8>>> {
-        let ch = self.characteristic(char_uuid)?;
-        self.peripheral.subscribe(&ch).await?;
-        let target = ch.uuid;
-        let mut notifs = self.peripheral.notifications().await?;
-        let (tx, rx) = mpsc::channel(16);
-        tokio::spawn(async move {
-            use tokio_stream::StreamExt as _;
-            while let Some(n) = notifs.next().await {
-                if n.uuid == target && tx.send(n.value).await.is_err() {
-                    break;
-                }
-            }
-        });
-        Ok(rx)
-    }
-
-    async fn instance_id(&self, char_uuid: &str) -> Result<u16> {
-        let ch = self.characteristic(char_uuid)?;
-        let desc = ch
-            .descriptors
-            .iter()
-            .find(|d| {
-                d.uuid
-                    .to_string()
-                    .eq_ignore_ascii_case(HAP_INSTANCE_ID_DESC)
-            })
-            .ok_or(crate::error::BleError::CharacteristicNotFound { aid: 0, iid: 0 })?;
-        u16_le(&self.peripheral.read_descriptor(desc).await?).ok_or(
-            crate::error::BleError::MalformedPdu("instance id descriptor too short"),
-        )
-    }
-
-    async fn enumerate(&self) -> Result<Vec<GattService>> {
-        self.peripheral.discover_services().await?;
-        let mut services = Vec::new();
-        for svc in self.peripheral.services() {
-            let mut characteristics = Vec::new();
-            for c in &svc.characteristics {
-                let uuid = c.uuid.to_string();
-                // The Service-Instance-ID characteristic is not a HAP
-                // characteristic. Its value (the service iid) requires a paired
-                // read, and the service iid is not needed to address
-                // characteristics, so skip it — the service iid stays 0.
-                if uuid.eq_ignore_ascii_case(HAP_SERVICE_ID_CHAR) {
-                    continue;
-                }
-                // A HAP characteristic addresses itself by the iid in its
-                // Instance-ID descriptor. Characteristics without one are not
-                // HAP-addressable, so skip them.
-                let Some(desc) = c.descriptors.iter().find(|d| {
-                    d.uuid
-                        .to_string()
-                        .eq_ignore_ascii_case(HAP_INSTANCE_ID_DESC)
-                }) else {
-                    continue;
-                };
-                let Some(iid) = u16_le(&self.peripheral.read_descriptor(desc).await?) else {
-                    continue;
-                };
-                characteristics.push(GattCharacteristic { uuid, iid });
-            }
-            services.push(GattService {
-                uuid: svc.uuid.to_string(),
-                iid: 0,
-                characteristics,
-            });
-        }
-        Ok(services)
-    }
-}
 
 /// Read a 16-bit little-endian value from the first two bytes, if present.
 pub(crate) fn u16_le(v: &[u8]) -> Option<u16> {
@@ -159,7 +43,7 @@ pub struct GattService {
 }
 
 /// The transport seam: read/write/subscribe a characteristic and enumerate the
-/// GATT database. One real impl (`btleplug`), one mock (tests).
+/// GATT database. One real impl (`bluest`), one mock (tests).
 #[async_trait]
 pub trait GattConnection: Send + Sync {
     /// Write a value to a characteristic identified by its UUID.
@@ -175,7 +59,49 @@ pub trait GattConnection: Send + Sync {
     async fn instance_id(&self, char_uuid: &str) -> Result<u16>;
     /// Enumerate the accessory's services and characteristics (with iids).
     async fn enumerate(&self) -> Result<Vec<GattService>>;
+    /// The maximum bytes that fit in a single GATT write — the HAP-BLE PDU
+    /// fragment size. Backends that can't determine the negotiated MTU return a
+    /// conservative default.
+    async fn max_write(&self) -> usize {
+        DEFAULT_FRAGMENT_SIZE
+    }
+    /// A monotonically increasing link-generation counter that advances on every
+    /// reconnect. A secure session minted at generation *g* is invalidated when
+    /// the accessory drops the link (the count moves past *g*), so the holder
+    /// must re-run Pair Verify before its next encrypted operation. Backends
+    /// without a reconnect supervisor never invalidate sessions and return 0.
+    async fn generation(&self) -> u64 {
+        0
+    }
 }
+
+/// A raw advertisement observed by a backend scanner: the Apple (0x004C)
+/// manufacturer-data bytes. Parsed into a [`crate::advert::HapAdvert`] by callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawAdvert {
+    /// Apple manufacturer-data payload (the bytes after the 0x004C company id).
+    pub manufacturer_data: Vec<u8>,
+}
+
+/// A source of continuous BLE advertisements, used post-pairing to receive
+/// sleepy-device events with no active connection. Separate from
+/// [`GattConnection`] (the connected I/O seam) so each has one responsibility.
+/// Backends without a scanner return an immediately-closed receiver.
+#[async_trait]
+pub trait AdvertSource: Send + Sync {
+    /// Stream Apple HAP advertisements as they arrive.
+    ///
+    /// # Errors
+    /// Returns [`crate::error::BleError`] on backend scanner failures.
+    async fn watch_adverts(&self) -> Result<mpsc::Receiver<RawAdvert>> {
+        let (_tx, rx) = mpsc::channel(1);
+        Ok(rx)
+    }
+}
+
+/// Conservative HAP-BLE fragment size when the negotiated ATT MTU is unknown;
+/// fits any MTU >= 183.
+pub(crate) const DEFAULT_FRAGMENT_SIZE: usize = 180;
 
 /// An in-memory `GattConnection` for tests. Reads return the last written value
 /// per characteristic; `subscribe` returns a channel whose `Sender` is exposed
@@ -183,13 +109,31 @@ pub trait GattConnection: Send + Sync {
 /// seeded service list. Optionally, per-characteristic canned read responses can
 /// be queued with [`MockGatt::queue_read`] (FIFO) to script request/response.
 #[cfg(test)]
-#[derive(Default)]
 pub(crate) struct MockGatt {
     values: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
     queued:
         std::sync::Mutex<std::collections::HashMap<String, std::collections::VecDeque<Vec<u8>>>>,
     services: std::sync::Mutex<Vec<GattService>>,
     senders: std::sync::Mutex<std::collections::HashMap<String, mpsc::Sender<Vec<u8>>>>,
+    generation: std::sync::atomic::AtomicU64,
+    advert_tx: mpsc::Sender<RawAdvert>,
+    advert_rx: std::sync::Mutex<Option<mpsc::Receiver<RawAdvert>>>,
+}
+
+#[cfg(test)]
+impl Default for MockGatt {
+    fn default() -> Self {
+        let (advert_tx, advert_rx) = mpsc::channel(16);
+        Self {
+            values: std::sync::Mutex::new(std::collections::HashMap::new()),
+            queued: std::sync::Mutex::new(std::collections::HashMap::new()),
+            services: std::sync::Mutex::new(Vec::new()),
+            senders: std::sync::Mutex::new(std::collections::HashMap::new()),
+            generation: std::sync::atomic::AtomicU64::new(0),
+            advert_tx,
+            advert_rx: std::sync::Mutex::new(Some(advert_rx)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -220,6 +164,36 @@ impl MockGatt {
     #[allow(dead_code)] // used by later tasks (events)
     pub(crate) fn notifier(&self, char_uuid: &str) -> Option<mpsc::Sender<Vec<u8>>> {
         self.senders.lock().unwrap().get(char_uuid).cloned()
+    }
+
+    /// Advance the link generation, simulating a reconnect that invalidated any
+    /// secure session minted at an earlier generation.
+    #[allow(dead_code)] // used by the reconnect tests
+    pub(crate) fn bump_generation(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// A sender that pushes a raw advert to a `watch_adverts` subscriber.
+    #[allow(dead_code)] // used by later tasks (broadcast / disconnected-event poll)
+    pub(crate) fn advert_sender(&self) -> mpsc::Sender<RawAdvert> {
+        self.advert_tx.clone()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // test double: lock poisoning is not a real concern in single-process tests
+#[async_trait]
+impl AdvertSource for MockGatt {
+    async fn watch_adverts(&self) -> Result<mpsc::Receiver<RawAdvert>> {
+        // Hand out the single receiver once; a closed one thereafter.
+        self.advert_rx.lock().unwrap().take().map_or_else(
+            || {
+                let (_tx, rx) = mpsc::channel(1);
+                Ok(rx)
+            },
+            Ok,
+        )
     }
 }
 
@@ -272,6 +246,10 @@ impl GattConnection for MockGatt {
 
     async fn enumerate(&self) -> Result<Vec<GattService>> {
         Ok(self.services.lock().unwrap().clone())
+    }
+
+    async fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

@@ -9,15 +9,13 @@ use hap_model::tree::{Accessory, Characteristic, Service};
 use hap_model::{ServiceType, Uuid};
 
 /// Map a GATT service UUID string to a [`ServiceType`]. `from_uuid` returns
-/// `Unknown(uuid)` for non-HAP types. btleplug yields valid 128-bit UUID
-/// strings, so the parse-error arm is unreachable in practice.
-fn service_type_of(uuid: &str) -> ServiceType {
-    match Uuid::parse(uuid) {
-        Ok(u) => ServiceType::from_uuid(&u),
-        Err(_) => ServiceType::Unknown(
-            Uuid::parse("00000000").unwrap_or_else(|_| unreachable!("zero uuid parses")),
-        ),
-    }
+/// `Unknown(uuid)` for valid-but-non-HAP types; an unparseable UUID is a real
+/// transport error, propagated rather than fabricated into a placeholder.
+///
+/// # Errors
+/// [`BleError::Model`] if `uuid` is not a valid UUID string.
+fn service_type_of(uuid: &str) -> Result<ServiceType> {
+    Ok(ServiceType::from_uuid(&Uuid::parse(uuid)?))
 }
 
 /// Issue a Characteristic-Signature-Read for every characteristic in the
@@ -41,7 +39,7 @@ pub(crate) async fn build_db<G: GattConnection + ?Sized>(
     let mut tid: u8 = 0;
 
     for gs in gatt_services {
-        let svc_type = service_type_of(&gs.uuid);
+        let svc_type = service_type_of(&gs.uuid)?;
         let mut chars = Vec::new();
         for gc in &gs.characteristics {
             tid = tid.wrapping_add(1);

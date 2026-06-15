@@ -6,33 +6,63 @@
 
 use crate::error::{BleError, Result};
 use crate::gatt::{
-    u16_le, GattCharacteristic, GattConnection, GattService, HAP_INSTANCE_ID_DESC,
-    HAP_SERVICE_ID_CHAR,
+    u16_le, AdvertSource, GattCharacteristic, GattConnection, GattService, RawAdvert,
+    HAP_INSTANCE_ID_DESC, HAP_SERVICE_ID_CHAR,
 };
 use async_trait::async_trait;
+use bluest::error::ErrorKind;
 use bluest::{Adapter, Characteristic, Device};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 
-/// Total reconnects allowed across a connection's lifetime (a runaway backstop).
-const MAX_RECONNECTS: u32 = 60;
+/// Per-attempt timeout for re-establishing the link (connect + service
+/// discovery). On macOS a `connect_device` attempted while a scan is running can
+/// hang indefinitely; bounding it (as aiohomekit does via `bleak_retry_connector`)
+/// turns a wedged connect into a failed attempt the backstop can retry.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-// By value for ergonomic `.map_err(be)`; the error is only formatted.
+/// The HAP Service-Signature characteristic — appears in *every* service. Only
+/// the one in the Protocol Information service is addressable/used; the rest are
+/// dropped during discovery so the (UUID-keyed) handle map doesn't collide and
+/// the generate-broadcast-key write reaches the correct characteristic.
+const SERVICE_SIGNATURE_CHAR: &str = "000000a5-0000-1000-8000-0026bb765291";
+/// The HAP Protocol Information service — the one whose Service-Signature char is
+/// the generate-broadcast-key target (matches aiohomekit's service-scoped lookup).
+const PROTOCOL_INFO_SERVICE: &str = "000000a2-0000-1000-8000-0026bb765291";
+
+/// Consecutive reconnects allowed *within a single operation* before it gives up
+/// (a runaway backstop). This bounds one stuck read/write, not the connection's
+/// lifetime — a sleepy accessory may legitimately drop the link on most
+/// operations, so a healthy long-lived subscription can far exceed this in
+/// aggregate; only a link that will not stay up for one op long enough to make
+/// progress trips it.
+const MAX_OP_RECONNECTS: u32 = 8;
+
+/// Map a bluest error to a [`BleError`], classifying link-loss conditions as
+/// [`BleError::Disconnected`] (so the supervisor reconnects) from bluest's typed
+/// [`ErrorKind`] rather than by string-matching. A [`Timeout`](ErrorKind::Timeout)
+/// is treated as a disconnect: on some platforms a dropped link surfaces as a
+/// read/write timeout, and a reconnect+retry against a merely-slow accessory is
+/// cheap and self-correcting.
+// By value for ergonomic `.map_err(be)`.
 #[allow(clippy::needless_pass_by_value)]
-fn be(e: bluest::Error) -> BleError {
-    BleError::Backend(e.to_string())
+pub(crate) fn be(e: bluest::Error) -> BleError {
+    match e.kind() {
+        ErrorKind::NotConnected
+        | ErrorKind::AdapterUnavailable
+        | ErrorKind::ConnectionFailed
+        | ErrorKind::ServiceChanged
+        | ErrorKind::NotReady
+        | ErrorKind::Timeout => BleError::Disconnected,
+        _ => BleError::Backend(e.to_string()),
+    }
 }
 
-/// Whether a backend error means the link dropped (so reconnecting may recover).
+/// Whether an error means the link dropped (so reconnecting may recover).
 fn is_disconnect(e: &BleError) -> bool {
-    match e {
-        BleError::Disconnected => true,
-        BleError::Backend(m) => {
-            let m = m.to_ascii_lowercase();
-            m.contains("disconnect") || m.contains("not connected") || m.contains("not available")
-        }
-        _ => false,
-    }
+    matches!(e, BleError::Disconnected)
 }
 
 /// The discovered structure of one service: its UUID and its characteristics'
@@ -52,7 +82,9 @@ pub struct BluestConnection {
     chars: Mutex<HashMap<String, Characteristic>>,
     /// The service/characteristic UUID structure (stable across reconnects).
     shape: Vec<ServiceShape>,
-    reconnects: Mutex<u32>,
+    /// Increments on every reconnect — also the backstop count. A change since a
+    /// secure session was established means the accessory dropped that session.
+    generation: AtomicU64,
 }
 
 impl BluestConnection {
@@ -68,8 +100,18 @@ impl BluestConnection {
             device,
             chars: Mutex::new(chars),
             shape,
-            reconnects: Mutex::new(0),
+            generation: AtomicU64::new(0),
         })
+    }
+
+    /// Release the active GATT link. A sleepy HAP accessory only advertises and
+    /// emits encrypted broadcasts while disconnected, and on macOS CoreBluetooth
+    /// filters a connected peripheral out of scan results — so a caller watching
+    /// for sleepy events must disconnect after setup. A subsequent encrypted
+    /// operation (e.g. a disconnected-event poll read) transparently reconnects
+    /// via the supervisor.
+    pub async fn disconnect(&self) {
+        let _ = self.adapter.disconnect_device(&self.device).await;
     }
 
     async fn discover(
@@ -78,10 +120,20 @@ impl BluestConnection {
         let mut chars = HashMap::new();
         let mut shape = Vec::new();
         for svc in device.discover_services().await.map_err(be)? {
+            let svc_uuid = svc.uuid().to_string().to_ascii_lowercase();
+            let is_protocol_info = svc_uuid == PROTOCOL_INFO_SERVICE;
             let mut char_uuids = Vec::new();
             for ch in svc.discover_characteristics().await.map_err(be)? {
                 let uuid = ch.uuid().to_string().to_ascii_lowercase();
                 char_uuids.push(uuid.clone());
+                // The Service-Signature char exists in every service and they all
+                // share one UUID; keep only the Protocol Information service's so
+                // the UUID-keyed handle map resolves the generate-broadcast-key
+                // target deterministically (and survives reconnects, unlike an
+                // iid-keyed map that would need a re-sweep).
+                if uuid == SERVICE_SIGNATURE_CHAR && !is_protocol_info {
+                    continue;
+                }
                 chars.insert(uuid, ch);
             }
             shape.push(ServiceShape {
@@ -92,25 +144,41 @@ impl BluestConnection {
         Ok((chars, shape))
     }
 
-    /// Re-establish the link and rebuild the characteristic handle map. The
-    /// UUID structure ([`shape`](Self::shape)) is unchanged.
+    /// Re-establish the link and rebuild the characteristic handle map, advancing
+    /// the link [`generation`](Self::generation). The UUID structure
+    /// ([`shape`](Self::shape)) is unchanged.
     async fn reconnect(&self) -> Result<()> {
-        {
-            let mut n = self.reconnects.lock().await;
-            if *n >= MAX_RECONNECTS {
-                return Err(BleError::Disconnected);
-            }
-            *n += 1;
-        }
+        self.generation.fetch_add(1, Ordering::SeqCst);
         let _ = self.adapter.disconnect_device(&self.device).await;
         let _ = self.adapter.wait_available().await;
-        self.adapter
-            .connect_device(&self.device)
+        // Bound the connect + service discovery: a connect attempted while a scan
+        // is running can wedge on macOS, so a timeout surfaces as a recoverable
+        // disconnect that the per-operation backstop retries rather than hanging.
+        let establish = async {
+            self.adapter
+                .connect_device(&self.device)
+                .await
+                .map_err(be)?;
+            Self::discover(&self.device).await
+        };
+        let (fresh, _shape) = tokio::time::timeout(CONNECT_TIMEOUT, establish)
             .await
-            .map_err(be)?;
-        let (fresh, _shape) = Self::discover(&self.device).await?;
+            .map_err(|_| BleError::Disconnected)??;
         *self.chars.lock().await = fresh;
         Ok(())
+    }
+
+    /// Reconnect for one in-flight operation, giving up once a single operation
+    /// has forced [`MAX_OP_RECONNECTS`] reconnects without making progress (the
+    /// link will not stay up long enough to complete it). `attempts` is the
+    /// per-operation reconnect count, owned by the caller's retry loop — it does
+    /// not bound the connection's lifetime.
+    async fn reconnect_bounded(&self, attempts: &mut u32) -> Result<()> {
+        *attempts += 1;
+        if *attempts > MAX_OP_RECONNECTS {
+            return Err(BleError::Disconnected);
+        }
+        self.reconnect().await
     }
 
     /// Look up the current handle for a characteristic UUID.
@@ -125,6 +193,7 @@ impl BluestConnection {
 
     /// Read a characteristic's HAP instance-id descriptor, reconnecting on drop.
     async fn read_iid(&self, char_uuid: &str) -> Result<Option<u16>> {
+        let mut attempts = 0;
         loop {
             let ch = self.handle(char_uuid).await?;
             let attempt = async {
@@ -141,7 +210,7 @@ impl BluestConnection {
             .await;
             match attempt {
                 Ok(v) => return Ok(v),
-                Err(ref e) if is_disconnect(e) => self.reconnect().await?,
+                Err(ref e) if is_disconnect(e) => self.reconnect_bounded(&mut attempts).await?,
                 Err(e) => return Err(e),
             }
         }
@@ -156,28 +225,47 @@ impl GattConnection for BluestConnection {
             .ok_or(BleError::MalformedPdu("no instance id descriptor"))
     }
 
+    async fn max_write(&self) -> usize {
+        // The MTU is connection-wide, so any characteristic's max write works.
+        let ch = self.chars.lock().await.values().next().cloned();
+        ch.and_then(|c| c.max_write_len().ok())
+            .map_or(crate::gatt::DEFAULT_FRAGMENT_SIZE, |n| n.clamp(20, 512))
+    }
+
+    async fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
     async fn write(&self, char_uuid: &str, value: &[u8]) -> Result<()> {
+        let mut attempts = 0;
         loop {
             let ch = self.handle(char_uuid).await?;
             match ch.write(value).await.map_err(be) {
                 Ok(()) => return Ok(()),
-                Err(ref e) if is_disconnect(e) => self.reconnect().await?,
+                Err(ref e) if is_disconnect(e) => self.reconnect_bounded(&mut attempts).await?,
                 Err(e) => return Err(e),
             }
         }
     }
 
     async fn read(&self, char_uuid: &str) -> Result<Vec<u8>> {
+        let mut attempts = 0;
         loop {
             let ch = self.handle(char_uuid).await?;
             match ch.read().await.map_err(be) {
                 Ok(v) => return Ok(v),
-                Err(ref e) if is_disconnect(e) => self.reconnect().await?,
+                Err(ref e) if is_disconnect(e) => self.reconnect_bounded(&mut attempts).await?,
                 Err(e) => return Err(e),
             }
         }
     }
 
+    // Connected GATT notify is BEST-EFFORT: the spawned task ends when the
+    // notification stream ends (a link drop). It is deliberately NOT re-armed and
+    // does NOT reconnect — a sleepy accessory intentionally drops idle links, so
+    // auto-reconnecting here causes a reconnect storm (validated on hardware).
+    // Durable events come from the advertisement channels (broadcast +
+    // disconnected-event poll); the session re-verifies lazily on the next read.
     async fn subscribe(&self, char_uuid: &str) -> Result<mpsc::Receiver<Vec<u8>>> {
         let ch = self.handle(char_uuid).await?;
         let (tx, rx) = mpsc::channel(16);
@@ -205,6 +293,12 @@ impl GattConnection for BluestConnection {
                 if char_uuid.eq_ignore_ascii_case(HAP_SERVICE_ID_CHAR) {
                     continue;
                 }
+                // The Service-Signature char is a service-level signature, not a
+                // model characteristic — skip it (it also shares a UUID across
+                // services, so reading it here would yield duplicate iids).
+                if char_uuid.eq_ignore_ascii_case(SERVICE_SIGNATURE_CHAR) {
+                    continue;
+                }
                 // Per-characteristic resilient instance-id read: resumes the
                 // sweep across the device's periodic disconnects.
                 if let Some(iid) = self.read_iid(char_uuid).await? {
@@ -221,5 +315,46 @@ impl GattConnection for BluestConnection {
             });
         }
         Ok(services)
+    }
+}
+
+/// Apple's Bluetooth company identifier; HAP advertisements live under it.
+const APPLE_COMPANY_ID: u16 = 0x004C;
+
+#[async_trait]
+impl AdvertSource for BluestConnection {
+    /// Stream Apple HAP advertisements by running a continuous adapter scan.
+    ///
+    /// Spawns a background task that feeds every Apple (company id `0x004C`)
+    /// manufacturer-data frame into the returned channel. The task stops when
+    /// the receiver is dropped or the adapter's scan stream ends.
+    ///
+    /// # Errors
+    /// Returns [`crate::error::BleError`] on adapter/scan failures.
+    async fn watch_adverts(&self) -> Result<mpsc::Receiver<RawAdvert>> {
+        let adapter = self.adapter.clone();
+        let (tx, rx) = mpsc::channel(32);
+        tokio::spawn(async move {
+            use tokio_stream::StreamExt as _;
+            let Ok(mut scan) = adapter.scan(&[]).await else {
+                return;
+            };
+            while let Some(adv) = scan.next().await {
+                let Some(md) = adv.adv_data.manufacturer_data else {
+                    continue;
+                };
+                if md.company_id == APPLE_COMPANY_ID
+                    && tx
+                        .send(RawAdvert {
+                            manufacturer_data: md.data,
+                        })
+                        .await
+                        .is_err()
+                {
+                    return; // receiver dropped — stop scanning
+                }
+            }
+        });
+        Ok(rx)
     }
 }

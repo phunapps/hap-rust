@@ -1,11 +1,14 @@
 //! The public per-accessory handle: typed find/read/subscribe/events over an
 //! established session.
 
+use crate::broadcast_state::BleBroadcastState;
 use crate::db;
 use crate::error::{BleError, Result};
 use crate::gatt::{GattConnection, GattService};
+use crate::pairing;
 use crate::pdu::{self, OpCode};
 use crate::session::BleSession;
+use hap_crypto::{AccessoryPairing, ControllerKeypair};
 use hap_model::format::{CharFormat, CharValue};
 use hap_model::tree::Accessory;
 use hap_model::{CharacteristicType, ServiceType};
@@ -13,6 +16,22 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt as _;
+
+/// Whether `new` is a newer GSN than `last` under HAP's u16 wraparound
+/// (RFC 1982 serial-number arithmetic): newer iff the forward distance is
+/// non-zero and within the first half of the range.
+fn gsn_is_newer(new: u16, last: u16) -> bool {
+    let diff = new.wrapping_sub(last);
+    diff != 0 && diff < 0x8000
+}
+
+/// The maximum number of mid-operation re-verify retries before giving up — a
+/// backstop against a link that reconnects on every attempt.
+const MAX_REVIVE_RETRIES: u32 = 3;
+
+/// HAP-BLE Characteristic-Configuration body enabling encrypted broadcasts:
+/// Properties (TLV 0x01, u16 LE = 1) + Broadcast-Interval (TLV 0x02 = 1).
+const ENABLE_BROADCAST_BODY: [u8; 7] = [0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01];
 
 /// A characteristic value-change event.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,32 +49,157 @@ pub struct CharacteristicEvent {
 struct Secure {
     session: BleSession,
     tid: u8,
+    /// The link generation at which `session` was established. When the
+    /// connection's generation advances past this (a reconnect), the accessory
+    /// has dropped the session and it must be re-minted via Pair Verify.
+    generation: u64,
 }
 
-/// Issue one encrypted Characteristic-Read and return the raw value bytes.
+/// Everything needed to re-establish a secure session (re-run Pair Verify) after
+/// a reconnect invalidates the accessory's session. Shared with event tasks.
+struct Reviver {
+    keypair: ControllerKeypair,
+    pairing: AccessoryPairing,
+    verify_char: String,
+    verify_iid: u16,
+    frag_size: usize,
+}
+
+/// The post-Pair-Verify material a [`BleAccessory`] needs: the live secure
+/// session and the addresses/keys to re-mint it (Pair Verify) or manage pairings
+/// (the Pairing-Pairings characteristic). Bundled so [`BleAccessory::new`] takes
+/// one descriptive value rather than a long positional argument list.
+pub(crate) struct SecureContext {
+    /// The session established by Pair Verify.
+    pub session: BleSession,
+    /// The link generation `session` was minted at (see [`Secure::generation`]).
+    pub session_generation: u64,
+    /// This controller's long-term identity (to re-run Pair Verify).
+    pub keypair: ControllerKeypair,
+    /// The accessory's pairing (to re-run Pair Verify).
+    pub pairing: AccessoryPairing,
+    /// The Pair-Verify characteristic UUID and instance id.
+    pub verify_char: String,
+    pub verify_iid: u16,
+    /// The Pairing-Pairings characteristic UUID and instance id (RemovePairing).
+    pub pairings_char: String,
+    pub pairings_iid: u16,
+    /// The broadcast decryption key derived during Pair Verify.
+    pub broadcast_key: hap_crypto::BroadcastKey,
+    /// Initial GSN to seed `last_gsn` from a previously-persisted state.
+    pub initial_gsn: u16,
+}
+
+/// If the link has reconnected since the secure session was minted, the
+/// accessory dropped that session — re-run Pair Verify and adopt the fresh keys
+/// (resetting the transaction counter). A no-op when the session is still live.
+async fn revive_if_stale(
+    gatt: &dyn GattConnection,
+    s: &mut Secure,
+    reviver: &Reviver,
+) -> Result<()> {
+    if gatt.generation().await <= s.generation {
+        return Ok(());
+    }
+    let (session, _bkey) = pairing::pair_verify(
+        gatt,
+        &reviver.verify_char,
+        reviver.verify_iid,
+        &reviver.keypair,
+        &reviver.pairing,
+        reviver.frag_size,
+    )
+    .await?;
+    s.session = session;
+    s.tid = 0;
+    // Capture the generation *after* the handshake: Pair Verify itself fails if
+    // the link drops mid-handshake, so reaching here means this is current.
+    s.generation = gatt.generation().await;
+    Ok(())
+}
+
+// kTLVType values for the Pairing-Pairings (Add/Remove/List) exchange.
+mod pairings_tlv {
+    pub(super) const STATE: u8 = 0x06;
+    pub(super) const METHOD: u8 = 0x00;
+    pub(super) const IDENTIFIER: u8 = 0x01;
+    pub(super) const ERROR: u8 = 0x07;
+    pub(super) const STATE_M1: u8 = 0x01;
+    pub(super) const STATE_M2: u8 = 0x02;
+    pub(super) const METHOD_REMOVE: u8 = 0x04;
+}
+
+/// Encode a RemovePairing request (State M1, Method 4, Identifier) as the TLV8
+/// carried in the Pairing-Pairings characteristic's Value param.
+fn encode_remove_pairing(controller_id: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut w = hap_tlv8::Tlv8Writer::new(&mut out);
+    w.push_u8(pairings_tlv::STATE, pairings_tlv::STATE_M1);
+    w.push_u8(pairings_tlv::METHOD, pairings_tlv::METHOD_REMOVE);
+    w.push(pairings_tlv::IDENTIFIER, controller_id.as_bytes());
+    out
+}
+
+/// Validate a RemovePairing reply: reject a `kTLVType_Error`, then require the
+/// reply state to be M2.
+fn expect_remove_m2(tlv: &[u8]) -> Result<()> {
+    let map = hap_tlv8::Tlv8Map::parse(tlv)?;
+    if let Some(err) = map.get(pairings_tlv::ERROR) {
+        return Err(BleError::PairingRejected(err.first().copied().unwrap_or(1)));
+    }
+    match map
+        .get(pairings_tlv::STATE)
+        .and_then(|s| s.first().copied())
+    {
+        Some(pairings_tlv::STATE_M2) => Ok(()),
+        _ => Err(BleError::MalformedPdu("remove-pairing reply not state M2")),
+    }
+}
+
+/// Issue one encrypted Characteristic-Read and return the raw value bytes,
+/// re-establishing the secure session if a reconnect invalidated it (before the
+/// read, and again if the link drops mid-read — retried a bounded number of
+/// times).
 async fn read_char_raw(
     gatt: &dyn GattConnection,
     secure: &Mutex<Secure>,
+    reviver: &Reviver,
     uuid: &str,
     iid: u64,
     frag_size: usize,
 ) -> Result<Vec<u8>> {
     let iid16 = u16::try_from(iid).map_err(|_| BleError::CharacteristicNotFound { aid: 0, iid })?;
     let mut s = secure.lock().await;
-    s.tid = s.tid.wrapping_add(1);
-    let tid = s.tid;
-    let resp = pdu::request_secure(
-        gatt,
-        &mut s.session,
-        uuid,
-        OpCode::CharacteristicRead,
-        tid,
-        iid16,
-        &[],
-        frag_size,
-    )
-    .await?;
-    pdu::value_param(&resp.body)
+    let mut attempts = 0;
+    loop {
+        revive_if_stale(gatt, &mut s, reviver).await?;
+        s.tid = s.tid.wrapping_add(1);
+        let tid = s.tid;
+        match pdu::request_secure(
+            gatt,
+            &mut s.session,
+            uuid,
+            OpCode::CharacteristicRead,
+            tid,
+            iid16,
+            &[],
+            frag_size,
+        )
+        .await
+        {
+            Ok(resp) => return pdu::value_param(&resp.body),
+            // A reconnect during the read kills the session mid-stream; if the
+            // generation advanced, re-verify and retry rather than surfacing the
+            // transient failure.
+            Err(e) => {
+                attempts += 1;
+                if attempts < MAX_REVIVE_RETRIES && gatt.generation().await > s.generation {
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
 }
 
 /// A connected BLE accessory: holds the GATT link, the secure session, the
@@ -64,6 +208,9 @@ async fn read_char_raw(
 pub struct BleAccessory {
     gatt: Arc<dyn GattConnection>,
     secure: Arc<Mutex<Secure>>,
+    reviver: Arc<Reviver>,
+    /// The Pairing-Pairings characteristic (UUID, instance id) for RemovePairing.
+    pairings: (String, u16),
     frag_size: usize,
     accessories: Vec<Accessory>,
     /// (aid, iid) -> characteristic UUID, format.
@@ -71,6 +218,13 @@ pub struct BleAccessory {
     events_tx: tokio::sync::broadcast::Sender<CharacteristicEvent>,
     /// Background event-forwarding tasks, aborted when the handle is dropped.
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// The last GSN seen in a regular advertisement; shared with catch-up poll tasks.
+    last_gsn: Arc<Mutex<u16>>,
+    /// Dedup map of `iid → last-emitted GSN`; shared with catch-up poll tasks.
+    /// Bounded to one entry per characteristic (unlike a `HashSet` that grows forever).
+    emitted: Arc<Mutex<HashMap<u64, u16>>>,
+    /// The broadcast decryption key derived during the most recent Pair Verify.
+    broadcast_key: hap_crypto::BroadcastKey,
 }
 
 impl Drop for BleAccessory {
@@ -85,9 +239,12 @@ impl BleAccessory {
     /// Wrap an established GATT link + session with a pre-built attribute
     /// database (fetched unencrypted before Pair Verify). Builds the
     /// `(aid, iid) -> (uuid, format)` map used to address characteristics.
+    ///
+    /// `ctx` carries the established secure session plus the material to re-mint
+    /// it (Pair Verify) after a reconnect and to manage pairings.
     pub(crate) fn new(
         gatt: Arc<dyn GattConnection>,
-        session: BleSession,
+        ctx: SecureContext,
         frag_size: usize,
         gatt_services: &[GattService],
         accessories: Vec<Accessory>,
@@ -114,18 +271,42 @@ impl BleAccessory {
         }
         Self {
             gatt,
-            secure: Arc::new(Mutex::new(Secure { session, tid: 0 })),
+            secure: Arc::new(Mutex::new(Secure {
+                session: ctx.session,
+                tid: 0,
+                generation: ctx.session_generation,
+            })),
+            reviver: Arc::new(Reviver {
+                keypair: ctx.keypair,
+                pairing: ctx.pairing,
+                verify_char: ctx.verify_char,
+                verify_iid: ctx.verify_iid,
+                frag_size,
+            }),
+            pairings: (ctx.pairings_char, ctx.pairings_iid),
             frag_size,
             accessories,
             chars,
             events_tx,
             tasks: Vec::new(),
+            last_gsn: Arc::new(Mutex::new(ctx.initial_gsn)),
+            emitted: Arc::new(Mutex::new(HashMap::new())),
+            broadcast_key: ctx.broadcast_key,
         }
     }
 
     /// The cached attribute database.
     pub fn accessories(&self) -> &[Accessory] {
         &self.accessories
+    }
+
+    /// The current persistable broadcast material (key + latest GSN). Persist
+    /// this so a later `connect` can resume broadcast decryption.
+    pub async fn broadcast_state(&self) -> BleBroadcastState {
+        BleBroadcastState {
+            key: self.broadcast_key.clone(),
+            gsn: *self.last_gsn.lock().await,
+        }
     }
 
     /// Find the `(aid, iid)` of a characteristic by service + characteristic
@@ -161,9 +342,104 @@ impl BleAccessory {
             .get(&(aid, iid))
             .cloned()
             .ok_or(BleError::CharacteristicNotFound { aid, iid })?;
-        let raw =
-            read_char_raw(self.gatt.as_ref(), &self.secure, &uuid, iid, self.frag_size).await?;
+        let raw = read_char_raw(
+            self.gatt.as_ref(),
+            &self.secure,
+            &self.reviver,
+            &uuid,
+            iid,
+            self.frag_size,
+        )
+        .await?;
         db::decode_value(format, &raw)
+    }
+
+    /// Remove a pairing by controller pairing id. Pass this controller's own id
+    /// to un-pair this controller; pass another controller's id (this session
+    /// must hold admin permission) to remove that one.
+    ///
+    /// Runs as an encrypted RemovePairing (State M1, Method 4) write to the
+    /// accessory's Pairing-Pairings characteristic; a reconnect-invalidated
+    /// session is re-verified first.
+    ///
+    /// Removing this controller's **own** pairing is a special case: the
+    /// accessory removes the pairing and tears down the secure session as part
+    /// of the same operation, so the encrypted M2 response is frequently lost or
+    /// undecryptable (the link drops, or the reply is no longer sealed under the
+    /// now-defunct session). Per the HAP self-removal semantics, once the request
+    /// has been written the removal has taken effect, so a transport/crypto
+    /// failure *reading the response* on self-removal is reported as success.
+    ///
+    /// # Errors
+    /// [`BleError::PairingRejected`] if the accessory rejects the request (PDU
+    /// status or a `kTLVType_Error` in the M2 reply); otherwise GATT/PDU/crypto
+    /// errors (except the tolerated self-removal teardown described above).
+    pub async fn remove_pairing(&mut self, controller_id: &str) -> Result<()> {
+        let (uuid, iid) = self.pairings.clone();
+        let removing_self = controller_id == self.reviver.keypair.id;
+        let tlv = encode_remove_pairing(controller_id);
+        let body = pdu::encode_write_body(&tlv);
+        let mut s = self.secure.lock().await;
+        revive_if_stale(self.gatt.as_ref(), &mut s, &self.reviver).await?;
+        s.tid = s.tid.wrapping_add(1);
+        let tid = s.tid;
+        let result = pdu::request_secure(
+            self.gatt.as_ref(),
+            &mut s.session,
+            &uuid,
+            OpCode::CharacteristicWrite,
+            tid,
+            iid,
+            &body,
+            self.frag_size,
+        )
+        .await;
+        match result {
+            Ok(resp) if resp.status != 0 => Err(BleError::PairingRejected(resp.status)),
+            Ok(resp) => expect_remove_m2(&pdu::value_param(&resp.body)?),
+            // The request was written, but reading the sealed M2 back failed.
+            // On self-removal that is the expected session teardown — the
+            // pairing is gone — so swallow the teardown-shaped error.
+            Err(BleError::Disconnected | BleError::Crypto(_)) if removing_self => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Enable encrypted broadcast notifications for the given characteristic
+    /// instance ids (the HAP BLE accessory id is always 1). Each is an encrypted
+    /// Characteristic-Configuration write (Properties + Broadcast-Interval). Call
+    /// this **while connected**, before disconnecting to receive sleepy events —
+    /// without it the accessory will not emit `0x11` encrypted broadcasts. A
+    /// characteristic that does not support broadcasts is skipped; per-write
+    /// failures are tolerated (best-effort).
+    ///
+    /// # Errors
+    /// Propagates a session re-verify failure.
+    pub async fn enable_broadcasts(&mut self, iids: &[u64]) -> Result<()> {
+        let mut s = self.secure.lock().await;
+        for &iid in iids {
+            let Some((uuid, _)) = self.chars.get(&(1, iid)).cloned() else {
+                continue;
+            };
+            let Ok(iid16) = u16::try_from(iid) else {
+                continue;
+            };
+            revive_if_stale(self.gatt.as_ref(), &mut s, &self.reviver).await?;
+            s.tid = s.tid.wrapping_add(1);
+            let tid = s.tid;
+            let _ = pdu::request_secure(
+                self.gatt.as_ref(),
+                &mut s.session,
+                &uuid,
+                OpCode::CharacteristicConfig,
+                tid,
+                iid16,
+                &ENABLE_BROADCAST_BODY,
+                self.frag_size,
+            )
+            .await;
+        }
+        Ok(())
     }
 
     /// Subscribe to value-change events for a characteristic. HAP-BLE connected
@@ -173,6 +449,11 @@ impl BleAccessory {
     ///
     /// # Errors
     /// [`BleError::CharacteristicNotFound`] if unknown; otherwise GATT errors.
+    ///
+    /// Connected events are best-effort: if the link drops, this GATT
+    /// subscription ends and is not re-armed (re-arming a sleepy device storms).
+    /// Durable updates arrive via [`BleAccessory::events`] from the broadcast and
+    /// disconnected-event channels.
     pub async fn subscribe(&mut self, aid: u64, iid: u64) -> Result<()> {
         let (uuid, format) = self
             .chars
@@ -183,15 +464,154 @@ impl BleAccessory {
         let tx = self.events_tx.clone();
         let gatt = self.gatt.clone();
         let secure = self.secure.clone();
+        let reviver = self.reviver.clone();
         let frag_size = self.frag_size;
         let task = tokio::spawn(async move {
             // The notification carries no value; it signals "read me".
             while rx.recv().await.is_some() {
-                if let Ok(raw) = read_char_raw(gatt.as_ref(), &secure, &uuid, iid, frag_size).await
+                if let Ok(raw) =
+                    read_char_raw(gatt.as_ref(), &secure, &reviver, &uuid, iid, frag_size).await
                 {
                     if let Ok(value) = db::decode_value(format, &raw) {
                         let _ = tx.send(CharacteristicEvent { aid, iid, value });
                     }
+                }
+            }
+        });
+        self.tasks.push(task);
+        Ok(())
+    }
+
+    /// Watch advertisements and deliver disconnected-event updates. Two paths:
+    ///
+    /// - **Regular (0x06) advertisements:** when the accessory's GSN bumps, read
+    ///   each polled characteristic and publish its value on
+    ///   [`BleAccessory::events`]. Events are deduplicated by `(iid, gsn)`.
+    /// - **Encrypted broadcast (0x11) advertisements:** decrypt the value directly
+    ///   from the advertisement using the stored [`hap_crypto::BroadcastKey`] and
+    ///   publish it — no GATT connection needed.
+    ///
+    /// The advert source is supplied by the caller (the same backend object that
+    /// provides the GATT connection).
+    ///
+    /// # Errors
+    /// [`BleError`] if the advert source cannot start.
+    #[allow(clippy::too_many_lines)]
+    pub async fn watch_sleepy_events(
+        &mut self,
+        advert_source: Arc<dyn crate::gatt::AdvertSource>,
+        device_id: [u8; 6],
+        poll_iids: Vec<(u64, u64)>,
+    ) -> Result<()> {
+        // Pre-resolve poll targets to (aid, iid, uuid, format) so the task needs no
+        // access to self.chars.
+        let mut targets = Vec::new();
+        for (aid, iid) in poll_iids {
+            if let Some((uuid, format)) = self.chars.get(&(aid, iid)).cloned() {
+                targets.push((aid, iid, uuid, format));
+            }
+        }
+        // Build an iid→format map for the 0x11 broadcast-decrypt path.
+        let formats: std::collections::HashMap<u64, CharFormat> = self
+            .chars
+            .iter()
+            .map(|((_, iid), (_, f))| (*iid, *f))
+            .collect();
+        let broadcast_key = self.broadcast_key.clone();
+
+        let mut adverts = advert_source.watch_adverts().await?;
+        let tx = self.events_tx.clone();
+        let gatt = self.gatt.clone();
+        let secure = self.secure.clone();
+        let reviver = self.reviver.clone();
+        let frag = self.frag_size;
+        let last_gsn = self.last_gsn.clone();
+        let emitted = self.emitted.clone();
+        let task = tokio::spawn(async move {
+            while let Some(raw) = adverts.recv().await {
+                match crate::advert::HapAdvert::parse(&raw.manufacturer_data) {
+                    Some(crate::advert::HapAdvert::Regular {
+                        device_id: d, gsn, ..
+                    }) => {
+                        if d != device_id {
+                            continue;
+                        }
+                        {
+                            let mut lg = last_gsn.lock().await;
+                            if !gsn_is_newer(gsn, *lg) {
+                                continue;
+                            }
+                            *lg = gsn;
+                        }
+                        for (aid, iid, uuid, format) in &targets {
+                            if let Ok(raw_val) =
+                                read_char_raw(gatt.as_ref(), &secure, &reviver, uuid, *iid, frag)
+                                    .await
+                            {
+                                if let Ok(value) = db::decode_value(*format, &raw_val) {
+                                    let mut e = emitted.lock().await;
+                                    if e.get(iid).copied() != Some(gsn) {
+                                        e.insert(*iid, gsn);
+                                        drop(e);
+                                        let _ = tx.send(CharacteristicEvent {
+                                            aid: *aid,
+                                            iid: *iid,
+                                            value,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Some(crate::advert::HapAdvert::EncryptedNotification {
+                        advertising_id,
+                        payload,
+                    }) => {
+                        if advertising_id != device_id {
+                            continue;
+                        }
+                        let start = *last_gsn.lock().await;
+                        // GSN candidates per aiohomekit: next, current, then a
+                        // forward window up to +100.
+                        let candidates = std::iter::once(start.wrapping_add(1))
+                            .chain(std::iter::once(start))
+                            .chain((2..=100u16).map(|d| start.wrapping_add(d)));
+                        for gsn in candidates {
+                            let Ok(pt) = broadcast_key.open(gsn, &payload, &advertising_id) else {
+                                continue;
+                            };
+                            if pt.len() < 12 {
+                                continue;
+                            }
+                            if u16::from_le_bytes([pt[0], pt[1]]) != gsn {
+                                continue;
+                            }
+                            // stale duplicate: this GSN is not newer than start — ignore.
+                            if !gsn_is_newer(gsn, start) {
+                                break;
+                            }
+                            let iid = u64::from(u16::from_le_bytes([pt[2], pt[3]]));
+                            // Advance last_gsn now — the device's state genuinely moved,
+                            // even if the iid is unknown or the value fails to decode.
+                            {
+                                let mut lg = last_gsn.lock().await;
+                                *lg = gsn;
+                            }
+                            let Some(format) = formats.get(&iid).copied() else {
+                                break;
+                            };
+                            if let Ok(value) = db::decode_value(format, &pt[4..12]) {
+                                let mut e = emitted.lock().await;
+                                if e.get(&iid).copied() != Some(gsn) {
+                                    e.insert(iid, gsn);
+                                    drop(e);
+                                    let _ = tx.send(CharacteristicEvent { aid: 1, iid, value });
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
         });
@@ -262,7 +682,22 @@ mod tests {
         let accessories = crate::db::build_db(gatt.as_ref(), &services, 512)
             .await
             .unwrap();
-        let h = BleAccessory::new(gatt.clone(), session, 512, &services, accessories);
+        let ctx = SecureContext {
+            session,
+            session_generation: 0,
+            keypair: ControllerKeypair::generate("test-controller".into()),
+            pairing: AccessoryPairing {
+                pairing_id: "AE:EC:86:C0:BF:D7".into(),
+                ltpk: [0; 32],
+            },
+            verify_char: "0000004e-0000-1000-8000-0026bb765291".into(),
+            verify_iid: 1,
+            pairings_char: "00000050-0000-1000-8000-0026bb765291".into(),
+            pairings_iid: 2,
+            broadcast_key: hap_crypto::BroadcastKey::from_bytes([0u8; 32]),
+            initial_gsn: 0,
+        };
+        let h = BleAccessory::new(gatt.clone(), ctx, 512, &services, accessories);
         (h, gatt)
     }
 
@@ -284,6 +719,73 @@ mod tests {
             .find(ServiceType::LightBulb, CharacteristicType::Brightness)
             .unwrap_err();
         assert!(matches!(err, BleError::CharacteristicNotFound { .. }));
+    }
+
+    #[test]
+    fn encode_remove_pairing_matches_hap_layout() {
+        // State M1, Method RemovePairing(4), Identifier "c2".
+        let tlv = encode_remove_pairing("c2");
+        assert_eq!(
+            tlv,
+            vec![0x06, 0x01, 0x01, 0x00, 0x01, 0x04, 0x01, 0x02, b'c', b'2']
+        );
+    }
+
+    #[test]
+    fn expect_remove_m2_accepts_m2_and_rejects_error() {
+        assert!(expect_remove_m2(&[0x06, 0x01, 0x02]).is_ok());
+        // A kTLVType_Error (0x07) is surfaced as a rejection with its code.
+        assert!(matches!(
+            expect_remove_m2(&[0x07, 0x01, 0x02]),
+            Err(BleError::PairingRejected(2))
+        ));
+        // Anything that is not state M2 is malformed.
+        assert!(matches!(
+            expect_remove_m2(&[0x06, 0x01, 0x01]),
+            Err(BleError::MalformedPdu(_))
+        ));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn remove_pairing_writes_request_and_accepts_m2() {
+        let (mut h, gatt) = handle_with_db().await;
+
+        // The accessory replies to the encrypted RemovePairing write with a
+        // sealed success PDU whose value param is a State-M2 TLV8.
+        let m2 = vec![0x06, 0x01, 0x02];
+        let vbody = crate::pdu::encode_value_param(&m2);
+        let mut plain = vec![0x02, 0x01, 0x00];
+        plain.extend_from_slice(&u16::try_from(vbody.len()).unwrap().to_le_bytes());
+        plain.extend_from_slice(&vbody);
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000050-0000-1000-8000-0026bb765291", sealed);
+
+        h.remove_pairing("AE:EC:86:C0:BF:D7").await.unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn remove_own_pairing_tolerates_session_teardown() {
+        // handle_with_db pairs as controller id "test-controller".
+        let (mut h, gatt) = handle_with_db().await;
+        // The accessory tears down the session as it removes us, so the reply is
+        // not validly sealed — open() fails with a crypto error. Removing our OWN
+        // id must still succeed (the removal took effect on write).
+        gatt.queue_read("00000050-0000-1000-8000-0026bb765291", vec![0u8; 24]);
+        h.remove_pairing("test-controller").await.unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn remove_other_pairing_propagates_teardown_error() {
+        // The same undecryptable reply when removing a DIFFERENT controller must
+        // NOT be swallowed — only self-removal tolerates a teardown.
+        let (mut h, gatt) = handle_with_db().await;
+        gatt.queue_read("00000050-0000-1000-8000-0026bb765291", vec![0u8; 24]);
+        let err = h.remove_pairing("some-other-controller").await.unwrap_err();
+        assert!(matches!(err, BleError::Crypto(_)));
     }
 
     #[tokio::test]
@@ -316,5 +818,398 @@ mod tests {
         let ev = events.next().await.unwrap();
         assert_eq!(ev.iid, 11);
         assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn gsn_bump_triggers_disconnected_event_read() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        // The catch-up poll will issue an encrypted read for iid 11; queue the sealed
+        // response (zero session keys, recv counter 0) decoding to Bool(true).
+        let mut plain = vec![0x02, 0x01, 0x00];
+        let vbody = crate::pdu::encode_value_param(&[0x01]);
+        plain.extend_from_slice(&u16::try_from(vbody.len()).unwrap().to_le_bytes());
+        plain.extend_from_slice(&vbody);
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        // Push a 0x06 advert for device [1..6] with GSN 9 (a bump from 0).
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: vec![
+                    0x06, 0x21, 0x01, 1, 2, 3, 4, 5, 6, 0x01, 0x00, 0x09, 0x00, 0x01, 0x00,
+                ],
+            })
+            .await
+            .unwrap();
+
+        let ev = events.next().await.unwrap();
+        assert_eq!(ev.iid, 11);
+        assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn encrypted_broadcast_0x11_decrypts_and_emits_event() {
+        use tokio_stream::StreamExt as _;
+        // handle_with_db sets broadcast_key = BroadcastKey::from_bytes([0u8; 32]).
+        let (mut h, gatt) = handle_with_db().await;
+
+        // Seal a 12-byte broadcast plaintext: gsn=1, iid=11 (LightBulb On, Bool),
+        // value bytes = [0x01, 0, 0, 0, 0, 0, 0, 0] (Bool true).
+        let key = hap_crypto::BroadcastKey::from_bytes([0u8; 32]);
+        let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
+        let mut pt = Vec::new();
+        pt.extend_from_slice(&1u16.to_le_bytes()); // gsn = 1
+        pt.extend_from_slice(&11u16.to_le_bytes()); // iid = 11
+        pt.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0]); // value: Bool true
+        let sealed = key.seal(1, &pt, &aid_bytes);
+
+        // Build a 0x11 manufacturer-data frame: [0x11, 0x00, aid[0..6], sealed...]
+        let mut mfg = vec![0x11u8, 0x00];
+        mfg.extend_from_slice(&aid_bytes);
+        mfg.extend_from_slice(&sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        // poll_iids is empty — broadcast path needs no poll targets.
+        h.watch_sleepy_events(advert_source, aid_bytes, vec![])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg,
+            })
+            .await
+            .unwrap();
+
+        let ev = events.next().await.unwrap();
+        assert_eq!(ev.aid, 1);
+        assert_eq!(ev.iid, 11);
+        assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
+    }
+
+    #[test]
+    fn gsn_is_newer_handles_wraparound() {
+        assert!(gsn_is_newer(6, 5));
+        assert!(!gsn_is_newer(5, 5));
+        assert!(!gsn_is_newer(4, 5));
+        assert!(gsn_is_newer(1, 65535)); // wrap 65535 -> 1
+        assert!(!gsn_is_newer(65535, 1)); // not newer across the wrap
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn same_change_via_poll_and_broadcast_emits_once() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        // Queue the sealed Characteristic-Read response the poll will issue for
+        // iid 11 (same setup as gsn_bump_triggers_disconnected_event_read).
+        let mut plain = vec![0x02, 0x01, 0x00];
+        let vbody = crate::pdu::encode_value_param(&[0x01]);
+        plain.extend_from_slice(&u16::try_from(vbody.len()).unwrap().to_le_bytes());
+        plain.extend_from_slice(&vbody);
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        // Send 0x06 advert first (GSN 9) — triggers the poll → reads iid 11 → emits event.
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: vec![
+                    0x06, 0x21, 0x01, 1, 2, 3, 4, 5, 6, 0x01, 0x00, 0x09, 0x00, 0x01, 0x00,
+                ],
+            })
+            .await
+            .unwrap();
+
+        // Wait for the poll-triggered event.
+        let ev = events.next().await.unwrap();
+        assert_eq!(ev.iid, 11);
+        assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
+
+        // Now send a 0x11 broadcast for the same GSN 9 / iid 11 — must be deduped.
+        let key = hap_crypto::BroadcastKey::from_bytes([0u8; 32]);
+        let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
+        let mut pt = Vec::new();
+        pt.extend_from_slice(&9u16.to_le_bytes()); // gsn = 9
+        pt.extend_from_slice(&11u16.to_le_bytes()); // iid = 11
+        pt.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0]); // value: Bool true
+        let sealed_bc = key.seal(9, &pt, &aid_bytes);
+
+        let mut mfg = vec![0x11u8, 0x00];
+        mfg.extend_from_slice(&aid_bytes);
+        mfg.extend_from_slice(&sealed_bc);
+
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg,
+            })
+            .await
+            .unwrap();
+
+        // The second event (same iid=11, gsn=9) must be deduped — no second emit.
+        let timeout_result =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+        assert!(
+            timeout_result.is_err(),
+            "expected dedup to suppress the duplicate 0x11 broadcast event, but got one"
+        );
+    }
+
+    // ── negative-path tests for sleepy-device event handling ─────────────────
+
+    /// A 0x06 advert from a foreign device id must be silently dropped — no
+    /// event emitted, no panic.
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn foreign_device_advert_ignored() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        // watch_sleepy_events expects device_id [1,2,3,4,5,6]
+        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        // Send a 0x06 advert whose device_id is [9,9,9,9,9,9] — a foreign device.
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: vec![
+                    0x06, 0x21, 0x01, 9, 9, 9, 9, 9, 9, 0x01, 0x00, 0x09, 0x00, 0x01, 0x00,
+                ],
+            })
+            .await
+            .unwrap();
+
+        let timeout_result =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+        assert!(
+            timeout_result.is_err(),
+            "foreign device advert must not emit an event, but one was received"
+        );
+    }
+
+    /// A 0x11 broadcast replayed at the same GSN that was already processed must
+    /// be silently dropped — stale-GSN dedup.
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn stale_gsn_broadcast_ignored() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        let key = hap_crypto::BroadcastKey::from_bytes([0u8; 32]);
+        let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
+
+        // Plaintext: gsn=5, iid=11, value=Bool(true)
+        // Layout: [gsn_le: 2B][iid_le: 2B][value: 8B]
+        let mut pt = Vec::new();
+        pt.extend_from_slice(&5u16.to_le_bytes()); // gsn = 5
+        pt.extend_from_slice(&11u16.to_le_bytes()); // iid = 11
+        pt.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0]); // Bool true
+        let sealed = key.seal(5, &pt, &aid_bytes);
+
+        let mut mfg = vec![0x11u8, 0x00];
+        mfg.extend_from_slice(&aid_bytes);
+        mfg.extend_from_slice(&sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, aid_bytes, vec![])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        // First delivery — GSN 5 is fresh (last_gsn starts at 0).
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg.clone(),
+            })
+            .await
+            .unwrap();
+
+        let ev = events.next().await.unwrap();
+        assert_eq!(ev.iid, 11);
+        assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
+
+        // Second delivery — identical GSN 5 is now stale.
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg,
+            })
+            .await
+            .unwrap();
+
+        let timeout_result =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+        assert!(
+            timeout_result.is_err(),
+            "duplicate GSN 5 broadcast must not emit a second event"
+        );
+    }
+
+    /// A 0x11 broadcast sealed with the wrong key must be silently dropped — all
+    /// GSN candidate decrypts fail the 4-byte tag check, so no event, no panic.
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn wrong_broadcast_key_ignored() {
+        use tokio_stream::StreamExt as _;
+        // handle_with_db installs broadcast_key = BroadcastKey::from_bytes([0u8;32])
+        let (mut h, gatt) = handle_with_db().await;
+
+        // Seal with the WRONG key ([0xFF;32]).
+        let wrong_key = hap_crypto::BroadcastKey::from_bytes([0xFF; 32]);
+        let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
+
+        let mut pt = Vec::new();
+        pt.extend_from_slice(&1u16.to_le_bytes());
+        pt.extend_from_slice(&11u16.to_le_bytes());
+        pt.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0]);
+        let sealed = wrong_key.seal(1, &pt, &aid_bytes);
+
+        let mut mfg = vec![0x11u8, 0x00];
+        mfg.extend_from_slice(&aid_bytes);
+        mfg.extend_from_slice(&sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, aid_bytes, vec![])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg,
+            })
+            .await
+            .unwrap();
+
+        let timeout_result =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+        assert!(
+            timeout_result.is_err(),
+            "wrong-key broadcast must not emit any event (all candidate opens fail)"
+        );
+    }
+
+    /// A 0x11 advert whose payload is too short (< 4 bytes after the advertising
+    /// id) must be silently dropped — `BroadcastKey::open` returns `Err` on
+    /// `< 4` bytes, so no event, no panic.
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn malformed_0x11_advert_ignored() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        // advertising_id present, only 2 payload bytes — too short for open().
+        let manufacturer_data = vec![0x11, 0x00, 1, 2, 3, 4, 5, 6, 0xAA, 0xBB];
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert { manufacturer_data })
+            .await
+            .unwrap();
+
+        let timeout_result =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+        assert!(
+            timeout_result.is_err(),
+            "malformed (too-short payload) 0x11 advert must not emit any event"
+        );
+    }
+
+    /// A 0x11 broadcast where the embedded GSN in the plaintext does NOT match
+    /// the nonce GSN must be silently dropped — the self-consistency check
+    /// (`u16::from_le_bytes(pt[0..2]) == gsn`) fails, so no emit.
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn broadcast_value_self_inconsistent_gsn_ignored() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        let key = hap_crypto::BroadcastKey::from_bytes([0u8; 32]);
+        let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
+
+        // Plaintext embeds gsn=3 but is sealed at nonce gsn=7.
+        // After decryption succeeds at candidate gsn=7, the guard
+        // `u16::from_le_bytes([pt[0], pt[1]]) != gsn` fires (3 != 7) → no emit.
+        let mut pt = Vec::new();
+        pt.extend_from_slice(&3u16.to_le_bytes()); // embedded gsn = 3 (mismatches nonce)
+        pt.extend_from_slice(&11u16.to_le_bytes()); // iid = 11
+        pt.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0]); // Bool true
+        let sealed = key.seal(7, &pt, &aid_bytes); // sealed at nonce gsn=7
+
+        let mut mfg = vec![0x11u8, 0x00];
+        mfg.extend_from_slice(&aid_bytes);
+        mfg.extend_from_slice(&sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, aid_bytes, vec![])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg,
+            })
+            .await
+            .unwrap();
+
+        let timeout_result =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+        assert!(
+            timeout_result.is_err(),
+            "self-inconsistent GSN (embedded 3 != nonce 7) must not emit any event"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn read_after_reconnect_re_verifies_before_using_session() {
+        let (mut h, gatt) = handle_with_db().await;
+
+        // Queue a perfectly valid sealed read response (recv counter 0) — it
+        // would decode cleanly if the session were used directly.
+        let mut plain = vec![0x02, 0x01, 0x00];
+        let vbody = crate::pdu::encode_value_param(&[0x01]);
+        plain.extend_from_slice(&u16::try_from(vbody.len()).unwrap().to_le_bytes());
+        plain.extend_from_slice(&vbody);
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+
+        // Simulate a reconnect: the accessory dropped the session. The read must
+        // now re-run Pair Verify *before* touching the session. The mock can't
+        // complete that handshake, so the read surfaces an error rather than
+        // silently decoding with the dead session.
+        gatt.bump_generation();
+        let err = h.read(1, 11).await.unwrap_err();
+        assert!(
+            !matches!(err, BleError::CharacteristicNotFound { .. }),
+            "expected a verify/transport error from the re-verify attempt, got {err:?}"
+        );
     }
 }

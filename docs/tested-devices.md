@@ -90,3 +90,18 @@ reset returns it to pairable.
 **Connected events** were the last piece: a HAP-BLE notification is only a
 trigger, so on each one the controller issues an encrypted Characteristic-Read for
 the value. With that, MotionDetected events flowed on every motion trigger.
+
+## Feature B spike — macOS scan-while-connected (2026-06-15, Onvis SMS2)
+
+Gate for the sleepy-device-events milestone (Approach 1: each `BleAccessory` runs
+its own continuous scan while also connecting on demand for catch-up polls). A
+throwaway spike paired the Onvis, then for ~30 s issued encrypted reads **while a
+continuous scan ran concurrently**: **6/6 reads OK, 0 errors**, and a clean
+`remove_pairing` afterward. Scanning does **not** disturb an active CoreBluetooth
+connection on macOS — Approach 1 is safe.
+
+Note: the concurrent scan reported 0 adverts each round, which is expected — a BLE
+peripheral stops advertising once connected (and no other HAP-BLE device was in
+range). The broadcast / disconnected-event channels operate when the device is
+*disconnected* (and therefore advertising), which standard scans already pick up
+reliably; the spike's job was only to prove the scanner can't corrupt a live link.

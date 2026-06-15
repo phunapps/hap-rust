@@ -2,10 +2,10 @@
 //! connect.
 
 use crate::accessory::BleAccessory;
+use crate::broadcast_state::BleBroadcastState;
 use crate::discovery::DiscoveredBleAccessory;
 use crate::error::Result;
 use crate::pairing;
-use crate::session::BleSession;
 use hap_crypto::AccessoryPairing;
 use hap_crypto::ControllerKeypair;
 use std::sync::Arc;
@@ -13,12 +13,27 @@ use std::sync::Arc;
 /// The HAP Pairing-Service characteristic UUIDs (HAP-defined, fixed).
 const PAIR_SETUP_CHAR: &str = "0000004c-0000-1000-8000-0026bb765291";
 const PAIR_VERIFY_CHAR: &str = "0000004e-0000-1000-8000-0026bb765291";
+const PAIRINGS_CHAR: &str = "00000050-0000-1000-8000-0026bb765291";
+/// The HAP Service-Signature characteristic (one appears in *every* service).
+/// The generate-broadcast-key request must target the one in the Protocol
+/// Information service specifically (see `protocol_info_signature_iid`).
+const SERVICE_SIGNATURE_CHAR: &str = "000000a5-0000-1000-8000-0026bb765291";
+/// The HAP Protocol Information service — its Service-Signature characteristic is
+/// where the Protocol-Configuration "generate broadcast key" request is written.
+const PROTOCOL_INFO_SERVICE: &str = "000000a2-0000-1000-8000-0026bb765291";
+/// Protocol-Configuration TLV body that asks the accessory to generate a
+/// broadcast encryption key (type `GenerateBroadcastEncryptionKey` = 0x01, len 0).
+const GENERATE_BROADCAST_KEY_BODY: [u8; 2] = [0x01, 0x00];
 
-/// HAP-BLE PDU fragment size (max bytes per GATT write). btleplug 0.11 doesn't
-/// expose the negotiated ATT MTU, so this is a conservative fixed value that
-/// fits any MTU >= 183; larger PDUs (e.g. Pair Setup M3/M5) are split across
-/// writes. Deriving this from the real MTU is a future improvement.
-const DEFAULT_FRAG_SIZE: usize = 180;
+/// The result of a successful BLE pairing.
+pub struct Paired {
+    /// The connected accessory handle.
+    pub accessory: BleAccessory,
+    /// The long-term pairing — persist this.
+    pub pairing: AccessoryPairing,
+    /// Broadcast material — persist this to resume broadcasts across restarts.
+    pub broadcast: BleBroadcastState,
+}
 
 /// A BLE HAP controller: holds the long-term controller identity used for
 /// pairing and verification.
@@ -45,8 +60,9 @@ impl BleController {
     }
 
     /// Pair with a discovered accessory: run Pair Setup, then Pair Verify, then
-    /// build the attribute database. Returns a ready [`BleAccessory`] and the
-    /// persisted [`AccessoryPairing`].
+    /// build the attribute database. Returns a [`Paired`] containing the ready
+    /// accessory handle, the persisted [`AccessoryPairing`], and initial
+    /// broadcast material.
     ///
     /// # Errors
     /// Propagates connection, pairing, and model errors.
@@ -55,11 +71,12 @@ impl BleController {
         gatt: Arc<dyn crate::gatt::GattConnection>,
         _accessory: &DiscoveredBleAccessory,
         setup_code: &str,
-    ) -> Result<(BleAccessory, AccessoryPairing)> {
+    ) -> Result<Paired> {
         // Pair first (reading only the Pair-Setup characteristic's iid, one
         // descriptor read) — the long database sweep must not run before the
         // stateful Pair Setup handshake, which can't survive a mid-handshake
         // reconnect.
+        let frag = gatt.max_write().await;
         let setup_iid = gatt.instance_id(PAIR_SETUP_CHAR).await?;
         let pairing = pairing::pair_setup(
             gatt.as_ref(),
@@ -67,14 +84,30 @@ impl BleController {
             setup_iid,
             setup_code,
             self.keypair.clone(),
-            DEFAULT_FRAG_SIZE,
+            frag,
         )
         .await?;
-        let acc = self.verify_and_build(gatt, &pairing).await?;
-        Ok((acc, pairing))
+        let accessory = self.verify_and_build(gatt, &pairing, 0).await?;
+        let broadcast = accessory.broadcast_state().await;
+        Ok(Paired {
+            accessory,
+            pairing,
+            broadcast,
+        })
     }
 
     /// Connect to an already-paired accessory via Pair Verify, then build the DB.
+    ///
+    /// `broadcast` is optional previously-persisted broadcast state. Its `gsn`
+    /// seeds `last_gsn` so the accessory handle does not re-emit already-seen
+    /// events after a restart. The key in `broadcast` is the previously-persisted
+    /// one — Pair Verify derives a fresh per-session broadcast key, which becomes
+    /// the accessory's current key.
+    ///
+    /// # NOTE
+    /// Decrypting pre-connect broadcasts with the persisted key (vs the fresh
+    /// per-session key derived here) is a documented follow-up task — the fresh
+    /// key covers forward broadcasts.
     ///
     /// # Errors
     /// Propagates connection, verify, and model errors.
@@ -82,42 +115,90 @@ impl BleController {
         &self,
         gatt: Arc<dyn crate::gatt::GattConnection>,
         pairing: &AccessoryPairing,
+        broadcast: Option<BleBroadcastState>,
     ) -> Result<BleAccessory> {
-        self.verify_and_build(gatt, pairing).await
+        let initial_gsn = broadcast.as_ref().map_or(0, |b| b.gsn);
+        self.verify_and_build(gatt, pairing, initial_gsn).await
     }
 
     async fn verify_and_build(
         &self,
         gatt: Arc<dyn crate::gatt::GattConnection>,
         pairing: &AccessoryPairing,
+        initial_gsn: u16,
     ) -> Result<BleAccessory> {
         // After pairing, walk the full tree (resilient) for iids, then build the
         // typed database from UNENCRYPTED characteristic-signature reads — HAP
         // reads the database structure after Pair Setup but before Pair Verify
         // (no secure session yet). The resilient GattConnection reconnects +
         // resumes through the accessory's periodic disconnects.
+        let frag = gatt.max_write().await;
         let services = gatt.enumerate().await?;
-        let accessories = crate::db::build_db(gatt.as_ref(), &services, DEFAULT_FRAG_SIZE).await?;
+        let accessories = crate::db::build_db(gatt.as_ref(), &services, frag).await?;
 
         // Now establish the secure session for value reads / events.
         let verify_iid = iid_of(&services, PAIR_VERIFY_CHAR)?;
-        let session: BleSession = pairing::pair_verify(
+        let (mut session, broadcast_key) = pairing::pair_verify(
             gatt.as_ref(),
             PAIR_VERIFY_CHAR,
             verify_iid,
             &self.keypair,
             pairing,
-            DEFAULT_FRAG_SIZE,
+            frag,
         )
         .await?;
-        Ok(BleAccessory::new(
-            gatt,
+
+        // Best-effort: ask the accessory to generate its broadcast encryption key
+        // so it emits encrypted broadcast notifications while disconnected. An
+        // accessory that doesn't support broadcasts (or whose Service-Signature
+        // characteristic we can't address) just won't broadcast — the
+        // disconnected-event poll still delivers durable events. Failure here must
+        // not abort pairing, so it is ignored.
+        if let Some(sig_iid) = protocol_info_signature_iid(&services) {
+            let _ = crate::pdu::request_secure(
+                gatt.as_ref(),
+                &mut session,
+                SERVICE_SIGNATURE_CHAR,
+                crate::pdu::OpCode::ProtocolConfig,
+                1,
+                sig_iid,
+                &GENERATE_BROADCAST_KEY_BODY,
+                frag,
+            )
+            .await;
+        }
+        // The generation the session was minted at — a later reconnect past this
+        // means the accessory dropped the session and the BleAccessory must
+        // re-verify before its next encrypted op (events surviving a reconnect).
+        let session_generation = gatt.generation().await;
+        let pairings_iid = iid_of(&services, PAIRINGS_CHAR)?;
+        let ctx = crate::accessory::SecureContext {
             session,
-            DEFAULT_FRAG_SIZE,
-            &services,
-            accessories,
-        ))
+            session_generation,
+            keypair: self.keypair.clone(),
+            pairing: pairing.clone(),
+            verify_char: PAIR_VERIFY_CHAR.to_string(),
+            verify_iid,
+            pairings_char: PAIRINGS_CHAR.to_string(),
+            pairings_iid,
+            broadcast_key,
+            initial_gsn,
+        };
+        Ok(BleAccessory::new(gatt, ctx, frag, &services, accessories))
     }
+}
+
+/// The Service-Signature characteristic's iid within the Protocol Information
+/// service — the correct target for the generate-broadcast-key request (every
+/// service has a Service-Signature char, so we must scope to this service).
+fn protocol_info_signature_iid(services: &[crate::gatt::GattService]) -> Option<u16> {
+    let svc = services
+        .iter()
+        .find(|s| s.uuid.eq_ignore_ascii_case(PROTOCOL_INFO_SERVICE))?;
+    svc.characteristics
+        .iter()
+        .find(|c| c.uuid.eq_ignore_ascii_case(SERVICE_SIGNATURE_CHAR))
+        .map(|c| c.iid)
 }
 
 /// Find a characteristic's HAP instance id by UUID in an enumerated GATT tree.

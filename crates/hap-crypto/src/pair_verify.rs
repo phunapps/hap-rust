@@ -285,6 +285,21 @@ impl PairVerifyClient {
         Ok(out)
     }
 
+    /// Derive the HAP-BLE broadcast-notification key after Pair Verify completes:
+    /// HKDF-SHA512 over the Pair-Verify shared secret (ikm), salted with the
+    /// controller's long-term public key (LTPK), info `"Broadcast-Encryption-Key"`.
+    /// Call after [`PairVerifyStep::Done`].
+    ///
+    /// # Errors
+    /// [`CryptoError`] if called before the shared secret is established (i.e.
+    /// before Pair Verify reached M2), or on HKDF failure.
+    pub fn broadcast_key(&self, controller_ltpk: &[u8]) -> Result<crate::BroadcastKey> {
+        let shared = self
+            .shared_secret
+            .ok_or(CryptoError::Encoding("Pair Verify shared secret missing"))?;
+        crate::BroadcastKey::derive(&shared, controller_ltpk)
+    }
+
     /// Handle M4: accept `State=4` (surfacing an accessory error code) and emit
     /// the derived [`SessionKeys`].
     fn handle_m4(&mut self, response: &[u8]) -> Result<PairVerifyStep> {
@@ -546,5 +561,58 @@ mod tests {
         w.push_u8(tlv::STATE, tlv::STATE_M4);
         w.push_u8(tlv::ERROR, 2);
         assert!(client.handle(&m4err).is_err());
+    }
+
+    // --- Test 6: broadcast_key returns Ok after a completed Pair Verify, and
+    // the bytes match a direct BroadcastKey::derive call with the same inputs. ---
+    #[test]
+    fn broadcast_key_matches_direct_derive_after_done() {
+        let (Some(accessory), Some(eph_priv), Some(m2), Some(m4)) = (
+            accessory_from_fixtures(),
+            load32("ios_eph_priv.bin"),
+            load("m2.bin"),
+            load("m4.bin"),
+        ) else {
+            eprintln!("skipping broadcast_key_matches_direct_derive_after_done: fixtures absent");
+            return;
+        };
+
+        let controller = test_controller();
+        let mut client = PairVerifyClient::new_with_ephemeral(&controller, &accessory, eph_priv);
+        let _m1 = client.start();
+        client.handle(&m2).unwrap();
+        client.handle(&m4).unwrap();
+
+        // Use a fixed controller LTPK as salt (real value does not matter for
+        // the glue test; what matters is that both paths produce the same bytes).
+        let fake_ltpk = [0xABu8; 32];
+        let bk = client.broadcast_key(&fake_ltpk).unwrap();
+
+        // The method must be exactly equivalent to the free-function path.
+        // Capture the shared secret via the same ephemeral to verify round-trip.
+        let shared = {
+            let map = hap_tlv8::Tlv8Map::parse(&m2).unwrap();
+            let accessory_eph: [u8; 32] = map
+                .get(crate::tlv_types::PUBLIC_KEY)
+                .unwrap()
+                .try_into()
+                .unwrap();
+            crate::x25519::EphemeralKeypair::from_secret(eph_priv).diffie_hellman(&accessory_eph)
+        };
+        let direct = crate::BroadcastKey::derive(&shared, &fake_ltpk).unwrap();
+        assert_eq!(bk.as_bytes(), direct.as_bytes());
+    }
+
+    // --- Test 7 (negative): broadcast_key before M2 (no shared secret) errors. ---
+    #[test]
+    fn broadcast_key_before_m2_errors() {
+        let accessory = AccessoryPairing {
+            pairing_id: "AA:BB:CC:DD:EE:FF".to_string(),
+            ltpk: [0u8; 32],
+        };
+        let mut client = PairVerifyClient::new(&test_controller(), &accessory);
+        let _m1 = client.start();
+        // shared_secret is still None at this point.
+        assert!(client.broadcast_key(&[0u8; 32]).is_err());
     }
 }

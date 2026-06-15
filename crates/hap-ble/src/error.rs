@@ -13,9 +13,6 @@ pub enum BleError {
     /// The accessory attribute model could not be built or coerced.
     #[error("model error: {0}")]
     Model(#[from] hap_model::ModelError),
-    /// An underlying Bluetooth (btleplug) error.
-    #[error("bluetooth error: {0}")]
-    Bluetooth(#[from] btleplug::Error),
     /// No accessory matched the discovery filter.
     #[error("accessory not found")]
     AccessoryNotFound,
