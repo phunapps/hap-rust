@@ -447,8 +447,9 @@ impl BleAccessory {
         let emitted = self.emitted.clone();
         let task = tokio::spawn(async move {
             while let Some(raw) = adverts.recv().await {
-                let Some(crate::advert::HapAdvert::Regular { device_id: d, gsn, .. }) =
-                    crate::advert::HapAdvert::parse(&raw.manufacturer_data)
+                let Some(crate::advert::HapAdvert::Regular {
+                    device_id: d, gsn, ..
+                }) = crate::advert::HapAdvert::parse(&raw.manufacturer_data)
                 else {
                     continue;
                 };
@@ -469,7 +470,11 @@ impl BleAccessory {
                         if let Ok(value) = db::decode_value(*format, &raw_val) {
                             let mut e = emitted.lock().await;
                             if e.insert((*iid, gsn)) {
-                                let _ = tx.send(CharacteristicEvent { aid: *aid, iid: *iid, value });
+                                let _ = tx.send(CharacteristicEvent {
+                                    aid: *aid,
+                                    iid: *iid,
+                                    value,
+                                });
                             }
                         }
                     }

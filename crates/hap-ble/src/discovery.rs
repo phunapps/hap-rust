@@ -96,7 +96,12 @@ pub(crate) fn parse_hap_advert(
         return None;
     }
     let parsed = crate::advert::HapAdvert::parse(mfg)?;
-    let crate::advert::HapAdvert::Regular { device_id, gsn, paired } = parsed else {
+    let crate::advert::HapAdvert::Regular {
+        device_id,
+        gsn,
+        paired,
+    } = parsed
+    else {
         return None;
     };
     let device_id_str = {

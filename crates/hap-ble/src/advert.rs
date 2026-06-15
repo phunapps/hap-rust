@@ -35,7 +35,11 @@ impl HapAdvert {
                 device_id.copy_from_slice(&mfg[3..9]);
                 let gsn = u16::from_le_bytes([mfg[11], mfg[12]]);
                 let paired = mfg[2] & 0x01 == 0;
-                Some(Self::Regular { device_id, gsn, paired })
+                Some(Self::Regular {
+                    device_id,
+                    gsn,
+                    paired,
+                })
             }
             0x11 if mfg.len() >= 8 => {
                 let mut advertising_id = [0u8; 6];
@@ -56,10 +60,16 @@ mod tests {
     #[test]
     #[allow(clippy::unwrap_used)]
     fn parses_regular_0x06_advert() {
-        let mfg = [0x06, 0x21, 0x01, 1, 2, 3, 4, 5, 6, 0x01, 0x00, 0x05, 0x00, 0x01, 0x00];
+        let mfg = [
+            0x06, 0x21, 0x01, 1, 2, 3, 4, 5, 6, 0x01, 0x00, 0x05, 0x00, 0x01, 0x00,
+        ];
         let a = HapAdvert::parse(&mfg).unwrap();
         match a {
-            HapAdvert::Regular { device_id, gsn, paired } => {
+            HapAdvert::Regular {
+                device_id,
+                gsn,
+                paired,
+            } => {
                 assert_eq!(device_id, [1, 2, 3, 4, 5, 6]);
                 assert_eq!(gsn, 5);
                 assert!(!paired);
@@ -73,7 +83,10 @@ mod tests {
         let mfg = [0x11, 0x00, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 9, 9, 9];
         let a = HapAdvert::parse(&mfg).unwrap();
         match a {
-            HapAdvert::EncryptedNotification { advertising_id, payload } => {
+            HapAdvert::EncryptedNotification {
+                advertising_id,
+                payload,
+            } => {
                 assert_eq!(advertising_id, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
                 assert_eq!(payload, vec![9, 9, 9]);
             }

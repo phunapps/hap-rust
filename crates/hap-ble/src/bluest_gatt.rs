@@ -6,8 +6,8 @@
 
 use crate::error::{BleError, Result};
 use crate::gatt::{
-    u16_le, AdvertSource, GattCharacteristic, GattConnection, GattService, HAP_INSTANCE_ID_DESC,
-    HAP_SERVICE_ID_CHAR, RawAdvert,
+    u16_le, AdvertSource, GattCharacteristic, GattConnection, GattService, RawAdvert,
+    HAP_INSTANCE_ID_DESC, HAP_SERVICE_ID_CHAR,
 };
 use async_trait::async_trait;
 use bluest::error::ErrorKind;
