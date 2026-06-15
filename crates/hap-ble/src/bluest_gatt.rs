@@ -23,6 +23,15 @@ use tokio::sync::{mpsc, Mutex};
 /// turns a wedged connect into a failed attempt the backstop can retry.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The HAP Service-Signature characteristic — appears in *every* service. Only
+/// the one in the Protocol Information service is addressable/used; the rest are
+/// dropped during discovery so the (UUID-keyed) handle map doesn't collide and
+/// the generate-broadcast-key write reaches the correct characteristic.
+const SERVICE_SIGNATURE_CHAR: &str = "000000a5-0000-1000-8000-0026bb765291";
+/// The HAP Protocol Information service — the one whose Service-Signature char is
+/// the generate-broadcast-key target (matches aiohomekit's service-scoped lookup).
+const PROTOCOL_INFO_SERVICE: &str = "000000a2-0000-1000-8000-0026bb765291";
+
 /// Consecutive reconnects allowed *within a single operation* before it gives up
 /// (a runaway backstop). This bounds one stuck read/write, not the connection's
 /// lifetime — a sleepy accessory may legitimately drop the link on most
@@ -111,10 +120,20 @@ impl BluestConnection {
         let mut chars = HashMap::new();
         let mut shape = Vec::new();
         for svc in device.discover_services().await.map_err(be)? {
+            let svc_uuid = svc.uuid().to_string().to_ascii_lowercase();
+            let is_protocol_info = svc_uuid == PROTOCOL_INFO_SERVICE;
             let mut char_uuids = Vec::new();
             for ch in svc.discover_characteristics().await.map_err(be)? {
                 let uuid = ch.uuid().to_string().to_ascii_lowercase();
                 char_uuids.push(uuid.clone());
+                // The Service-Signature char exists in every service and they all
+                // share one UUID; keep only the Protocol Information service's so
+                // the UUID-keyed handle map resolves the generate-broadcast-key
+                // target deterministically (and survives reconnects, unlike an
+                // iid-keyed map that would need a re-sweep).
+                if uuid == SERVICE_SIGNATURE_CHAR && !is_protocol_info {
+                    continue;
+                }
                 chars.insert(uuid, ch);
             }
             shape.push(ServiceShape {
@@ -272,6 +291,12 @@ impl GattConnection for BluestConnection {
                 // The Service-Instance-ID characteristic is not a HAP
                 // characteristic; its value would need a paired read.
                 if char_uuid.eq_ignore_ascii_case(HAP_SERVICE_ID_CHAR) {
+                    continue;
+                }
+                // The Service-Signature char is a service-level signature, not a
+                // model characteristic — skip it (it also shares a UUID across
+                // services, so reading it here would yield duplicate iids).
+                if char_uuid.eq_ignore_ascii_case(SERVICE_SIGNATURE_CHAR) {
                     continue;
                 }
                 // Per-characteristic resilient instance-id read: resumes the
