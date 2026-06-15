@@ -11,6 +11,7 @@
 mod accessory;
 mod advert;
 mod bluest_gatt;
+mod broadcast_state;
 mod controller;
 mod db;
 mod discovery;
@@ -23,13 +24,14 @@ mod session;
 pub use accessory::{BleAccessory, CharacteristicEvent};
 pub use advert::HapAdvert;
 pub use bluest_gatt::BluestConnection;
+pub use broadcast_state::BleBroadcastState;
 pub use controller::BleController;
 pub use discovery::{connect_gatt, scan, DiscoveredBleAccessory};
 pub use error::{BleError, Result};
 pub use gatt::{AdvertSource, GattCharacteristic, GattConnection, GattService, RawAdvert};
 
 // Lower-crate types that appear in this crate's public API.
-pub use hap_crypto::{AccessoryPairing, ControllerKeypair};
+pub use hap_crypto::{AccessoryPairing, BroadcastKey, ControllerKeypair};
 pub use hap_model::{
     format::{CharFormat, CharValue},
     tree::{Accessory, Characteristic, Service},
