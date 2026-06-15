@@ -12,10 +12,18 @@ use hap_crypto::{AccessoryPairing, ControllerKeypair};
 use hap_model::format::{CharFormat, CharValue};
 use hap_model::tree::Accessory;
 use hap_model::{CharacteristicType, ServiceType};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt as _;
+
+/// Whether `new` is a newer GSN than `last` under HAP's u16 wraparound
+/// (RFC 1982 serial-number arithmetic): newer iff the forward distance is
+/// non-zero and within the first half of the range.
+fn gsn_is_newer(new: u16, last: u16) -> bool {
+    let diff = new.wrapping_sub(last);
+    diff != 0 && diff < 0x8000
+}
 
 /// The maximum number of mid-operation re-verify retries before giving up — a
 /// backstop against a link that reconnects on every attempt.
@@ -208,8 +216,9 @@ pub struct BleAccessory {
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// The last GSN seen in a regular advertisement; shared with catch-up poll tasks.
     last_gsn: Arc<Mutex<u16>>,
-    /// Dedup set of `(iid, gsn)` pairs already emitted; shared with catch-up poll tasks.
-    emitted: Arc<Mutex<HashSet<(u64, u16)>>>,
+    /// Dedup map of `iid → last-emitted GSN`; shared with catch-up poll tasks.
+    /// Bounded to one entry per characteristic (unlike a `HashSet` that grows forever).
+    emitted: Arc<Mutex<HashMap<u64, u16>>>,
     /// The broadcast decryption key derived during the most recent Pair Verify.
     broadcast_key: hap_crypto::BroadcastKey,
 }
@@ -277,7 +286,7 @@ impl BleAccessory {
             events_tx,
             tasks: Vec::new(),
             last_gsn: Arc::new(Mutex::new(ctx.initial_gsn)),
-            emitted: Arc::new(Mutex::new(HashSet::new())),
+            emitted: Arc::new(Mutex::new(HashMap::new())),
             broadcast_key: ctx.broadcast_key,
         }
     }
@@ -488,7 +497,7 @@ impl BleAccessory {
                         }
                         {
                             let mut lg = last_gsn.lock().await;
-                            if gsn <= *lg {
+                            if !gsn_is_newer(gsn, *lg) {
                                 continue;
                             }
                             *lg = gsn;
@@ -500,7 +509,9 @@ impl BleAccessory {
                             {
                                 if let Ok(value) = db::decode_value(*format, &raw_val) {
                                     let mut e = emitted.lock().await;
-                                    if e.insert((*iid, gsn)) {
+                                    if e.get(iid).copied() != Some(gsn) {
+                                        e.insert(*iid, gsn);
+                                        drop(e);
                                         let _ = tx.send(CharacteristicEvent {
                                             aid: *aid,
                                             iid: *iid,
@@ -534,23 +545,25 @@ impl BleAccessory {
                             if u16::from_le_bytes([pt[0], pt[1]]) != gsn {
                                 continue;
                             }
-                            // current (unadvanced) gsn means a stale duplicate — ignore.
-                            if gsn == start {
+                            // stale duplicate: this GSN is not newer than start — ignore.
+                            if !gsn_is_newer(gsn, start) {
                                 break;
                             }
                             let iid = u64::from(u16::from_le_bytes([pt[2], pt[3]]));
+                            // Advance last_gsn now — the device's state genuinely moved,
+                            // even if the iid is unknown or the value fails to decode.
+                            {
+                                let mut lg = last_gsn.lock().await;
+                                *lg = gsn;
+                            }
                             let Some(format) = formats.get(&iid).copied() else {
                                 break;
                             };
                             if let Ok(value) = db::decode_value(format, &pt[4..12]) {
-                                {
-                                    let mut lg = last_gsn.lock().await;
-                                    if gsn > *lg {
-                                        *lg = gsn;
-                                    }
-                                }
                                 let mut e = emitted.lock().await;
-                                if e.insert((iid, gsn)) {
+                                if e.get(&iid).copied() != Some(gsn) {
+                                    e.insert(iid, gsn);
+                                    drop(e);
                                     let _ = tx.send(CharacteristicEvent { aid: 1, iid, value });
                                 }
                             }
@@ -843,6 +856,81 @@ mod tests {
         assert_eq!(ev.aid, 1);
         assert_eq!(ev.iid, 11);
         assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
+    }
+
+    #[test]
+    fn gsn_is_newer_handles_wraparound() {
+        assert!(gsn_is_newer(6, 5));
+        assert!(!gsn_is_newer(5, 5));
+        assert!(!gsn_is_newer(4, 5));
+        assert!(gsn_is_newer(1, 65535)); // wrap 65535 -> 1
+        assert!(!gsn_is_newer(65535, 1)); // not newer across the wrap
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn same_change_via_poll_and_broadcast_emits_once() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        // Queue the sealed Characteristic-Read response the poll will issue for
+        // iid 11 (same setup as gsn_bump_triggers_disconnected_event_read).
+        let mut plain = vec![0x02, 0x01, 0x00];
+        let vbody = crate::pdu::encode_value_param(&[0x01]);
+        plain.extend_from_slice(&u16::try_from(vbody.len()).unwrap().to_le_bytes());
+        plain.extend_from_slice(&vbody);
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        // Send 0x06 advert first (GSN 9) — triggers the poll → reads iid 11 → emits event.
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: vec![
+                    0x06, 0x21, 0x01, 1, 2, 3, 4, 5, 6, 0x01, 0x00, 0x09, 0x00, 0x01, 0x00,
+                ],
+            })
+            .await
+            .unwrap();
+
+        // Wait for the poll-triggered event.
+        let ev = events.next().await.unwrap();
+        assert_eq!(ev.iid, 11);
+        assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
+
+        // Now send a 0x11 broadcast for the same GSN 9 / iid 11 — must be deduped.
+        let key = hap_crypto::BroadcastKey::from_bytes([0u8; 32]);
+        let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
+        let mut pt = Vec::new();
+        pt.extend_from_slice(&9u16.to_le_bytes()); // gsn = 9
+        pt.extend_from_slice(&11u16.to_le_bytes()); // iid = 11
+        pt.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0]); // value: Bool true
+        let sealed_bc = key.seal(9, &pt, &aid_bytes);
+
+        let mut mfg = vec![0x11u8, 0x00];
+        mfg.extend_from_slice(&aid_bytes);
+        mfg.extend_from_slice(&sealed_bc);
+
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg,
+            })
+            .await
+            .unwrap();
+
+        // The second event (same iid=11, gsn=9) must be deduped — no second emit.
+        let timeout_result =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+        assert!(
+            timeout_result.is_err(),
+            "expected dedup to suppress the duplicate 0x11 broadcast event, but got one"
+        );
     }
 
     #[tokio::test]
