@@ -1,0 +1,8 @@
+{
+  "_note": "synthetic non-secret vector built with aiohomekit's ChaCha20Poly1305 (full encrypt, 4-byte truncated tag) and verified via its ChaCha20Poly1305PartialTag.open. nonce=PACK_NONCE(gsn)=[0,0,0,0]+gsn_u64_le; AAD=advertising_id; combined_text=ciphertext||tag[:4].",
+  "key_hex": "3333333333333333333333333333333333333333333333333333333333333333",
+  "gsn": 5,
+  "advertising_id_hex": "aabbccddeeff",
+  "combined_text_hex": "a35c5094ba56f2d5",
+  "plaintext_hex": "020c0001"
+}
