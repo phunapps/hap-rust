@@ -376,6 +376,11 @@ impl BleAccessory {
     ///
     /// # Errors
     /// [`BleError::CharacteristicNotFound`] if unknown; otherwise GATT errors.
+    ///
+    /// Connected events are best-effort: if the link drops, this GATT
+    /// subscription ends and is not re-armed (re-arming a sleepy device storms).
+    /// Durable updates arrive via [`BleAccessory::events`] from the broadcast and
+    /// disconnected-event channels.
     pub async fn subscribe(&mut self, aid: u64, iid: u64) -> Result<()> {
         let (uuid, format) = self
             .chars

@@ -216,6 +216,12 @@ impl GattConnection for BluestConnection {
         }
     }
 
+    // Connected GATT notify is BEST-EFFORT: the spawned task ends when the
+    // notification stream ends (a link drop). It is deliberately NOT re-armed and
+    // does NOT reconnect — a sleepy accessory intentionally drops idle links, so
+    // auto-reconnecting here causes a reconnect storm (validated on hardware).
+    // Durable events come from the advertisement channels (broadcast +
+    // disconnected-event poll); the session re-verifies lazily on the next read.
     async fn subscribe(&self, char_uuid: &str) -> Result<mpsc::Receiver<Vec<u8>>> {
         let ch = self.handle(char_uuid).await?;
         let (tx, rx) = mpsc::channel(16);
