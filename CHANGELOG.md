@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## 1.3.0 — 2026-06-15
+
+BLE transport and durable sleepy-device events. `hap-crypto` bumps to `1.1.0`
+(additive) and `hap-ble` makes its first release at `0.1.0`; the other crates
+are unchanged.
+
+### `hap-crypto` 1.1.0
+
+- New `broadcast` module for HAP-BLE encrypted broadcast notifications:
+  `BroadcastKey` (a zeroizing newtype with a redacted `Debug`), `derive` of the
+  broadcast-encryption key via HKDF-SHA512, and `seal`/`open` using
+  ChaCha20-Poly1305 with the HAP 4-byte partial Poly1305 tag and a GSN-derived
+  nonce. Byte-verified against captured `aiohomekit` vectors.
+- `PairVerifyClient::broadcast_key` derives the broadcast key from the Pair
+  Verify shared secret and the controller's long-term public key.
+
+### `hap-ble` 0.1.0 — first release
+
+- HAP Bluetooth LE transport: discover, pair (Pair Setup + Pair Verify), build
+  the attribute database, encrypted characteristic reads, and connected event
+  notifications, over the `bluest` backend (macOS CoreBluetooth).
+- Durable events for sleepy accessories that drop their BLE link: encrypted
+  broadcast notifications (manufacturer-data type `0x11`, decrypted with the
+  persisted broadcast key against the advertised GSN) and a disconnected-event
+  catch-up poll (a GSN bump in a `0x06` advertisement triggers a single
+  connect→read→disconnect). Both surface through the unchanged `events()` stream,
+  deduplicated by `(iid, gsn)`.
+- Best-effort connected GATT notify with no auto-reconnect; lazy
+  operation-driven re-verify on the read path (`revive_if_stale`).
+- Public API: `AdvertSource` trait, `Paired { accessory, pairing, broadcast }`
+  from `pair()`, `connect(pairing, Option<BleBroadcastState>)`,
+  `BleAccessory::{accessories, find, read, subscribe, events, watch_sleepy_events,
+  enable_broadcasts, remove_pairing}`.
+
 ## 1.2.0 — 2026-06-13
 
 Controller polish. `hap-model` and `hap-controller` bump to `1.2.0` (additive);
