@@ -91,14 +91,17 @@ pub(crate) fn parse_hap_advert(
     mfg: &[u8],
     peripheral_id: String,
 ) -> Option<DiscoveredBleAccessory> {
-    // Byte 0 must be the HomeKit advertising type (0x06); minimum length 17.
-    if mfg.len() < 17 || mfg[0] != 0x06 {
+    // Minimum length 17 for the full discovery payload (type 0x06 only).
+    if mfg.len() < 17 {
         return None;
     }
-    let status = mfg[2];
-    let device_id = {
+    let parsed = crate::advert::HapAdvert::parse(mfg)?;
+    let crate::advert::HapAdvert::Regular { device_id, gsn, paired } = parsed else {
+        return None;
+    };
+    let device_id_str = {
         use std::fmt::Write as _;
-        mfg[3..9].iter().fold(String::new(), |mut s, b| {
+        device_id.iter().fold(String::new(), |mut s, b| {
             if !s.is_empty() {
                 s.push(':');
             }
@@ -107,16 +110,12 @@ pub(crate) fn parse_hap_advert(
         })
     };
     let category = u16::from_le_bytes([mfg[9], mfg[10]]);
-    let global_state_number = u16::from_le_bytes([mfg[11], mfg[12]]);
     let config_number = mfg[13];
-    // Status-flag bit 0 set = "not paired" advertisement (the pairing flag is
-    // inverted on the wire). Confirmed against hardware in a later task.
-    let paired = status & 0x01 == 0;
     Some(DiscoveredBleAccessory {
         peripheral_id,
-        device_id,
+        device_id: device_id_str,
         category,
-        global_state_number,
+        global_state_number: gsn,
         config_number,
         paired,
     })

@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod accessory;
+mod advert;
 mod bluest_gatt;
 mod controller;
 mod db;
@@ -20,11 +21,12 @@ mod pdu;
 mod session;
 
 pub use accessory::{BleAccessory, CharacteristicEvent};
+pub use advert::HapAdvert;
 pub use bluest_gatt::BluestConnection;
 pub use controller::BleController;
 pub use discovery::{connect_gatt, scan, DiscoveredBleAccessory};
 pub use error::{BleError, Result};
-pub use gatt::{GattCharacteristic, GattConnection, GattService};
+pub use gatt::{AdvertSource, GattCharacteristic, GattConnection, GattService, RawAdvert};
 
 // Lower-crate types that appear in this crate's public API.
 pub use hap_crypto::{AccessoryPairing, ControllerKeypair};

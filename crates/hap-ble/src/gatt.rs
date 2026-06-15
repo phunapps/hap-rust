@@ -75,6 +75,30 @@ pub trait GattConnection: Send + Sync {
     }
 }
 
+/// A raw advertisement observed by a backend scanner: the Apple (0x004C)
+/// manufacturer-data bytes. Parsed into a [`crate::advert::HapAdvert`] by callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawAdvert {
+    /// Apple manufacturer-data payload (the bytes after the 0x004C company id).
+    pub manufacturer_data: Vec<u8>,
+}
+
+/// A source of continuous BLE advertisements, used post-pairing to receive
+/// sleepy-device events with no active connection. Separate from
+/// [`GattConnection`] (the connected I/O seam) so each has one responsibility.
+/// Backends without a scanner return an immediately-closed receiver.
+#[async_trait]
+pub trait AdvertSource: Send + Sync {
+    /// Stream Apple HAP advertisements as they arrive.
+    ///
+    /// # Errors
+    /// Returns [`crate::error::BleError`] on backend scanner failures.
+    async fn watch_adverts(&self) -> Result<mpsc::Receiver<RawAdvert>> {
+        let (_tx, rx) = mpsc::channel(1);
+        Ok(rx)
+    }
+}
+
 /// Conservative HAP-BLE fragment size when the negotiated ATT MTU is unknown;
 /// fits any MTU >= 183.
 pub(crate) const DEFAULT_FRAGMENT_SIZE: usize = 180;
@@ -85,7 +109,6 @@ pub(crate) const DEFAULT_FRAGMENT_SIZE: usize = 180;
 /// seeded service list. Optionally, per-characteristic canned read responses can
 /// be queued with [`MockGatt::queue_read`] (FIFO) to script request/response.
 #[cfg(test)]
-#[derive(Default)]
 pub(crate) struct MockGatt {
     values: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
     queued:
@@ -93,6 +116,24 @@ pub(crate) struct MockGatt {
     services: std::sync::Mutex<Vec<GattService>>,
     senders: std::sync::Mutex<std::collections::HashMap<String, mpsc::Sender<Vec<u8>>>>,
     generation: std::sync::atomic::AtomicU64,
+    advert_tx: mpsc::Sender<RawAdvert>,
+    advert_rx: std::sync::Mutex<Option<mpsc::Receiver<RawAdvert>>>,
+}
+
+#[cfg(test)]
+impl Default for MockGatt {
+    fn default() -> Self {
+        let (advert_tx, advert_rx) = mpsc::channel(16);
+        Self {
+            values: std::sync::Mutex::new(std::collections::HashMap::new()),
+            queued: std::sync::Mutex::new(std::collections::HashMap::new()),
+            services: std::sync::Mutex::new(Vec::new()),
+            senders: std::sync::Mutex::new(std::collections::HashMap::new()),
+            generation: std::sync::atomic::AtomicU64::new(0),
+            advert_tx,
+            advert_rx: std::sync::Mutex::new(Some(advert_rx)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -131,6 +172,28 @@ impl MockGatt {
     pub(crate) fn bump_generation(&self) {
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// A sender that pushes a raw advert to a `watch_adverts` subscriber.
+    #[allow(dead_code)] // used by later tasks (broadcast / disconnected-event poll)
+    pub(crate) fn advert_sender(&self) -> mpsc::Sender<RawAdvert> {
+        self.advert_tx.clone()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // test double: lock poisoning is not a real concern in single-process tests
+#[async_trait]
+impl AdvertSource for MockGatt {
+    async fn watch_adverts(&self) -> Result<mpsc::Receiver<RawAdvert>> {
+        // Hand out the single receiver once; a closed one thereafter.
+        self.advert_rx.lock().unwrap().take().map_or_else(
+            || {
+                let (_tx, rx) = mpsc::channel(1);
+                Ok(rx)
+            },
+            Ok,
+        )
     }
 }
 
