@@ -22,6 +22,10 @@ pub(crate) enum OpCode {
     CharacteristicWrite = 0x02,
     /// Read a characteristic value.
     CharacteristicRead = 0x03,
+    /// Protocol Configuration (HAP-BLE) — used to generate the broadcast
+    /// encryption key (enabling encrypted broadcast notifications) via a TLV
+    /// write to the Service-Signature characteristic.
+    ProtocolConfig = 0x08,
 }
 
 /// HAP body param type bytes (the TLV8 carried inside a PDU body).

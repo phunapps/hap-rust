@@ -14,6 +14,12 @@ use std::sync::Arc;
 const PAIR_SETUP_CHAR: &str = "0000004c-0000-1000-8000-0026bb765291";
 const PAIR_VERIFY_CHAR: &str = "0000004e-0000-1000-8000-0026bb765291";
 const PAIRINGS_CHAR: &str = "00000050-0000-1000-8000-0026bb765291";
+/// The HAP Service-Signature characteristic (one per service); the
+/// Protocol-Configuration "generate broadcast key" request is written here.
+const SERVICE_SIGNATURE_CHAR: &str = "000000a5-0000-1000-8000-0026bb765291";
+/// Protocol-Configuration TLV body that asks the accessory to generate a
+/// broadcast encryption key (type `GenerateBroadcastEncryptionKey` = 0x01, len 0).
+const GENERATE_BROADCAST_KEY_BODY: [u8; 2] = [0x01, 0x00];
 
 /// The result of a successful BLE pairing.
 pub struct Paired {
@@ -128,7 +134,7 @@ impl BleController {
 
         // Now establish the secure session for value reads / events.
         let verify_iid = iid_of(&services, PAIR_VERIFY_CHAR)?;
-        let (session, broadcast_key) = pairing::pair_verify(
+        let (mut session, broadcast_key) = pairing::pair_verify(
             gatt.as_ref(),
             PAIR_VERIFY_CHAR,
             verify_iid,
@@ -137,6 +143,26 @@ impl BleController {
             frag,
         )
         .await?;
+
+        // Best-effort: ask the accessory to generate its broadcast encryption key
+        // so it emits encrypted broadcast notifications while disconnected. An
+        // accessory that doesn't support broadcasts (or whose Service-Signature
+        // characteristic we can't address) just won't broadcast — the
+        // disconnected-event poll still delivers durable events. Failure here must
+        // not abort pairing, so it is ignored.
+        if let Ok(sig_iid) = iid_of(&services, SERVICE_SIGNATURE_CHAR) {
+            let _ = crate::pdu::request_secure(
+                gatt.as_ref(),
+                &mut session,
+                SERVICE_SIGNATURE_CHAR,
+                crate::pdu::OpCode::ProtocolConfig,
+                1,
+                sig_iid,
+                &GENERATE_BROADCAST_KEY_BODY,
+                frag,
+            )
+            .await;
+        }
         // The generation the session was minted at — a later reconnect past this
         // means the accessory dropped the session and the BleAccessory must
         // re-verify before its next encrypted op (events surviving a reconnect).
