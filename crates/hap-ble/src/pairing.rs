@@ -67,7 +67,8 @@ pub(crate) async fn pair_setup<G: GattConnection + ?Sized>(
     }
 }
 
-/// Run Pair Verify over BLE, returning an established [`BleSession`].
+/// Run Pair Verify over BLE, returning an established [`BleSession`] and the
+/// derived [`hap_crypto::BroadcastKey`].
 ///
 /// # Errors
 /// Propagates pairing/crypto/GATT errors.
@@ -78,7 +79,7 @@ pub(crate) async fn pair_verify<G: GattConnection + ?Sized>(
     controller: &ControllerKeypair,
     accessory: &AccessoryPairing,
     frag_size: usize,
-) -> Result<BleSession> {
+) -> Result<(BleSession, hap_crypto::BroadcastKey)> {
     let mut client = PairVerifyClient::new(controller, accessory);
     let mut tid: u8 = 0;
     let mut out = client.start();
@@ -87,7 +88,10 @@ pub(crate) async fn pair_verify<G: GattConnection + ?Sized>(
         let reply = exchange(gatt, char_uuid, tid, iid, &out, frag_size).await?;
         match client.handle(&reply)? {
             PairVerifyStep::Send(next) => out = next,
-            PairVerifyStep::Done(keys) => return Ok(BleSession::new(keys)),
+            PairVerifyStep::Done(keys) => {
+                let bkey = client.broadcast_key(&controller.ltpk())?;
+                return Ok((BleSession::new(keys), bkey));
+            }
         }
     }
 }

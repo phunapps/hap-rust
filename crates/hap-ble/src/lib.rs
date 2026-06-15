@@ -25,7 +25,7 @@ pub use accessory::{BleAccessory, CharacteristicEvent};
 pub use advert::HapAdvert;
 pub use bluest_gatt::BluestConnection;
 pub use broadcast_state::BleBroadcastState;
-pub use controller::BleController;
+pub use controller::{BleController, Paired};
 pub use discovery::{connect_gatt, scan, DiscoveredBleAccessory};
 pub use error::{BleError, Result};
 pub use gatt::{AdvertSource, GattCharacteristic, GattConnection, GattService, RawAdvert};

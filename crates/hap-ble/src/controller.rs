@@ -2,10 +2,10 @@
 //! connect.
 
 use crate::accessory::BleAccessory;
+use crate::broadcast_state::BleBroadcastState;
 use crate::discovery::DiscoveredBleAccessory;
 use crate::error::Result;
 use crate::pairing;
-use crate::session::BleSession;
 use hap_crypto::AccessoryPairing;
 use hap_crypto::ControllerKeypair;
 use std::sync::Arc;
@@ -14,6 +14,16 @@ use std::sync::Arc;
 const PAIR_SETUP_CHAR: &str = "0000004c-0000-1000-8000-0026bb765291";
 const PAIR_VERIFY_CHAR: &str = "0000004e-0000-1000-8000-0026bb765291";
 const PAIRINGS_CHAR: &str = "00000050-0000-1000-8000-0026bb765291";
+
+/// The result of a successful BLE pairing.
+pub struct Paired {
+    /// The connected accessory handle.
+    pub accessory: BleAccessory,
+    /// The long-term pairing — persist this.
+    pub pairing: AccessoryPairing,
+    /// Broadcast material — persist this to resume broadcasts across restarts.
+    pub broadcast: BleBroadcastState,
+}
 
 /// A BLE HAP controller: holds the long-term controller identity used for
 /// pairing and verification.
@@ -40,8 +50,9 @@ impl BleController {
     }
 
     /// Pair with a discovered accessory: run Pair Setup, then Pair Verify, then
-    /// build the attribute database. Returns a ready [`BleAccessory`] and the
-    /// persisted [`AccessoryPairing`].
+    /// build the attribute database. Returns a [`Paired`] containing the ready
+    /// accessory handle, the persisted [`AccessoryPairing`], and initial
+    /// broadcast material.
     ///
     /// # Errors
     /// Propagates connection, pairing, and model errors.
@@ -50,7 +61,7 @@ impl BleController {
         gatt: Arc<dyn crate::gatt::GattConnection>,
         _accessory: &DiscoveredBleAccessory,
         setup_code: &str,
-    ) -> Result<(BleAccessory, AccessoryPairing)> {
+    ) -> Result<Paired> {
         // Pair first (reading only the Pair-Setup characteristic's iid, one
         // descriptor read) — the long database sweep must not run before the
         // stateful Pair Setup handshake, which can't survive a mid-handshake
@@ -66,11 +77,27 @@ impl BleController {
             frag,
         )
         .await?;
-        let acc = self.verify_and_build(gatt, &pairing).await?;
-        Ok((acc, pairing))
+        let accessory = self.verify_and_build(gatt, &pairing, 0).await?;
+        let broadcast = accessory.broadcast_state().await;
+        Ok(Paired {
+            accessory,
+            pairing,
+            broadcast,
+        })
     }
 
     /// Connect to an already-paired accessory via Pair Verify, then build the DB.
+    ///
+    /// `broadcast` is optional previously-persisted broadcast state. Its `gsn`
+    /// seeds `last_gsn` so the accessory handle does not re-emit already-seen
+    /// events after a restart. The key in `broadcast` is the previously-persisted
+    /// one — Pair Verify derives a fresh per-session broadcast key, which becomes
+    /// the accessory's current key.
+    ///
+    /// # NOTE
+    /// Decrypting pre-connect broadcasts with the persisted key (vs the fresh
+    /// per-session key derived here) is a documented follow-up task — the fresh
+    /// key covers forward broadcasts.
     ///
     /// # Errors
     /// Propagates connection, verify, and model errors.
@@ -78,14 +105,17 @@ impl BleController {
         &self,
         gatt: Arc<dyn crate::gatt::GattConnection>,
         pairing: &AccessoryPairing,
+        broadcast: Option<BleBroadcastState>,
     ) -> Result<BleAccessory> {
-        self.verify_and_build(gatt, pairing).await
+        let initial_gsn = broadcast.as_ref().map_or(0, |b| b.gsn);
+        self.verify_and_build(gatt, pairing, initial_gsn).await
     }
 
     async fn verify_and_build(
         &self,
         gatt: Arc<dyn crate::gatt::GattConnection>,
         pairing: &AccessoryPairing,
+        initial_gsn: u16,
     ) -> Result<BleAccessory> {
         // After pairing, walk the full tree (resilient) for iids, then build the
         // typed database from UNENCRYPTED characteristic-signature reads — HAP
@@ -98,7 +128,7 @@ impl BleController {
 
         // Now establish the secure session for value reads / events.
         let verify_iid = iid_of(&services, PAIR_VERIFY_CHAR)?;
-        let session: BleSession = pairing::pair_verify(
+        let (session, broadcast_key) = pairing::pair_verify(
             gatt.as_ref(),
             PAIR_VERIFY_CHAR,
             verify_iid,
@@ -121,6 +151,8 @@ impl BleController {
             verify_iid,
             pairings_char: PAIRINGS_CHAR.to_string(),
             pairings_iid,
+            broadcast_key,
+            initial_gsn,
         };
         Ok(BleAccessory::new(gatt, ctx, frag, &services, accessories))
     }

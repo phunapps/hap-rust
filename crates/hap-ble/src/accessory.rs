@@ -1,6 +1,7 @@
 //! The public per-accessory handle: typed find/read/subscribe/events over an
 //! established session.
 
+use crate::broadcast_state::BleBroadcastState;
 use crate::db;
 use crate::error::{BleError, Result};
 use crate::gatt::{GattConnection, GattService};
@@ -71,6 +72,10 @@ pub(crate) struct SecureContext {
     /// The Pairing-Pairings characteristic UUID and instance id (RemovePairing).
     pub pairings_char: String,
     pub pairings_iid: u16,
+    /// The broadcast decryption key derived during Pair Verify.
+    pub broadcast_key: hap_crypto::BroadcastKey,
+    /// Initial GSN to seed `last_gsn` from a previously-persisted state.
+    pub initial_gsn: u16,
 }
 
 /// If the link has reconnected since the secure session was minted, the
@@ -84,7 +89,7 @@ async fn revive_if_stale(
     if gatt.generation().await <= s.generation {
         return Ok(());
     }
-    let session = pairing::pair_verify(
+    let (session, _bkey) = pairing::pair_verify(
         gatt,
         &reviver.verify_char,
         reviver.verify_iid,
@@ -205,6 +210,8 @@ pub struct BleAccessory {
     last_gsn: Arc<Mutex<u16>>,
     /// Dedup set of `(iid, gsn)` pairs already emitted; shared with catch-up poll tasks.
     emitted: Arc<Mutex<HashSet<(u64, u16)>>>,
+    /// The broadcast decryption key derived during the most recent Pair Verify.
+    broadcast_key: hap_crypto::BroadcastKey,
 }
 
 impl Drop for BleAccessory {
@@ -269,14 +276,24 @@ impl BleAccessory {
             chars,
             events_tx,
             tasks: Vec::new(),
-            last_gsn: Arc::new(Mutex::new(0)),
+            last_gsn: Arc::new(Mutex::new(ctx.initial_gsn)),
             emitted: Arc::new(Mutex::new(HashSet::new())),
+            broadcast_key: ctx.broadcast_key,
         }
     }
 
     /// The cached attribute database.
     pub fn accessories(&self) -> &[Accessory] {
         &self.accessories
+    }
+
+    /// The current persistable broadcast material (key + latest GSN). Persist
+    /// this so a later `connect` can resume broadcast decryption.
+    pub async fn broadcast_state(&self) -> BleBroadcastState {
+        BleBroadcastState {
+            key: self.broadcast_key.clone(),
+            gsn: *self.last_gsn.lock().await,
+        }
     }
 
     /// Find the `(aid, iid)` of a characteristic by service + characteristic
@@ -560,6 +577,8 @@ mod tests {
             verify_iid: 1,
             pairings_char: "00000050-0000-1000-8000-0026bb765291".into(),
             pairings_iid: 2,
+            broadcast_key: hap_crypto::BroadcastKey::from_bytes([0u8; 32]),
+            initial_gsn: 0,
         };
         let h = BleAccessory::new(gatt.clone(), ctx, 512, &services, accessories);
         (h, gatt)
