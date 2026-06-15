@@ -11,7 +11,7 @@ use hap_crypto::{AccessoryPairing, ControllerKeypair};
 use hap_model::format::{CharFormat, CharValue};
 use hap_model::tree::Accessory;
 use hap_model::{CharacteristicType, ServiceType};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt as _;
@@ -201,6 +201,10 @@ pub struct BleAccessory {
     events_tx: tokio::sync::broadcast::Sender<CharacteristicEvent>,
     /// Background event-forwarding tasks, aborted when the handle is dropped.
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// The last GSN seen in a regular advertisement; shared with catch-up poll tasks.
+    last_gsn: Arc<Mutex<u16>>,
+    /// Dedup set of `(iid, gsn)` pairs already emitted; shared with catch-up poll tasks.
+    emitted: Arc<Mutex<HashSet<(u64, u16)>>>,
 }
 
 impl Drop for BleAccessory {
@@ -265,6 +269,8 @@ impl BleAccessory {
             chars,
             events_tx,
             tasks: Vec::new(),
+            last_gsn: Arc::new(Mutex::new(0)),
+            emitted: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -401,6 +407,71 @@ impl BleAccessory {
                 {
                     if let Ok(value) = db::decode_value(format, &raw) {
                         let _ = tx.send(CharacteristicEvent { aid, iid, value });
+                    }
+                }
+            }
+        });
+        self.tasks.push(task);
+        Ok(())
+    }
+
+    /// Watch advertisements and deliver disconnected-event updates: when our
+    /// accessory's GSN bumps in a regular (0x06) advertisement, read each polled
+    /// characteristic and publish its value on [`BleAccessory::events`]. Events are
+    /// deduplicated by `(iid, gsn)`. The advert source is supplied by the caller
+    /// (the same backend object that provides the GATT connection).
+    ///
+    /// # Errors
+    /// [`BleError`] if the advert source cannot start.
+    pub async fn watch_sleepy_events(
+        &mut self,
+        advert_source: Arc<dyn crate::gatt::AdvertSource>,
+        device_id: [u8; 6],
+        poll_iids: Vec<(u64, u64)>,
+    ) -> Result<()> {
+        // Pre-resolve poll targets to (aid, iid, uuid, format) so the task needs no
+        // access to self.chars.
+        let mut targets = Vec::new();
+        for (aid, iid) in poll_iids {
+            if let Some((uuid, format)) = self.chars.get(&(aid, iid)).cloned() {
+                targets.push((aid, iid, uuid, format));
+            }
+        }
+        let mut adverts = advert_source.watch_adverts().await?;
+        let tx = self.events_tx.clone();
+        let gatt = self.gatt.clone();
+        let secure = self.secure.clone();
+        let reviver = self.reviver.clone();
+        let frag = self.frag_size;
+        let last_gsn = self.last_gsn.clone();
+        let emitted = self.emitted.clone();
+        let task = tokio::spawn(async move {
+            while let Some(raw) = adverts.recv().await {
+                let Some(crate::advert::HapAdvert::Regular { device_id: d, gsn, .. }) =
+                    crate::advert::HapAdvert::parse(&raw.manufacturer_data)
+                else {
+                    continue;
+                };
+                if d != device_id {
+                    continue;
+                }
+                {
+                    let mut lg = last_gsn.lock().await;
+                    if gsn <= *lg {
+                        continue;
+                    }
+                    *lg = gsn;
+                }
+                for (aid, iid, uuid, format) in &targets {
+                    if let Ok(raw_val) =
+                        read_char_raw(gatt.as_ref(), &secure, &reviver, uuid, *iid, frag).await
+                    {
+                        if let Ok(value) = db::decode_value(*format, &raw_val) {
+                            let mut e = emitted.lock().await;
+                            if e.insert((*iid, gsn)) {
+                                let _ = tx.send(CharacteristicEvent { aid: *aid, iid: *iid, value });
+                            }
+                        }
                     }
                 }
             }
@@ -600,6 +671,43 @@ mod tests {
         gatt.notifier("00000025-0000-1000-8000-0026bb765291")
             .unwrap()
             .send(Vec::new())
+            .await
+            .unwrap();
+
+        let ev = events.next().await.unwrap();
+        assert_eq!(ev.iid, 11);
+        assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn gsn_bump_triggers_disconnected_event_read() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        // The catch-up poll will issue an encrypted read for iid 11; queue the sealed
+        // response (zero session keys, recv counter 0) decoding to Bool(true).
+        let mut plain = vec![0x02, 0x01, 0x00];
+        let vbody = crate::pdu::encode_value_param(&[0x01]);
+        plain.extend_from_slice(&u16::try_from(vbody.len()).unwrap().to_le_bytes());
+        plain.extend_from_slice(&vbody);
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        // Push a 0x06 advert for device [1..6] with GSN 9 (a bump from 0).
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: vec![
+                    0x06, 0x21, 0x01, 1, 2, 3, 4, 5, 6, 0x01, 0x00, 0x09, 0x00, 0x01, 0x00,
+                ],
+            })
             .await
             .unwrap();
 
