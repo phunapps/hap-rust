@@ -933,6 +933,218 @@ mod tests {
         );
     }
 
+    // ── negative-path tests for sleepy-device event handling ─────────────────
+
+    /// A 0x06 advert from a foreign device id must be silently dropped — no
+    /// event emitted, no panic.
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn foreign_device_advert_ignored() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        // watch_sleepy_events expects device_id [1,2,3,4,5,6]
+        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        // Send a 0x06 advert whose device_id is [9,9,9,9,9,9] — a foreign device.
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: vec![
+                    0x06, 0x21, 0x01, 9, 9, 9, 9, 9, 9, 0x01, 0x00, 0x09, 0x00, 0x01, 0x00,
+                ],
+            })
+            .await
+            .unwrap();
+
+        let timeout_result =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+        assert!(
+            timeout_result.is_err(),
+            "foreign device advert must not emit an event, but one was received"
+        );
+    }
+
+    /// A 0x11 broadcast replayed at the same GSN that was already processed must
+    /// be silently dropped — stale-GSN dedup.
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn stale_gsn_broadcast_ignored() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        let key = hap_crypto::BroadcastKey::from_bytes([0u8; 32]);
+        let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
+
+        // Plaintext: gsn=5, iid=11, value=Bool(true)
+        // Layout: [gsn_le: 2B][iid_le: 2B][value: 8B]
+        let mut pt = Vec::new();
+        pt.extend_from_slice(&5u16.to_le_bytes()); // gsn = 5
+        pt.extend_from_slice(&11u16.to_le_bytes()); // iid = 11
+        pt.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0]); // Bool true
+        let sealed = key.seal(5, &pt, &aid_bytes);
+
+        let mut mfg = vec![0x11u8, 0x00];
+        mfg.extend_from_slice(&aid_bytes);
+        mfg.extend_from_slice(&sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, aid_bytes, vec![])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        // First delivery — GSN 5 is fresh (last_gsn starts at 0).
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg.clone(),
+            })
+            .await
+            .unwrap();
+
+        let ev = events.next().await.unwrap();
+        assert_eq!(ev.iid, 11);
+        assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
+
+        // Second delivery — identical GSN 5 is now stale.
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg,
+            })
+            .await
+            .unwrap();
+
+        let timeout_result =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+        assert!(
+            timeout_result.is_err(),
+            "duplicate GSN 5 broadcast must not emit a second event"
+        );
+    }
+
+    /// A 0x11 broadcast sealed with the wrong key must be silently dropped — all
+    /// GSN candidate decrypts fail the 4-byte tag check, so no event, no panic.
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn wrong_broadcast_key_ignored() {
+        use tokio_stream::StreamExt as _;
+        // handle_with_db installs broadcast_key = BroadcastKey::from_bytes([0u8;32])
+        let (mut h, gatt) = handle_with_db().await;
+
+        // Seal with the WRONG key ([0xFF;32]).
+        let wrong_key = hap_crypto::BroadcastKey::from_bytes([0xFF; 32]);
+        let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
+
+        let mut pt = Vec::new();
+        pt.extend_from_slice(&1u16.to_le_bytes());
+        pt.extend_from_slice(&11u16.to_le_bytes());
+        pt.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0]);
+        let sealed = wrong_key.seal(1, &pt, &aid_bytes);
+
+        let mut mfg = vec![0x11u8, 0x00];
+        mfg.extend_from_slice(&aid_bytes);
+        mfg.extend_from_slice(&sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, aid_bytes, vec![])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg,
+            })
+            .await
+            .unwrap();
+
+        let timeout_result =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+        assert!(
+            timeout_result.is_err(),
+            "wrong-key broadcast must not emit any event (all candidate opens fail)"
+        );
+    }
+
+    /// A 0x11 advert whose payload is too short (< 4 bytes after the advertising
+    /// id) must be silently dropped — `BroadcastKey::open` returns `Err` on
+    /// `< 4` bytes, so no event, no panic.
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn malformed_0x11_advert_ignored() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        // advertising_id present, only 2 payload bytes — too short for open().
+        let manufacturer_data = vec![0x11, 0x00, 1, 2, 3, 4, 5, 6, 0xAA, 0xBB];
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert { manufacturer_data })
+            .await
+            .unwrap();
+
+        let timeout_result =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+        assert!(
+            timeout_result.is_err(),
+            "malformed (too-short payload) 0x11 advert must not emit any event"
+        );
+    }
+
+    /// A 0x11 broadcast where the embedded GSN in the plaintext does NOT match
+    /// the nonce GSN must be silently dropped — the self-consistency check
+    /// (`u16::from_le_bytes(pt[0..2]) == gsn`) fails, so no emit.
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn broadcast_value_self_inconsistent_gsn_ignored() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        let key = hap_crypto::BroadcastKey::from_bytes([0u8; 32]);
+        let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
+
+        // Plaintext embeds gsn=3 but is sealed at nonce gsn=7.
+        // After decryption succeeds at candidate gsn=7, the guard
+        // `u16::from_le_bytes([pt[0], pt[1]]) != gsn` fires (3 != 7) → no emit.
+        let mut pt = Vec::new();
+        pt.extend_from_slice(&3u16.to_le_bytes()); // embedded gsn = 3 (mismatches nonce)
+        pt.extend_from_slice(&11u16.to_le_bytes()); // iid = 11
+        pt.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0]); // Bool true
+        let sealed = key.seal(7, &pt, &aid_bytes); // sealed at nonce gsn=7
+
+        let mut mfg = vec![0x11u8, 0x00];
+        mfg.extend_from_slice(&aid_bytes);
+        mfg.extend_from_slice(&sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, aid_bytes, vec![])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg,
+            })
+            .await
+            .unwrap();
+
+        let timeout_result =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.next()).await;
+        assert!(
+            timeout_result.is_err(),
+            "self-inconsistent GSN (embedded 3 != nonce 7) must not emit any event"
+        );
+    }
+
     #[tokio::test]
     #[allow(clippy::unwrap_used)]
     async fn read_after_reconnect_re_verifies_before_using_session() {
