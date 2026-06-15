@@ -432,14 +432,21 @@ impl BleAccessory {
         Ok(())
     }
 
-    /// Watch advertisements and deliver disconnected-event updates: when our
-    /// accessory's GSN bumps in a regular (0x06) advertisement, read each polled
-    /// characteristic and publish its value on [`BleAccessory::events`]. Events are
-    /// deduplicated by `(iid, gsn)`. The advert source is supplied by the caller
-    /// (the same backend object that provides the GATT connection).
+    /// Watch advertisements and deliver disconnected-event updates. Two paths:
+    ///
+    /// - **Regular (0x06) advertisements:** when the accessory's GSN bumps, read
+    ///   each polled characteristic and publish its value on
+    ///   [`BleAccessory::events`]. Events are deduplicated by `(iid, gsn)`.
+    /// - **Encrypted broadcast (0x11) advertisements:** decrypt the value directly
+    ///   from the advertisement using the stored [`hap_crypto::BroadcastKey`] and
+    ///   publish it — no GATT connection needed.
+    ///
+    /// The advert source is supplied by the caller (the same backend object that
+    /// provides the GATT connection).
     ///
     /// # Errors
     /// [`BleError`] if the advert source cannot start.
+    #[allow(clippy::too_many_lines)]
     pub async fn watch_sleepy_events(
         &mut self,
         advert_source: Arc<dyn crate::gatt::AdvertSource>,
@@ -454,6 +461,14 @@ impl BleAccessory {
                 targets.push((aid, iid, uuid, format));
             }
         }
+        // Build an iid→format map for the 0x11 broadcast-decrypt path.
+        let formats: std::collections::HashMap<u64, CharFormat> = self
+            .chars
+            .iter()
+            .map(|((_, iid), (_, f))| (*iid, *f))
+            .collect();
+        let broadcast_key = self.broadcast_key.clone();
+
         let mut adverts = advert_source.watch_adverts().await?;
         let tx = self.events_tx.clone();
         let gatt = self.gatt.clone();
@@ -464,37 +479,85 @@ impl BleAccessory {
         let emitted = self.emitted.clone();
         let task = tokio::spawn(async move {
             while let Some(raw) = adverts.recv().await {
-                let Some(crate::advert::HapAdvert::Regular {
-                    device_id: d, gsn, ..
-                }) = crate::advert::HapAdvert::parse(&raw.manufacturer_data)
-                else {
-                    continue;
-                };
-                if d != device_id {
-                    continue;
-                }
-                {
-                    let mut lg = last_gsn.lock().await;
-                    if gsn <= *lg {
-                        continue;
-                    }
-                    *lg = gsn;
-                }
-                for (aid, iid, uuid, format) in &targets {
-                    if let Ok(raw_val) =
-                        read_char_raw(gatt.as_ref(), &secure, &reviver, uuid, *iid, frag).await
-                    {
-                        if let Ok(value) = db::decode_value(*format, &raw_val) {
-                            let mut e = emitted.lock().await;
-                            if e.insert((*iid, gsn)) {
-                                let _ = tx.send(CharacteristicEvent {
-                                    aid: *aid,
-                                    iid: *iid,
-                                    value,
-                                });
+                match crate::advert::HapAdvert::parse(&raw.manufacturer_data) {
+                    Some(crate::advert::HapAdvert::Regular {
+                        device_id: d, gsn, ..
+                    }) => {
+                        if d != device_id {
+                            continue;
+                        }
+                        {
+                            let mut lg = last_gsn.lock().await;
+                            if gsn <= *lg {
+                                continue;
+                            }
+                            *lg = gsn;
+                        }
+                        for (aid, iid, uuid, format) in &targets {
+                            if let Ok(raw_val) =
+                                read_char_raw(gatt.as_ref(), &secure, &reviver, uuid, *iid, frag)
+                                    .await
+                            {
+                                if let Ok(value) = db::decode_value(*format, &raw_val) {
+                                    let mut e = emitted.lock().await;
+                                    if e.insert((*iid, gsn)) {
+                                        let _ = tx.send(CharacteristicEvent {
+                                            aid: *aid,
+                                            iid: *iid,
+                                            value,
+                                        });
+                                    }
+                                }
                             }
                         }
                     }
+                    Some(crate::advert::HapAdvert::EncryptedNotification {
+                        advertising_id,
+                        payload,
+                    }) => {
+                        if advertising_id != device_id {
+                            continue;
+                        }
+                        let start = *last_gsn.lock().await;
+                        // GSN candidates per aiohomekit: next, current, then a
+                        // forward window up to +100.
+                        let candidates = std::iter::once(start.wrapping_add(1))
+                            .chain(std::iter::once(start))
+                            .chain((2..=100u16).map(|d| start.wrapping_add(d)));
+                        for gsn in candidates {
+                            let Ok(pt) = broadcast_key.open(gsn, &payload, &advertising_id) else {
+                                continue;
+                            };
+                            if pt.len() < 12 {
+                                continue;
+                            }
+                            if u16::from_le_bytes([pt[0], pt[1]]) != gsn {
+                                continue;
+                            }
+                            // current (unadvanced) gsn means a stale duplicate — ignore.
+                            if gsn == start {
+                                break;
+                            }
+                            let iid = u64::from(u16::from_le_bytes([pt[2], pt[3]]));
+                            let Some(format) = formats.get(&iid).copied() else {
+                                break;
+                            };
+                            if let Ok(value) = db::decode_value(format, &pt[4..12]) {
+                                {
+                                    let mut lg = last_gsn.lock().await;
+                                    if gsn > *lg {
+                                        *lg = gsn;
+                                    }
+                                }
+                                let mut e = emitted.lock().await;
+                                if e.insert((iid, gsn)) {
+                                    let _ = tx.send(CharacteristicEvent { aid: 1, iid, value });
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
         });
@@ -736,6 +799,48 @@ mod tests {
             .unwrap();
 
         let ev = events.next().await.unwrap();
+        assert_eq!(ev.iid, 11);
+        assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn encrypted_broadcast_0x11_decrypts_and_emits_event() {
+        use tokio_stream::StreamExt as _;
+        // handle_with_db sets broadcast_key = BroadcastKey::from_bytes([0u8; 32]).
+        let (mut h, gatt) = handle_with_db().await;
+
+        // Seal a 12-byte broadcast plaintext: gsn=1, iid=11 (LightBulb On, Bool),
+        // value bytes = [0x01, 0, 0, 0, 0, 0, 0, 0] (Bool true).
+        let key = hap_crypto::BroadcastKey::from_bytes([0u8; 32]);
+        let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
+        let mut pt = Vec::new();
+        pt.extend_from_slice(&1u16.to_le_bytes()); // gsn = 1
+        pt.extend_from_slice(&11u16.to_le_bytes()); // iid = 11
+        pt.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0, 0]); // value: Bool true
+        let sealed = key.seal(1, &pt, &aid_bytes);
+
+        // Build a 0x11 manufacturer-data frame: [0x11, 0x00, aid[0..6], sealed...]
+        let mut mfg = vec![0x11u8, 0x00];
+        mfg.extend_from_slice(&aid_bytes);
+        mfg.extend_from_slice(&sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        // poll_iids is empty — broadcast path needs no poll targets.
+        h.watch_sleepy_events(advert_source, aid_bytes, vec![])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg,
+            })
+            .await
+            .unwrap();
+
+        let ev = events.next().await.unwrap();
+        assert_eq!(ev.aid, 1);
         assert_eq!(ev.iid, 11);
         assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
     }

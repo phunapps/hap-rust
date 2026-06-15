@@ -48,6 +48,44 @@ impl BroadcastKey {
         &self.0
     }
 
+    /// Encrypt `plaintext` into a broadcast payload `ciphertext || tag[:4]` for
+    /// `gsn`, binding the 6-byte `advertising_id` as AAD. Uses the HAP 4-byte
+    /// partial Poly1305 tag — the symmetric counterpart of [`BroadcastKey::open`].
+    ///
+    /// The returned `Vec<u8>` is `ciphertext || 4-byte-tag`, ready to append to a
+    /// `0x11` advertisement after the advertising id. Primarily useful for tests
+    /// and tooling (an accessory seals; a controller opens).
+    #[must_use]
+    pub fn seal(&self, gsn: u16, plaintext: &[u8], advertising_id: &[u8; 6]) -> Vec<u8> {
+        use chacha20::cipher::{KeyIvInit, StreamCipher};
+        use poly1305::universal_hash::{KeyInit, UniversalHash};
+
+        // Same 12-byte IETF nonce as `open`.
+        let mut nonce = [0u8; 12];
+        nonce[4..].copy_from_slice(&u64::from(gsn).to_le_bytes());
+
+        let mut cipher = chacha20::ChaCha20::new(
+            chacha20::Key::from_slice(&self.0),
+            chacha20::Nonce::from_slice(&nonce),
+        );
+        // Block 0: derive the Poly1305 one-time key.
+        let mut poly_block = zeroize::Zeroizing::new([0u8; 64]);
+        cipher.apply_keystream(&mut *poly_block);
+
+        // Encrypt at block 1 (cipher already positioned there).
+        let mut ciphertext = plaintext.to_vec();
+        cipher.apply_keystream(&mut ciphertext);
+
+        // Compute the RFC 8439 MAC over the ciphertext.
+        let mut mac = poly1305::Poly1305::new(poly1305::Key::from_slice(&poly_block[..32]));
+        mac.update_padded(&mac_data(advertising_id, &ciphertext));
+        let full_tag = mac.finalize();
+
+        // Append the first 4 bytes of the Poly1305 tag (HAP broadcast convention).
+        ciphertext.extend_from_slice(&full_tag.as_slice()[..4]);
+        ciphertext
+    }
+
     /// Decrypt one encrypted broadcast payload `combined_text` (= `ciphertext ||
     /// tag[:4]`) for `gsn`, binding the 6-byte `advertising_id` as AAD. Uses the
     /// HAP 4-byte partial Poly1305 tag.
@@ -167,6 +205,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(pt, hex(v["plaintext_hex"].as_str().unwrap()));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn seal_then_open_round_trip() {
+        let key = BroadcastKey::from_bytes([0xABu8; 32]);
+        let aid: [u8; 6] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        let plaintext = b"hello world!";
+        let sealed = key.seal(42, plaintext, &aid);
+        let recovered = key.open(42, &sealed, &aid).unwrap();
+        assert_eq!(recovered, plaintext);
     }
 
     #[test]
