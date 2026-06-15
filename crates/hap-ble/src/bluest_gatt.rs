@@ -6,8 +6,8 @@
 
 use crate::error::{BleError, Result};
 use crate::gatt::{
-    u16_le, GattCharacteristic, GattConnection, GattService, HAP_INSTANCE_ID_DESC,
-    HAP_SERVICE_ID_CHAR,
+    u16_le, AdvertSource, GattCharacteristic, GattConnection, GattService, HAP_INSTANCE_ID_DESC,
+    HAP_SERVICE_ID_CHAR, RawAdvert,
 };
 use async_trait::async_trait;
 use bluest::error::ErrorKind;
@@ -265,5 +265,46 @@ impl GattConnection for BluestConnection {
             });
         }
         Ok(services)
+    }
+}
+
+/// Apple's Bluetooth company identifier; HAP advertisements live under it.
+const APPLE_COMPANY_ID: u16 = 0x004C;
+
+#[async_trait]
+impl AdvertSource for BluestConnection {
+    /// Stream Apple HAP advertisements by running a continuous adapter scan.
+    ///
+    /// Spawns a background task that feeds every Apple (company id `0x004C`)
+    /// manufacturer-data frame into the returned channel. The task stops when
+    /// the receiver is dropped or the adapter's scan stream ends.
+    ///
+    /// # Errors
+    /// Returns [`crate::error::BleError`] on adapter/scan failures.
+    async fn watch_adverts(&self) -> Result<mpsc::Receiver<RawAdvert>> {
+        let adapter = self.adapter.clone();
+        let (tx, rx) = mpsc::channel(32);
+        tokio::spawn(async move {
+            use tokio_stream::StreamExt as _;
+            let Ok(mut scan) = adapter.scan(&[]).await else {
+                return;
+            };
+            while let Some(adv) = scan.next().await {
+                let Some(md) = adv.adv_data.manufacturer_data else {
+                    continue;
+                };
+                if md.company_id == APPLE_COMPANY_ID
+                    && tx
+                        .send(RawAdvert {
+                            manufacturer_data: md.data,
+                        })
+                        .await
+                        .is_err()
+                {
+                    return; // receiver dropped — stop scanning
+                }
+            }
+        });
+        Ok(rx)
     }
 }
