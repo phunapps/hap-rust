@@ -14,7 +14,14 @@ use bluest::error::ErrorKind;
 use bluest::{Adapter, Characteristic, Device};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
+
+/// Per-attempt timeout for re-establishing the link (connect + service
+/// discovery). On macOS a `connect_device` attempted while a scan is running can
+/// hang indefinitely; bounding it (as aiohomekit does via `bleak_retry_connector`)
+/// turns a wedged connect into a failed attempt the backstop can retry.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Consecutive reconnects allowed *within a single operation* before it gives up
 /// (a runaway backstop). This bounds one stuck read/write, not the connection's
@@ -125,11 +132,19 @@ impl BluestConnection {
         self.generation.fetch_add(1, Ordering::SeqCst);
         let _ = self.adapter.disconnect_device(&self.device).await;
         let _ = self.adapter.wait_available().await;
-        self.adapter
-            .connect_device(&self.device)
+        // Bound the connect + service discovery: a connect attempted while a scan
+        // is running can wedge on macOS, so a timeout surfaces as a recoverable
+        // disconnect that the per-operation backstop retries rather than hanging.
+        let establish = async {
+            self.adapter
+                .connect_device(&self.device)
+                .await
+                .map_err(be)?;
+            Self::discover(&self.device).await
+        };
+        let (fresh, _shape) = tokio::time::timeout(CONNECT_TIMEOUT, establish)
             .await
-            .map_err(be)?;
-        let (fresh, _shape) = Self::discover(&self.device).await?;
+            .map_err(|_| BleError::Disconnected)??;
         *self.chars.lock().await = fresh;
         Ok(())
     }
