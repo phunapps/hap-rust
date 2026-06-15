@@ -29,6 +29,10 @@ fn gsn_is_newer(new: u16, last: u16) -> bool {
 /// backstop against a link that reconnects on every attempt.
 const MAX_REVIVE_RETRIES: u32 = 3;
 
+/// HAP-BLE Characteristic-Configuration body enabling encrypted broadcasts:
+/// Properties (TLV 0x01, u16 LE = 1) + Broadcast-Interval (TLV 0x02 = 1).
+const ENABLE_BROADCAST_BODY: [u8; 7] = [0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01];
+
 /// A characteristic value-change event.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CharacteristicEvent {
@@ -399,6 +403,43 @@ impl BleAccessory {
             Err(BleError::Disconnected | BleError::Crypto(_)) if removing_self => Ok(()),
             Err(e) => Err(e),
         }
+    }
+
+    /// Enable encrypted broadcast notifications for the given characteristic
+    /// instance ids (the HAP BLE accessory id is always 1). Each is an encrypted
+    /// Characteristic-Configuration write (Properties + Broadcast-Interval). Call
+    /// this **while connected**, before disconnecting to receive sleepy events —
+    /// without it the accessory will not emit `0x11` encrypted broadcasts. A
+    /// characteristic that does not support broadcasts is skipped; per-write
+    /// failures are tolerated (best-effort).
+    ///
+    /// # Errors
+    /// Propagates a session re-verify failure.
+    pub async fn enable_broadcasts(&mut self, iids: &[u64]) -> Result<()> {
+        let mut s = self.secure.lock().await;
+        for &iid in iids {
+            let Some((uuid, _)) = self.chars.get(&(1, iid)).cloned() else {
+                continue;
+            };
+            let Ok(iid16) = u16::try_from(iid) else {
+                continue;
+            };
+            revive_if_stale(self.gatt.as_ref(), &mut s, &self.reviver).await?;
+            s.tid = s.tid.wrapping_add(1);
+            let tid = s.tid;
+            let _ = pdu::request_secure(
+                self.gatt.as_ref(),
+                &mut s.session,
+                &uuid,
+                OpCode::CharacteristicConfig,
+                tid,
+                iid16,
+                &ENABLE_BROADCAST_BODY,
+                self.frag_size,
+            )
+            .await;
+        }
+        Ok(())
     }
 
     /// Subscribe to value-change events for a characteristic. HAP-BLE connected

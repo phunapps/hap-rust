@@ -60,27 +60,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mut accessory,
         broadcast: _broadcast,
         ..
-    } = controller.pair(conn, &target, &setup_code).await?;
+    } = controller.pair(conn.clone(), &target, &setup_code).await?;
     println!(">>> Paired; broadcast-key generation requested.");
 
-    // Poll target: MotionDetected (read on a 0x06 GSN bump). Broadcasts carry
-    // their own iid+value so they need no poll target.
-    let poll_iids = if let Ok((aid, iid)) = accessory.find(
+    // Enable encrypted broadcasts for MotionDetected WHILE CONNECTED — without
+    // this Characteristic-Configuration write the accessory won't emit 0x11
+    // broadcasts. (The 0x11 path decrypts straight from the advert with no
+    // reconnect, which is what we want on macOS.)
+    if let Ok((_aid, iid)) = accessory.find(
         hap_ble::ServiceType::MotionSensor,
         hap_ble::CharacteristicType::MotionDetected,
     ) {
-        println!(">>> MotionDetected at aid={aid} iid={iid}; will poll it on a GSN bump.");
-        vec![(aid, iid)]
-    } else {
-        println!(">>> no MotionDetected char found; broadcasts only.");
-        vec![]
-    };
+        println!(">>> enabling broadcasts for MotionDetected iid={iid} ...");
+        accessory.enable_broadcasts(&[iid]).await?;
+        println!(">>> broadcasts enabled.");
+    }
+
+    // Release the GATT link FIRST so the accessory advertises and broadcasts (and
+    // so macOS CoreBluetooth surfaces its adverts to a scan). Then start the
+    // scan/watch on the already-advertising device. Empty poll_iids: rely on the
+    // encrypted-broadcast (0x11) path only — it needs no reconnect.
+    conn.disconnect().await;
+    println!(">>> Disconnected — device will now advertise/broadcast.");
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     accessory
-        .watch_sleepy_events(advert_source, device_id, poll_iids)
+        .watch_sleepy_events(advert_source, device_id, vec![])
         .await?;
-    println!(">>> Watching sleepy events for 180s. Let the device sleep, then TRIGGER MOTION.");
-    println!(">>> (broadcasts/disconnected-events only fire while the device is disconnected)");
+    println!(">>> Watching sleepy events for 180s. TRIGGER MOTION (wave, wait ~30s, repeat).");
 
     let mut events = accessory.events();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);

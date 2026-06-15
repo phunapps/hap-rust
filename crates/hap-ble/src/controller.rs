@@ -14,9 +14,13 @@ use std::sync::Arc;
 const PAIR_SETUP_CHAR: &str = "0000004c-0000-1000-8000-0026bb765291";
 const PAIR_VERIFY_CHAR: &str = "0000004e-0000-1000-8000-0026bb765291";
 const PAIRINGS_CHAR: &str = "00000050-0000-1000-8000-0026bb765291";
-/// The HAP Service-Signature characteristic (one per service); the
-/// Protocol-Configuration "generate broadcast key" request is written here.
+/// The HAP Service-Signature characteristic (one appears in *every* service).
+/// The generate-broadcast-key request must target the one in the Protocol
+/// Information service specifically (see `protocol_info_signature_iid`).
 const SERVICE_SIGNATURE_CHAR: &str = "000000a5-0000-1000-8000-0026bb765291";
+/// The HAP Protocol Information service — its Service-Signature characteristic is
+/// where the Protocol-Configuration "generate broadcast key" request is written.
+const PROTOCOL_INFO_SERVICE: &str = "000000a2-0000-1000-8000-0026bb765291";
 /// Protocol-Configuration TLV body that asks the accessory to generate a
 /// broadcast encryption key (type `GenerateBroadcastEncryptionKey` = 0x01, len 0).
 const GENERATE_BROADCAST_KEY_BODY: [u8; 2] = [0x01, 0x00];
@@ -150,7 +154,7 @@ impl BleController {
         // characteristic we can't address) just won't broadcast — the
         // disconnected-event poll still delivers durable events. Failure here must
         // not abort pairing, so it is ignored.
-        if let Ok(sig_iid) = iid_of(&services, SERVICE_SIGNATURE_CHAR) {
+        if let Some(sig_iid) = protocol_info_signature_iid(&services) {
             let _ = crate::pdu::request_secure(
                 gatt.as_ref(),
                 &mut session,
@@ -182,6 +186,19 @@ impl BleController {
         };
         Ok(BleAccessory::new(gatt, ctx, frag, &services, accessories))
     }
+}
+
+/// The Service-Signature characteristic's iid within the Protocol Information
+/// service — the correct target for the generate-broadcast-key request (every
+/// service has a Service-Signature char, so we must scope to this service).
+fn protocol_info_signature_iid(services: &[crate::gatt::GattService]) -> Option<u16> {
+    let svc = services
+        .iter()
+        .find(|s| s.uuid.eq_ignore_ascii_case(PROTOCOL_INFO_SERVICE))?;
+    svc.characteristics
+        .iter()
+        .find(|c| c.uuid.eq_ignore_ascii_case(SERVICE_SIGNATURE_CHAR))
+        .map(|c| c.iid)
 }
 
 /// Find a characteristic's HAP instance id by UUID in an enumerated GATT tree.

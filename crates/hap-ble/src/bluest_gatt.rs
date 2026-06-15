@@ -88,6 +88,16 @@ impl BluestConnection {
         })
     }
 
+    /// Release the active GATT link. A sleepy HAP accessory only advertises and
+    /// emits encrypted broadcasts while disconnected, and on macOS CoreBluetooth
+    /// filters a connected peripheral out of scan results — so a caller watching
+    /// for sleepy events must disconnect after setup. A subsequent encrypted
+    /// operation (e.g. a disconnected-event poll read) transparently reconnects
+    /// via the supervisor.
+    pub async fn disconnect(&self) {
+        let _ = self.adapter.disconnect_device(&self.device).await;
+    }
+
     async fn discover(
         device: &Device,
     ) -> Result<(HashMap<String, Characteristic>, Vec<ServiceShape>)> {
