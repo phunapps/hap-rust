@@ -63,29 +63,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } = controller.pair(conn.clone(), &target, &setup_code).await?;
     println!(">>> Paired; broadcast-key generation requested.");
 
-    // Enable encrypted broadcasts for MotionDetected WHILE CONNECTED — without
-    // this Characteristic-Configuration write the accessory won't emit 0x11
-    // broadcasts. (The 0x11 path decrypts straight from the advert with no
-    // reconnect, which is what we want on macOS.)
-    if let Ok((_aid, iid)) = accessory.find(
+    // The Onvis SMS2 does NOT emit 0x11 encrypted broadcasts (confirmed: even
+    // aiohomekit observes none), so use the disconnected-event POLL: on a GSN
+    // bump in a 0x06 advert, reconnect and read the value.
+    let poll_iids = if let Ok((aid, iid)) = accessory.find(
         hap_ble::ServiceType::MotionSensor,
         hap_ble::CharacteristicType::MotionDetected,
     ) {
-        println!(">>> enabling broadcasts for MotionDetected iid={iid} ...");
-        accessory.enable_broadcasts(&[iid]).await?;
-        println!(">>> broadcasts enabled.");
-    }
+        println!(">>> will poll MotionDetected aid={aid} iid={iid} on a GSN bump.");
+        vec![(aid, iid)]
+    } else {
+        println!(">>> no MotionDetected char found.");
+        vec![]
+    };
 
-    // Release the GATT link FIRST so the accessory advertises and broadcasts (and
-    // so macOS CoreBluetooth surfaces its adverts to a scan). Then start the
-    // scan/watch on the already-advertising device. Empty poll_iids: rely on the
-    // encrypted-broadcast (0x11) path only — it needs no reconnect.
+    // Release the GATT link so the accessory advertises (and macOS CoreBluetooth
+    // surfaces its adverts to a scan). The poll read reconnects on demand — now
+    // bounded by the connect timeout so it can't hang.
     conn.disconnect().await;
-    println!(">>> Disconnected — device will now advertise/broadcast.");
+    println!(">>> Disconnected — device will now advertise.");
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     accessory
-        .watch_sleepy_events(advert_source, device_id, vec![])
+        .watch_sleepy_events(advert_source, device_id, poll_iids)
         .await?;
     println!(">>> Watching sleepy events for 180s. TRIGGER MOTION (wave, wait ~30s, repeat).");
 
