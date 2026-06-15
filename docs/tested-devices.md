@@ -105,3 +105,36 @@ peripheral stops advertising once connected (and no other HAP-BLE device was in
 range). The broadcast / disconnected-event channels operate when the device is
 *disconnected* (and therefore advertising), which standard scans already pick up
 reliably; the spike's job was only to prove the scanner can't corrupt a live link.
+
+## Feature B durable events — live validation (2026-06-15, Onvis SMS2)
+
+Validated the shipped sleepy-device-events code (`hap-crypto` 1.1.0 broadcast
+module + `hap-ble` 0.1.0 `watch_sleepy_events`) against the real Onvis SMS2.
+
+**What validated live:** pair → `Paired{accessory,pairing,broadcast}` →
+generate-broadcast-key request **accepted** by the accessory → the advert pipeline
+end-to-end (continuous scan → match by **HAP Device ID** in manufacturer data →
+GSN-bump detection → poll trigger) → **no reconnect storm over a long idle**
+(the original Feature-A reconnect-storm bug, confirmed fixed: best-effort notify
+with no auto-reconnect).
+
+**Device limitation — the Onvis SMS2 does NOT emit `0x11` encrypted broadcasts.**
+The decisive cross-check: a script
+(`xtask/scripts/capture-pair-setup/aio_broadcast_test.py`) drove **aiohomekit**
+itself — broadcast key derived, all 10 broadcast-capable characteristics
+(including MotionDetected) subscribed, then disconnected — and observed **zero
+`0x11` adverts over 90 s of repeated motion**. So this is the accessory's choice,
+not a hap-rust bug. Our broadcast crypto is correct and CI-vector-validated
+(byte-exact against captured aiohomekit vectors); it simply has no live emitter to
+test against on this sensor. A different accessory that broadcasts is needed to
+exercise the `0x11` decrypt path on real hardware.
+
+**Poll path live delivery is blocked by a macOS limitation (not a protocol bug).**
+The disconnected-event catch-up poll needs to connect *while* the advert scan is
+running, but on macOS CoreBluetooth a `connect` cannot complete while a scan is in
+progress, so the reconnect-read hangs. The catch-up poll therefore detects the GSN
+bump but can't yet fetch the value live on macOS. Scoped follow-up for a future
+hap-ble 0.x: pause the advert scan during the reconnect-read, run reads off the
+advert task, and re-add `NotFound`→reconnect mapping (currently
+`NotFound`→`Disconnected` because it hangs during a scan). The IP path and all
+CI-tested logic are unaffected.
