@@ -18,7 +18,8 @@ Live disconnected-event delivery on macOS. `hap-ble` bumps to `0.2.0`
 - The advert scan pauses while the supervisor reconnects or disconnects
   (`ScanGate` coordination): on macOS CoreBluetooth a connect cannot complete
   while a scan is running, which left the disconnected-event catch-up poll
-  unable to fetch values live. Stop scan → connect → read → resume scan.
+  unable to fetch values live. Stop scan → connect → resume scan; the catch-up
+  read then runs over the re-established link.
 - Catch-up poll reads run on their own task, fed the latest bumped GSN through
   a watch channel — the advert loop never blocks on GATT I/O, and a burst of
   GSN bumps coalesces into one poll of the latest value.

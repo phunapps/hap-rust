@@ -161,6 +161,9 @@ fn expect_remove_m2(tlv: &[u8]) -> Result<()> {
 /// never downgraded — an out-of-order poll completion racing a newer broadcast
 /// must not clobber the broadcast's record (RFC 1982 serial order, matching
 /// [`gsn_is_newer`]).
+/// The exactly-once guarantee for a GSN older than the stored record relies on
+/// the callers' monotonic gating (`last_gsn`); the map alone does not suppress
+/// repeats of an older GSN.
 async fn dedup_should_emit(emitted: &Mutex<HashMap<u64, u16>>, iid: u64, gsn: u16) -> bool {
     let mut e = emitted.lock().await;
     let prev = e.get(&iid).copied();
