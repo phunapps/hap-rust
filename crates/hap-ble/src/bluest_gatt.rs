@@ -47,7 +47,9 @@ const MAX_OP_RECONNECTS: u32 = 8;
 /// [`ErrorKind`] rather than by string-matching. A [`Timeout`](ErrorKind::Timeout)
 /// is treated as a disconnect: on some platforms a dropped link surfaces as a
 /// read/write timeout, and a reconnect+retry against a merely-slow accessory is
-/// cheap and self-correcting.
+/// cheap and self-correcting. A [`NotFound`](ErrorKind::NotFound) is too: on
+/// macOS an operation against a slept accessory's stale characteristic handle
+/// reports it, and the reconnect re-discovers the handles.
 // By value for ergonomic `.map_err(be)`.
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn be(e: bluest::Error) -> BleError {
@@ -57,6 +59,7 @@ pub(crate) fn be(e: bluest::Error) -> BleError {
         | ErrorKind::ConnectionFailed
         | ErrorKind::ServiceChanged
         | ErrorKind::NotReady
+        | ErrorKind::NotFound
         | ErrorKind::Timeout => BleError::Disconnected,
         _ => BleError::Backend(e.to_string()),
     }
@@ -410,5 +413,20 @@ impl AdvertSource for BluestConnection {
             }
         });
         Ok(rx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A slept accessory's stale handle surfaces as bluest `NotFound` on
+    /// macOS; it must classify as a recoverable disconnect so the supervisor
+    /// reconnects (safe only because reconnect pauses the scan and bounds the
+    /// connect).
+    #[test]
+    fn not_found_maps_to_disconnected() {
+        let e = bluest::Error::from(ErrorKind::NotFound);
+        assert!(matches!(be(e), BleError::Disconnected));
     }
 }
