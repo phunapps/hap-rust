@@ -9,11 +9,13 @@ use crate::gatt::{
     u16_le, AdvertSource, GattCharacteristic, GattConnection, GattService, RawAdvert,
     HAP_INSTANCE_ID_DESC, HAP_SERVICE_ID_CHAR,
 };
+use crate::scan_gate::ScanGate;
 use async_trait::async_trait;
 use bluest::error::ErrorKind;
 use bluest::{Adapter, Characteristic, Device};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 
@@ -85,6 +87,10 @@ pub struct BluestConnection {
     /// Increments on every reconnect — also the backstop count. A change since a
     /// secure session was established means the accessory dropped that session.
     generation: AtomicU64,
+    /// Coordinates the continuous advert scan with connects: on macOS
+    /// CoreBluetooth a connect cannot complete while a scan is running, so
+    /// `reconnect`/`disconnect` pause the scan for their duration.
+    scan_gate: Arc<ScanGate>,
 }
 
 impl BluestConnection {
@@ -101,6 +107,7 @@ impl BluestConnection {
             chars: Mutex::new(chars),
             shape,
             generation: AtomicU64::new(0),
+            scan_gate: ScanGate::new(),
         })
     }
 
@@ -111,6 +118,9 @@ impl BluestConnection {
     /// operation (e.g. a disconnected-event poll read) transparently reconnects
     /// via the supervisor.
     pub async fn disconnect(&self) {
+        // Pause the scan for the teardown: on macOS a disconnect cannot
+        // complete while a scan is running.
+        let _scan_pause = self.scan_gate.pause().await;
         let _ = self.adapter.disconnect_device(&self.device).await;
     }
 
@@ -149,6 +159,11 @@ impl BluestConnection {
     /// ([`shape`](Self::shape)) is unchanged.
     async fn reconnect(&self) -> Result<()> {
         self.generation.fetch_add(1, Ordering::SeqCst);
+        // Own the radio for the whole teardown + connect: on macOS
+        // CoreBluetooth a connect (or disconnect/wait_available) cannot
+        // complete while a scan is running. The guard resumes the scan when
+        // dropped — on success and on every error path alike.
+        let _scan_pause = self.scan_gate.pause().await;
         let _ = self.adapter.disconnect_device(&self.device).await;
         let _ = self.adapter.wait_available().await;
         // Bound the connect + service discovery: a connect attempted while a scan
@@ -326,32 +341,62 @@ impl AdvertSource for BluestConnection {
     /// Stream Apple HAP advertisements by running a continuous adapter scan.
     ///
     /// Spawns a background task that feeds every Apple (company id `0x004C`)
-    /// manufacturer-data frame into the returned channel. The task stops when
-    /// the receiver is dropped or the adapter's scan stream ends.
+    /// manufacturer-data frame into the returned channel. While a connect owns
+    /// the radio (the [`ScanGate`] is paused) the task drops its scan stream
+    /// and restarts it on resume. The task stops for good when the receiver is
+    /// dropped or the adapter's scan stream ends.
     ///
     /// # Errors
     /// Returns [`crate::error::BleError`] on adapter/scan failures.
     async fn watch_adverts(&self) -> Result<mpsc::Receiver<RawAdvert>> {
         let adapter = self.adapter.clone();
+        let gate = self.scan_gate.clone();
         let (tx, rx) = mpsc::channel(32);
         tokio::spawn(async move {
             use tokio_stream::StreamExt as _;
-            let Ok(mut scan) = adapter.scan(&[]).await else {
-                return;
-            };
-            while let Some(adv) = scan.next().await {
-                let Some(md) = adv.adv_data.manufacturer_data else {
-                    continue;
+            let mut pause = gate.pause_watch();
+            loop {
+                // Hold off while a connect owns the radio.
+                while *pause.borrow_and_update() {
+                    if pause.changed().await.is_err() {
+                        return;
+                    }
+                }
+                let Ok(mut scan) = adapter.scan(&[]).await else {
+                    return;
                 };
-                if md.company_id == APPLE_COMPANY_ID
-                    && tx
-                        .send(RawAdvert {
-                            manufacturer_data: md.data,
-                        })
-                        .await
-                        .is_err()
-                {
-                    return; // receiver dropped — stop scanning
+                gate.set_scanning(true);
+                let stopped_for_pause = loop {
+                    tokio::select! {
+                        changed = pause.changed() => {
+                            match changed {
+                                Ok(()) if *pause.borrow_and_update() => break true,
+                                Ok(()) => {}
+                                Err(_) => break false,
+                            }
+                        }
+                        adv = scan.next() => {
+                            let Some(adv) = adv else { break false };
+                            let Some(md) = adv.adv_data.manufacturer_data else {
+                                continue;
+                            };
+                            if md.company_id == APPLE_COMPANY_ID
+                                && tx
+                                    .send(RawAdvert {
+                                        manufacturer_data: md.data,
+                                    })
+                                    .await
+                                    .is_err()
+                            {
+                                break false; // receiver dropped — stop scanning
+                            }
+                        }
+                    }
+                };
+                drop(scan);
+                gate.set_scanning(false);
+                if !stopped_for_pause {
+                    return;
                 }
             }
         });

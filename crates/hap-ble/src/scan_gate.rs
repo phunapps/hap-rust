@@ -12,11 +12,9 @@ use tokio::sync::watch;
 /// dropped its scan stream. A missing or wedged scan task must not block a
 /// reconnect forever — after this the connect proceeds anyway (bounded by its
 /// own connect timeout).
-#[allow(dead_code)]
 const PAUSE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The radio-ownership gate shared between the scan task and the connect path.
-#[allow(dead_code)]
 pub(crate) struct ScanGate {
     /// `true` while a connect owns the radio (the scan task must stop scanning).
     pause_tx: watch::Sender<bool>,
@@ -29,7 +27,6 @@ pub(crate) struct ScanGate {
 
 impl ScanGate {
     /// A fresh gate: nothing paused, nothing scanning.
-    #[allow(dead_code)]
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             pause_tx: watch::channel(false).0,
@@ -42,7 +39,6 @@ impl ScanGate {
     /// pause, then wait (bounded by [`PAUSE_ACK_TIMEOUT`]) until the scan task
     /// reports its scan stream dropped. Dropping the guard — or cancelling this
     /// future after the pause was requested — resumes the scan.
-    #[allow(dead_code)]
     pub(crate) async fn pause(self: &Arc<Self>) -> ScanPauseGuard {
         let permit = Arc::clone(&self.lock).lock_owned().await;
         let guard = ScanPauseGuard {
@@ -64,20 +60,17 @@ impl ScanGate {
 
     /// The scan task's view of pause requests: `true` means "drop your scan
     /// stream and hold off until this turns `false` again".
-    #[allow(dead_code)]
     pub(crate) fn pause_watch(&self) -> watch::Receiver<bool> {
         self.pause_tx.subscribe()
     }
 
     /// The scan task reports whether it currently holds a live scan stream.
-    #[allow(dead_code)]
     pub(crate) fn set_scanning(&self, scanning: bool) {
         self.scanning_tx.send_replace(scanning);
     }
 }
 
 /// Held while a connect owns the radio; dropping it resumes the scan.
-#[allow(dead_code)]
 pub(crate) struct ScanPauseGuard {
     gate: Arc<ScanGate>,
     _permit: tokio::sync::OwnedMutexGuard<()>,
