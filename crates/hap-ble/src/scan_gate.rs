@@ -16,7 +16,6 @@ use tokio::sync::watch;
 const PAUSE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The radio-ownership gate shared between the scan task and the connect path.
-#[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct ScanGate {
     /// `true` while a connect owns the radio (the scan task must stop scanning).
@@ -41,10 +40,15 @@ impl ScanGate {
 
     /// Pause the scan for the lifetime of the returned guard: request the
     /// pause, then wait (bounded by [`PAUSE_ACK_TIMEOUT`]) until the scan task
-    /// reports its scan stream dropped. Dropping the guard resumes the scan.
+    /// reports its scan stream dropped. Dropping the guard — or cancelling this
+    /// future after the pause was requested — resumes the scan.
     #[allow(dead_code)]
     pub(crate) async fn pause(self: &Arc<Self>) -> ScanPauseGuard {
         let permit = Arc::clone(&self.lock).lock_owned().await;
+        let guard = ScanPauseGuard {
+            gate: Arc::clone(self),
+            _permit: permit,
+        };
         self.pause_tx.send_replace(true);
         let mut scanning = self.scanning_tx.subscribe();
         let _ = tokio::time::timeout(PAUSE_ACK_TIMEOUT, async {
@@ -55,10 +59,7 @@ impl ScanGate {
             }
         })
         .await;
-        ScanPauseGuard {
-            gate: Arc::clone(self),
-            _permit: permit,
-        }
+        guard
     }
 
     /// The scan task's view of pause requests: `true` means "drop your scan
@@ -162,5 +163,21 @@ mod tests {
         assert!(!second.is_finished());
         drop(g1);
         second.await.unwrap();
+    }
+
+    /// Dropping an in-flight `pause()` future (caller timeout/cancellation)
+    /// must reset the pause request and leave the gate usable.
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_pause_resumes_the_scan_request() {
+        let gate = ScanGate::new();
+        gate.set_scanning(true); // scanner never acks, so pause() sits in its ack wait
+                                 // Cancel pause() mid-ack-wait via an outer timeout shorter than the ack timeout.
+        let cancelled = tokio::time::timeout(std::time::Duration::from_secs(1), gate.pause()).await;
+        assert!(cancelled.is_err());
+        // The cancelled future must have reset the pause request on drop.
+        assert!(!*gate.pause_watch().borrow());
+        // And the gate stays usable: once the scanner acks, pause() completes.
+        gate.set_scanning(false);
+        let _guard = gate.pause().await;
     }
 }
