@@ -156,6 +156,23 @@ fn expect_remove_m2(tlv: &[u8]) -> Result<()> {
     }
 }
 
+/// Decide whether an event for `(iid, gsn)` should be emitted and record it in
+/// the dedup map. Exactly one emission per `(iid, gsn)`; the stored GSN is
+/// never downgraded — an out-of-order poll completion racing a newer broadcast
+/// must not clobber the broadcast's record (RFC 1982 serial order, matching
+/// [`gsn_is_newer`]).
+async fn dedup_should_emit(emitted: &Mutex<HashMap<u64, u16>>, iid: u64, gsn: u16) -> bool {
+    let mut e = emitted.lock().await;
+    let prev = e.get(&iid).copied();
+    if prev == Some(gsn) {
+        return false;
+    }
+    if prev.is_none_or(|p| gsn_is_newer(gsn, p)) {
+        e.insert(iid, gsn);
+    }
+    true
+}
+
 /// Issue one encrypted Characteristic-Read and return the raw value bytes,
 /// re-establishing the secure session if a reconnect invalidated it (before the
 /// read, and again if the link drops mid-read — retried a bounded number of
@@ -542,10 +559,7 @@ impl BleAccessory {
                             read_char_raw(gatt.as_ref(), &secure, &reviver, uuid, *iid, frag).await
                         {
                             if let Ok(value) = db::decode_value(*format, &raw_val) {
-                                let mut e = poll_emitted.lock().await;
-                                if e.get(iid).copied() != Some(gsn) {
-                                    e.insert(*iid, gsn);
-                                    drop(e);
+                                if dedup_should_emit(&poll_emitted, *iid, gsn).await {
                                     let _ = poll_events.send(CharacteristicEvent {
                                         aid: *aid,
                                         iid: *iid,
@@ -622,10 +636,7 @@ impl BleAccessory {
                                 break;
                             };
                             if let Ok(value) = db::decode_value(format, &pt[4..12]) {
-                                let mut e = emitted.lock().await;
-                                if e.get(&iid).copied() != Some(gsn) {
-                                    e.insert(iid, gsn);
-                                    drop(e);
+                                if dedup_should_emit(&emitted, iid, gsn).await {
                                     let _ = tx.send(CharacteristicEvent { aid: 1, iid, value });
                                 }
                             }
@@ -1308,5 +1319,25 @@ mod tests {
             !matches!(err, BleError::CharacteristicNotFound { .. }),
             "expected a verify/transport error from the re-verify attempt, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn dedup_emits_once_per_gsn_and_never_downgrades() {
+        let emitted = Mutex::new(HashMap::new());
+        // Fresh (iid, gsn): emit and record.
+        assert!(dedup_should_emit(&emitted, 11, 9).await);
+        // Same gsn again: suppressed.
+        assert!(!dedup_should_emit(&emitted, 11, 9).await);
+        // Newer gsn: emit, record moves forward.
+        assert!(dedup_should_emit(&emitted, 11, 10).await);
+        // Out-of-order older gsn (stalled poll racing a broadcast): still
+        // emits (distinct gsn) but must NOT downgrade the stored record …
+        assert!(dedup_should_emit(&emitted, 11, 9).await);
+        // … so a repeat of the newest gsn stays suppressed.
+        assert!(!dedup_should_emit(&emitted, 11, 10).await);
+        // Wraparound: 1 is newer than 65535 in RFC 1982 order.
+        assert!(dedup_should_emit(&emitted, 12, 65535).await);
+        assert!(dedup_should_emit(&emitted, 12, 1).await);
+        assert!(!dedup_should_emit(&emitted, 12, 1).await);
     }
 }
