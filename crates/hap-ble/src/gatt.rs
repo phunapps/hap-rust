@@ -118,6 +118,9 @@ pub(crate) struct MockGatt {
     generation: std::sync::atomic::AtomicU64,
     advert_tx: mpsc::Sender<RawAdvert>,
     advert_rx: std::sync::Mutex<Option<mpsc::Receiver<RawAdvert>>>,
+    /// UUID -> gate that the next `read` of that characteristic awaits.
+    blocked:
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Notify>>>,
 }
 
 #[cfg(test)]
@@ -132,6 +135,7 @@ impl Default for MockGatt {
             generation: std::sync::atomic::AtomicU64::new(0),
             advert_tx,
             advert_rx: std::sync::Mutex::new(Some(advert_rx)),
+            blocked: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -179,6 +183,19 @@ impl MockGatt {
     pub(crate) fn advert_sender(&self) -> mpsc::Sender<RawAdvert> {
         self.advert_tx.clone()
     }
+
+    /// Make the next `read` of `char_uuid` await the returned `Notify` before
+    /// serving its (queued or last-written) value — simulates a slow read
+    /// (e.g. a reconnect-read) so tests can assert other work is not blocked.
+    #[allow(dead_code)] // used by the poll-off-advert-task tests
+    pub(crate) fn block_next_read(&self, char_uuid: &str) -> std::sync::Arc<tokio::sync::Notify> {
+        let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+        self.blocked
+            .lock()
+            .unwrap()
+            .insert(char_uuid.to_string(), gate.clone());
+        gate
+    }
 }
 
 #[cfg(test)]
@@ -221,6 +238,10 @@ impl GattConnection for MockGatt {
     }
 
     async fn read(&self, char_uuid: &str) -> Result<Vec<u8>> {
+        let gate = self.blocked.lock().unwrap().remove(char_uuid);
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
         if let Some(q) = self.queued.lock().unwrap().get_mut(char_uuid) {
             if let Some(v) = q.pop_front() {
                 return Ok(v);

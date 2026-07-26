@@ -487,6 +487,7 @@ impl BleAccessory {
     /// - **Regular (0x06) advertisements:** when the accessory's GSN bumps, read
     ///   each polled characteristic and publish its value on
     ///   [`BleAccessory::events`]. Events are deduplicated by `(iid, gsn)`.
+    ///   The poll runs on its own task fed by a watch channel, so bumps coalesce.
     /// - **Encrypted broadcast (0x11) advertisements:** decrypt the value directly
     ///   from the advertisement using the stored [`hap_crypto::BroadcastKey`] and
     ///   publish it — no GATT connection needed.
@@ -520,14 +521,49 @@ impl BleAccessory {
         let broadcast_key = self.broadcast_key.clone();
 
         let mut adverts = advert_source.watch_adverts().await?;
+
+        // The catch-up poll runs on its own task, fed the latest bumped GSN
+        // through a watch channel: the advert loop must never block on GATT
+        // I/O (a reconnect-read pauses the advert scan and can take seconds),
+        // and a burst of bumps coalesces into one poll of the latest GSN.
+        let (poll_tx, mut poll_rx) = tokio::sync::watch::channel(0u16);
+        if !targets.is_empty() {
+            let gatt = self.gatt.clone();
+            let secure = self.secure.clone();
+            let reviver = self.reviver.clone();
+            let frag = self.frag_size;
+            let poll_events = self.events_tx.clone();
+            let poll_emitted = self.emitted.clone();
+            let poll_task = tokio::spawn(async move {
+                while poll_rx.changed().await.is_ok() {
+                    let gsn = *poll_rx.borrow_and_update();
+                    for (aid, iid, uuid, format) in &targets {
+                        if let Ok(raw_val) =
+                            read_char_raw(gatt.as_ref(), &secure, &reviver, uuid, *iid, frag).await
+                        {
+                            if let Ok(value) = db::decode_value(*format, &raw_val) {
+                                let mut e = poll_emitted.lock().await;
+                                if e.get(iid).copied() != Some(gsn) {
+                                    e.insert(*iid, gsn);
+                                    drop(e);
+                                    let _ = poll_events.send(CharacteristicEvent {
+                                        aid: *aid,
+                                        iid: *iid,
+                                        value,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            self.tasks.push(poll_task);
+        }
+
         let tx = self.events_tx.clone();
-        let gatt = self.gatt.clone();
-        let secure = self.secure.clone();
-        let reviver = self.reviver.clone();
-        let frag = self.frag_size;
         let last_gsn = self.last_gsn.clone();
         let emitted = self.emitted.clone();
-        let task = tokio::spawn(async move {
+        let advert_task = tokio::spawn(async move {
             while let Some(raw) = adverts.recv().await {
                 match crate::advert::HapAdvert::parse(&raw.manufacturer_data) {
                     Some(crate::advert::HapAdvert::Regular {
@@ -543,25 +579,9 @@ impl BleAccessory {
                             }
                             *lg = gsn;
                         }
-                        for (aid, iid, uuid, format) in &targets {
-                            if let Ok(raw_val) =
-                                read_char_raw(gatt.as_ref(), &secure, &reviver, uuid, *iid, frag)
-                                    .await
-                            {
-                                if let Ok(value) = db::decode_value(*format, &raw_val) {
-                                    let mut e = emitted.lock().await;
-                                    if e.get(iid).copied() != Some(gsn) {
-                                        e.insert(*iid, gsn);
-                                        drop(e);
-                                        let _ = tx.send(CharacteristicEvent {
-                                            aid: *aid,
-                                            iid: *iid,
-                                            value,
-                                        });
-                                    }
-                                }
-                            }
-                        }
+                        // Hand the bump to the poll task. A dropped receiver
+                        // (no poll targets) is fine.
+                        let _ = poll_tx.send(gsn);
                     }
                     Some(crate::advert::HapAdvert::EncryptedNotification {
                         advertising_id,
@@ -586,13 +606,14 @@ impl BleAccessory {
                             if u16::from_le_bytes([pt[0], pt[1]]) != gsn {
                                 continue;
                             }
-                            // stale duplicate: this GSN is not newer than start — ignore.
+                            // stale duplicate: not newer than start — ignore.
                             if !gsn_is_newer(gsn, start) {
                                 break;
                             }
                             let iid = u64::from(u16::from_le_bytes([pt[2], pt[3]]));
-                            // Advance last_gsn now — the device's state genuinely moved,
-                            // even if the iid is unknown or the value fails to decode.
+                            // Advance last_gsn now — the device's state
+                            // genuinely moved, even if the iid is unknown or
+                            // the value fails to decode.
                             {
                                 let mut lg = last_gsn.lock().await;
                                 *lg = gsn;
@@ -615,7 +636,7 @@ impl BleAccessory {
                 }
             }
         });
-        self.tasks.push(task);
+        self.tasks.push(advert_task);
         Ok(())
     }
 
@@ -972,6 +993,82 @@ mod tests {
             timeout_result.is_err(),
             "expected dedup to suppress the duplicate 0x11 broadcast event, but got one"
         );
+    }
+
+    /// The advert loop must not block on the catch-up poll's GATT read: while
+    /// a poll read is stalled (e.g. a scan-pausing reconnect), a 0x11
+    /// broadcast must still decrypt and emit. Regression test for running poll
+    /// reads off the advert task.
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn broadcast_delivered_while_poll_read_blocked() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = handle_with_db().await;
+
+        // Stall the poll's encrypted read of iid 11 until released; queue the
+        // sealed Bool(true) response it eventually returns.
+        let release = gatt.block_next_read("00000025-0000-1000-8000-0026bb765291");
+        let mut plain = vec![0x02, 0x01, 0x00];
+        let vbody = crate::pdu::encode_value_param(&[0x01]);
+        plain.extend_from_slice(&u16::try_from(vbody.len()).unwrap().to_le_bytes());
+        plain.extend_from_slice(&vbody);
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+
+        let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
+        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
+            .await
+            .unwrap();
+        let mut events = h.events();
+
+        // 0x06 bump to GSN 9 — the poll starts its read and stalls on the gate.
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: vec![
+                    0x06, 0x21, 0x01, 1, 2, 3, 4, 5, 6, 0x01, 0x00, 0x09, 0x00, 0x01, 0x00,
+                ],
+            })
+            .await
+            .unwrap();
+
+        // A 0x11 broadcast for GSN 10 carrying Bool(false) — the advert loop
+        // must process it while the poll read is still stalled.
+        let key = hap_crypto::BroadcastKey::from_bytes([0u8; 32]);
+        let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
+        let mut pt = Vec::new();
+        pt.extend_from_slice(&10u16.to_le_bytes()); // gsn = 10
+        pt.extend_from_slice(&11u16.to_le_bytes()); // iid = 11
+        pt.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0]); // Bool false
+        let sealed_bc = key.seal(10, &pt, &aid_bytes);
+        let mut mfg = vec![0x11u8, 0x00];
+        mfg.extend_from_slice(&aid_bytes);
+        mfg.extend_from_slice(&sealed_bc);
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: mfg,
+            })
+            .await
+            .unwrap();
+
+        // The broadcast event (Bool(false)) must arrive FIRST: the poll read is
+        // still blocked. With the old inline poll this times out because the
+        // advert loop is stuck inside the read.
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(2), events.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ev.iid, 11);
+        assert_eq!(ev.value, hap_model::format::CharValue::Bool(false));
+
+        // Release the stalled read; the poll's event (GSN 9, Bool(true)) follows.
+        release.notify_one();
+        let ev2 = tokio::time::timeout(std::time::Duration::from_secs(2), events.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ev2.iid, 11);
+        assert_eq!(ev2.value, hap_model::format::CharValue::Bool(true));
     }
 
     // ── negative-path tests for sleepy-device event handling ─────────────────
