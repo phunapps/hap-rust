@@ -341,9 +341,12 @@ impl AdvertSource for BluestConnection {
     /// Stream Apple HAP advertisements by running a continuous adapter scan.
     ///
     /// Spawns a background task that feeds every Apple (company id `0x004C`)
-    /// manufacturer-data frame into the returned channel. While a connect owns
-    /// the radio (the [`ScanGate`] is paused) the task drops its scan stream
-    /// and restarts it on resume. The task stops for good when the receiver is
+    /// manufacturer-data frame into the returned channel. Forwarding is
+    /// best-effort: frames are dropped when the receiver falls behind, not
+    /// queued unboundedly, to ensure the task never blocks on backpressure
+    /// and can always respond to a pause request. While a connect owns the
+    /// radio (the [`ScanGate`] is paused) the task drops its scan stream and
+    /// restarts it on resume. The task stops for good when the receiver is
     /// dropped or the adapter's scan stream ends.
     ///
     /// # Errors
@@ -380,15 +383,21 @@ impl AdvertSource for BluestConnection {
                             let Some(md) = adv.adv_data.manufacturer_data else {
                                 continue;
                             };
-                            if md.company_id == APPLE_COMPANY_ID
-                                && tx
-                                    .send(RawAdvert {
-                                        manufacturer_data: md.data,
-                                    })
-                                    .await
-                                    .is_err()
-                            {
-                                break false; // receiver dropped — stop scanning
+                            if md.company_id != APPLE_COMPANY_ID {
+                                continue;
+                            }
+                            // Non-blocking send: a stalled consumer must not
+                            // wedge this task inside an await where it cannot
+                            // see a pause request. Adverts are a lossy,
+                            // repeating medium — dropping a frame under
+                            // backpressure is safe; holding the radio is not.
+                            match tx.try_send(RawAdvert {
+                                manufacturer_data: md.data,
+                            }) {
+                                Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                                Err(mpsc::error::TrySendError::Closed(_)) => {
+                                    break false; // receiver dropped — stop scanning
+                                }
                             }
                         }
                     }
