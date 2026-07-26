@@ -25,6 +25,13 @@ use tokio::sync::{mpsc, Mutex};
 /// turns a wedged connect into a failed attempt the backstop can retry.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Per-attempt timeout for the pre-connect teardown (disconnect + adapter
+/// wait). On the pause-ack-timeout escape path these run while a scan may
+/// still be live and can hang exactly like the connect; bounding them turns
+/// that into a failed attempt the backstop retries instead of a wedge that
+/// blocks every later operation behind the scan gate's lock.
+const TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The HAP Service-Signature characteristic — appears in *every* service. Only
 /// the one in the Protocol Information service is addressable/used; the rest are
 /// dropped during discovery so the (UUID-keyed) handle map doesn't collide and
@@ -124,7 +131,11 @@ impl BluestConnection {
         // Pause the scan for the teardown: on macOS a disconnect cannot
         // complete while a scan is running.
         let _scan_pause = self.scan_gate.pause().await;
-        let _ = self.adapter.disconnect_device(&self.device).await;
+        let _ = tokio::time::timeout(
+            TEARDOWN_TIMEOUT,
+            self.adapter.disconnect_device(&self.device),
+        )
+        .await;
     }
 
     async fn discover(
@@ -167,8 +178,11 @@ impl BluestConnection {
         // complete while a scan is running. The guard resumes the scan when
         // dropped — on success and on every error path alike.
         let _scan_pause = self.scan_gate.pause().await;
-        let _ = self.adapter.disconnect_device(&self.device).await;
-        let _ = self.adapter.wait_available().await;
+        let _ = tokio::time::timeout(TEARDOWN_TIMEOUT, async {
+            let _ = self.adapter.disconnect_device(&self.device).await;
+            let _ = self.adapter.wait_available().await;
+        })
+        .await;
         // Bound the connect + service discovery: a connect attempted while a scan
         // is running can wedge on macOS, so a timeout surfaces as a recoverable
         // disconnect that the per-operation backstop retries rather than hanging.
@@ -351,6 +365,9 @@ impl AdvertSource for BluestConnection {
     /// radio (the [`ScanGate`] is paused) the task drops its scan stream and
     /// restarts it on resume. The task stops for good when the receiver is
     /// dropped or the adapter's scan stream ends.
+    ///
+    /// Intended for a single active watcher per connection: concurrent scan tasks
+    /// would share one scanning flag and corrupt the pause-ack protocol.
     ///
     /// # Errors
     /// Returns [`crate::error::BleError`] on adapter/scan failures.
