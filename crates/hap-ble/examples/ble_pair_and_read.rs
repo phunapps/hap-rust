@@ -35,11 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gatt: std::sync::Arc<dyn hap_ble::GattConnection> = hap_ble::connect_gatt(target).await?;
     let controller = hap_ble::BleController::generate("hap-ble-example".into());
     let controller_id = controller.keypair().id.clone();
-    let hap_ble::Paired {
-        mut accessory,
-        broadcast: _,
-        ..
-    } = controller.pair(gatt, target, &setup_code).await?;
+    let hap_ble::Paired { mut accessory, .. } = controller.pair(gatt, target, &setup_code).await?;
 
     println!("Paired. Attribute database:");
     for acc in accessory.accessories() {
