@@ -19,6 +19,7 @@ mod error;
 mod gatt;
 mod pairing;
 mod pdu;
+mod scan_gate;
 mod session;
 
 pub use accessory::{BleAccessory, CharacteristicEvent};

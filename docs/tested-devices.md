@@ -138,3 +138,9 @@ hap-ble 0.x: pause the advert scan during the reconnect-read, run reads off the
 advert task, and re-add `NotFound`→reconnect mapping (currently
 `NotFound`→`Disconnected` because it hangs during a scan). The IP path and all
 CI-tested logic are unaffected.
+
+**Update (2026-07-27):** the scoped follow-up shipped in `hap-ble` 0.2.0 —
+the advert scan pauses during reconnect/disconnect (`ScanGate`), catch-up poll
+reads run off the advert task (GSN bumps coalesce through a watch channel),
+and bluest `NotFound` maps to a recoverable disconnect again. Live poll-path
+delivery on the Onvis SMS2 is pending re-validation (next section when run).

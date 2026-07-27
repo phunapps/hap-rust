@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## 1.4.0 — 2026-07-27
+
+Live disconnected-event delivery on macOS. `hap-ble` bumps to `0.2.0`
+(behavioral); the other crates are unchanged.
+
+### `hap-ble` 0.2.0
+
+- The advert scan pauses while the supervisor reconnects or disconnects
+  (`ScanGate` coordination): on macOS CoreBluetooth a connect cannot complete
+  while a scan is running, which left the disconnected-event catch-up poll
+  unable to fetch values live. Stop scan → connect → resume scan; the catch-up
+  read then runs over the re-established link.
+- Catch-up poll reads run on their own task, fed the latest bumped GSN through
+  a watch channel — the advert loop never blocks on GATT I/O, and a burst of
+  GSN bumps coalesces into one poll of the latest value.
+- bluest `NotFound` errors classify as recoverable disconnects, so an
+  operation against a slept accessory's stale handle reconnects (and
+  re-discovers handles) instead of failing — this also fixes `remove_pairing`
+  after the device has slept.
+
 ## 1.3.0 — 2026-06-15
 
 BLE transport and durable sleepy-device events. `hap-crypto` bumps to `1.1.0`
