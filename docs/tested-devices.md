@@ -144,3 +144,30 @@ the advert scan pauses during reconnect/disconnect (`ScanGate`), catch-up poll
 reads run off the advert task (GSN bumps coalesce through a watch channel),
 and bluest `NotFound` maps to a recoverable disconnect again. Live poll-path
 delivery on the Onvis SMS2 is pending re-validation (next section when run).
+
+## Feature B poll path — live validation (2026-07-31, Onvis SMS2)
+
+Validated `hap-ble` 0.2.0's scan-pause poll path end-to-end on the real Onvis
+SMS2 (`ble_sleepy_events` example, release build): factory-reset → pair →
+generate-broadcast-key accepted → disconnect → 180 s watch window, two motion
+triggers ~90 s apart.
+
+- **Disconnected-event poll delivered live on macOS.** Both triggers produced
+  `MotionDetected` events through the `0x06` GSN-bump poll: bump detected →
+  advert scan paused → reconnect-read completed → value decoded → scan
+  resumed. The reconnect-read that hung mid-scan before 0.2.0 completed both
+  times.
+- **Scan resumption proven on hardware.** The second GSN bump was detected and
+  polled after the first cycle's reconnect-read had taken and released the
+  radio — the advert scan restarts cleanly after each `ScanGate` pause (the
+  one liveness property CI structurally cannot see).
+- **Sensor re-arm caveat.** Continuous motion keeps the SMS2's motion state
+  active and produces no further GSN bumps; a ~60 s still period between
+  triggers is needed before it re-triggers. (The earlier "wait ~30 s" guidance
+  is marginal — 60 s is reliable.)
+- **`remove_pairing` on the slept device succeeded** — the operation's
+  reconnect now recovers from the stale-handle `NotFound` and the accessory
+  returned to pairable state. No reconnect storm, clean exit.
+- Still **no `0x11` encrypted broadcasts** from this accessory (unchanged
+  device limitation); the broadcast decrypt path remains CI-vector-validated
+  only.
