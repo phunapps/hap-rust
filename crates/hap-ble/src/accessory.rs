@@ -222,6 +222,54 @@ async fn read_char_raw(
     }
 }
 
+/// Issue one encrypted Characteristic-Write carrying `value_bytes`,
+/// re-establishing the secure session exactly as [`read_char_raw`] does.
+///
+/// # Errors
+/// [`BleError::CharacteristicNotFound`] if iid overflows u16; otherwise from
+/// [`pdu::request_secure`], crypto, or reconnection failures.
+async fn write_char_raw(
+    gatt: &dyn GattConnection,
+    secure: &Mutex<Secure>,
+    reviver: &Reviver,
+    uuid: &str,
+    iid: u64,
+    value_bytes: &[u8],
+    frag_size: usize,
+) -> Result<()> {
+    let iid16 = u16::try_from(iid).map_err(|_| BleError::CharacteristicNotFound { aid: 0, iid })?;
+    let body = pdu::encode_write_body(value_bytes);
+    let mut s = secure.lock().await;
+    let mut attempts = 0;
+    loop {
+        revive_if_stale(gatt, &mut s, reviver).await?;
+        s.tid = s.tid.wrapping_add(1);
+        let tid = s.tid;
+        match pdu::request_secure(
+            gatt,
+            &mut s.session,
+            uuid,
+            OpCode::CharacteristicWrite,
+            tid,
+            iid16,
+            &body,
+            frag_size,
+        )
+        .await
+        {
+            Ok(resp) if resp.status != 0 => return Err(BleError::RequestRejected(resp.status)),
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                attempts += 1;
+                if attempts < MAX_REVIVE_RETRIES && gatt.generation().await > s.generation {
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
 /// A connected BLE accessory: holds the GATT link, the secure session, the
 /// cached attribute database, and a map from (aid, iid) to GATT characteristic
 /// UUID for issuing PDUs.
@@ -423,6 +471,39 @@ impl BleAccessory {
             Err(BleError::Disconnected | BleError::Crypto(_)) if removing_self => Ok(()),
             Err(e) => Err(e),
         }
+    }
+
+    /// Write a characteristic value, encoded per its declared format, over the
+    /// encrypted session (re-verified after a reconnect, like [`Self::read`]).
+    ///
+    /// # Errors
+    /// [`BleError::CharacteristicNotFound`] if unknown;
+    /// [`BleError::RequestRejected`] if the accessory returns a non-zero PDU
+    /// status; [`BleError::MalformedPdu`] if `value` does not match the
+    /// characteristic's format; otherwise GATT/crypto errors.
+    pub async fn write(&mut self, aid: u64, iid: u64, value: CharValue) -> Result<()> {
+        let (uuid, format) = self
+            .chars
+            .get(&(aid, iid))
+            .cloned()
+            .ok_or(BleError::CharacteristicNotFound { aid, iid })?;
+        let bytes = db::encode_value(format, &value)?;
+        write_char_raw(
+            self.gatt.as_ref(),
+            &self.secure,
+            &self.reviver,
+            &uuid,
+            iid,
+            &bytes,
+            self.frag_size,
+        )
+        .await
+    }
+
+    /// The accessory's HAP pairing id (as stored in the pairing record).
+    #[must_use]
+    pub fn pairing_id(&self) -> &str {
+        &self.reviver.pairing.pairing_id
     }
 
     /// Enable encrypted broadcast notifications for the given characteristic
@@ -1342,5 +1423,41 @@ mod tests {
         assert!(dedup_should_emit(&emitted, 12, 65535).await);
         assert!(dedup_should_emit(&emitted, 12, 1).await);
         assert!(!dedup_should_emit(&emitted, 12, 1).await);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn write_sends_secure_pdu_and_accepts_success() {
+        let (mut h, gatt) = handle_with_db().await;
+        // Sealed empty success response (control, tid, status=0), zero keys.
+        let plain = vec![0x02, 0x01, 0x00];
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+        h.write(1, 11, hap_model::format::CharValue::Bool(true))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn write_surfaces_nonzero_pdu_status() {
+        let (mut h, gatt) = handle_with_db().await;
+        let plain = vec![0x02, 0x01, 0x06]; // status 6 = invalid request
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+        let err = h
+            .write(1, 11, hap_model::format::CharValue::Bool(true))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BleError::RequestRejected(6)));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn pairing_id_exposes_the_stored_pairing() {
+        let (h, _g) = handle_with_db().await;
+        assert_eq!(h.pairing_id(), "AE:EC:86:C0:BF:D7");
     }
 }

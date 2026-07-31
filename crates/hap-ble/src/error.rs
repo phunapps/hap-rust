@@ -30,6 +30,9 @@ pub enum BleError {
     /// The accessory rejected a pairing step with a non-zero status.
     #[error("accessory rejected pairing (status {0})")]
     PairingRejected(u8),
+    /// The accessory answered a request PDU with a non-zero status.
+    #[error("accessory rejected the request (PDU status {0})")]
+    RequestRejected(u8),
     /// The BLE link dropped mid-operation.
     #[error("the accessory disconnected")]
     Disconnected,

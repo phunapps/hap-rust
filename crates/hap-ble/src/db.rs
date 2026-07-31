@@ -77,6 +77,40 @@ pub(crate) async fn build_db<G: GattConnection + ?Sized>(
     Ok(vec![Accessory { aid: 1, services }])
 }
 
+/// Encode a typed value into the little-endian HAP-BLE wire bytes for its
+/// declared format — the inverse of [`decode_value`].
+///
+/// # Errors
+/// Returns [`BleError::MalformedPdu`] if `value` does not match the characteristic format.
+pub(crate) fn encode_value(format: CharFormat, value: &CharValue) -> Result<Vec<u8>> {
+    let mismatch = || BleError::MalformedPdu("value does not match characteristic format");
+    Ok(match (format, value) {
+        (CharFormat::Bool, CharValue::Bool(b)) => vec![u8::from(*b)],
+        (CharFormat::Uint8, CharValue::Uint(n)) => {
+            vec![u8::try_from(*n).map_err(|_| mismatch())?]
+        }
+        (CharFormat::Uint16, CharValue::Uint(n)) => u16::try_from(*n)
+            .map_err(|_| mismatch())?
+            .to_le_bytes()
+            .to_vec(),
+        (CharFormat::Uint32, CharValue::Uint(n)) => u32::try_from(*n)
+            .map_err(|_| mismatch())?
+            .to_le_bytes()
+            .to_vec(),
+        (CharFormat::Uint64, CharValue::Uint(n)) => n.to_le_bytes().to_vec(),
+        (CharFormat::Int, CharValue::Int(n)) => i32::try_from(*n)
+            .map_err(|_| mismatch())?
+            .to_le_bytes()
+            .to_vec(),
+        // HAP-BLE floats are f32 on the wire; lossy narrowing is inherent.
+        #[allow(clippy::cast_possible_truncation)]
+        (CharFormat::Float, CharValue::Float(f)) => (*f as f32).to_le_bytes().to_vec(),
+        (CharFormat::String, CharValue::Str(s)) => s.clone().into_bytes(),
+        (CharFormat::Tlv8 | CharFormat::Data, CharValue::Bytes(b)) => b.clone(),
+        _ => return Err(mismatch()),
+    })
+}
+
 /// Decode a raw BLE characteristic value to a typed [`CharValue`] per its
 /// [`CharFormat`]. Integers and floats are little-endian.
 ///
@@ -232,5 +266,30 @@ mod tests {
         assert_eq!(ch.iid, 11);
         assert_eq!(ch.format, CharFormat::Bool);
         assert!(ch.perms.read && ch.perms.write);
+    }
+
+    #[test]
+    fn encode_value_roundtrips_through_decode() {
+        let cases: Vec<(CharFormat, CharValue)> = vec![
+            (CharFormat::Bool, CharValue::Bool(true)),
+            (CharFormat::Uint8, CharValue::Uint(7)),
+            (CharFormat::Uint16, CharValue::Uint(300)),
+            (CharFormat::Uint32, CharValue::Uint(70_000)),
+            (CharFormat::Uint64, CharValue::Uint(u64::MAX)),
+            (CharFormat::Int, CharValue::Int(-40)),
+            (CharFormat::Float, CharValue::Float(21.5)),
+        ];
+        #[allow(clippy::unwrap_used)]
+        for (format, value) in cases {
+            let bytes = encode_value(format, &value).unwrap();
+            assert_eq!(decode_value(format, &bytes).unwrap(), value, "{format:?}");
+        }
+    }
+
+    #[test]
+    fn encode_value_rejects_mismatched_value() {
+        assert!(encode_value(CharFormat::Bool, &CharValue::Uint(1)).is_err());
+        assert!(encode_value(CharFormat::Uint8, &CharValue::Uint(256)).is_err());
+        // overflow
     }
 }
