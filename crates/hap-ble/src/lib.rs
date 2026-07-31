@@ -4,8 +4,8 @@
 //! over BLE, reusing the pairing crypto from [`hap_crypto`], the TLV8 codec
 //! from [`hap_tlv8`], and the attribute model from [`hap_model`].
 //!
-//! This is Milestone A: a standalone transport. Unifying it with the IP
-//! `hap_controller` under one `HapController` is Milestone B.
+//! The transport-unified API lives in [`hap_controller`] (feature `ble`);
+//! this crate remains usable standalone.
 #![forbid(unsafe_code)]
 
 mod accessory;

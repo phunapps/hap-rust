@@ -1,6 +1,6 @@
 [package]
 name = "hap-controller"
-version = "1.2.0"
+version = "2.0.0"
 description = "High-level HomeKit (HAP) controller API: discover, pair, connect, read/write/subscribe characteristics."
 edition.workspace = true
 rust-version.workspace = true
@@ -38,6 +38,10 @@ required-features = ["ble"]
 [[test]]
 name = "ble_store"
 path = "tests/ble_store.rs"
+required-features = ["ble"]
+
+[[example]]
+name = "unified_pair_and_read"
 required-features = ["ble"]
 
 [dev-dependencies]

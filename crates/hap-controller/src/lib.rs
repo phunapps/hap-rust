@@ -31,6 +31,46 @@
 //! The doc-test above uses `?` against the library's [`Result`]; real code
 //! propagates it the same way. Library code in this crate never uses
 //! `unwrap`/`expect`.
+//!
+//! # Transports
+//!
+//! By default, `discover` searches only mDNS (IP via `_hap._tcp`). To include
+//! Bluetooth LE results, enable the `ble` cargo feature:
+//!
+//! ```toml
+//! [dependencies]
+//! hap-controller = { version = "2.0", features = ["ble"] }
+//! ```
+//!
+//! With the `ble` feature, [`discover`](HapController::discover) returns
+//! [`Discovered`] variants for both IP and BLE accessories, and you can
+//! [`pair`](HapController::pair) with either. Operations on
+//! [`AccessoryHandle`] (read, write, subscribe, and events) work identically
+//! across both transports; batch reads/writes loop sequentially on BLE.
+//!
+//! The following operations return [`HapError::UnsupportedByTransport`] on BLE:
+//!
+//! | Operation | IP | BLE | Note |
+//! |-----------|:--:|:---:|------|
+//! | `read` / `write` | ✓ | ✓ | Batch reads/writes loop on BLE |
+//! | `subscribe` / `unsubscribe` | ✓ | ✗ | Event polling only on BLE |
+//! | `timed_write` | ✓ | ✗ | Not in HAP-BLE spec |
+//! | `write_with_response` | ✓ | ✗ | Not in HAP-BLE spec |
+//! | `identify` | ✓ | ✗ | Not in HAP-BLE spec |
+//! | `list_pairings` / `add_pairing` | ✓ | ✗ | Not in HAP-BLE spec |
+//! | `remove_pairing` | ✓ | ✗ | Not in HAP-BLE spec |
+//!
+//! ## BLE Lifecycle
+//!
+//! For BLE accessories, after pairing you will want to:
+//!
+//! 1. **Start broadcasts** (for your own observation or to test integrations):
+//!    call `enable_broadcasts`.
+//! 2. **Watch sleepy events**: call `watch_sleepy_events`
+//!    to monitor the device's wake-sleep pattern.
+//! 3. **Persist state**: call [`HapController::save_state`] to write BLE broadcast
+//!    material (signing key + latest GSN counter) to the pairing store. This step
+//!    is required before reconnecting to a BLE accessory.
 
 #![forbid(unsafe_code)]
 
