@@ -5,17 +5,17 @@
 
 A Rust implementation of the **HomeKit Accessory Protocol (HAP)** — controller side.
 
-> Status: **pre-release, Milestone 0.** Nothing here is publishable yet. The
-> repository exists so the roadmap, workspace layout, and contribution model are
-> visible from day one.
+> Status: **Milestone B.** Core functionality is complete and published.
+> See the [Changelog](CHANGELOG.md) and crates.io pages for release notes.
 
 ## What this is
 
 `hap-rust` is a workspace of small, focused crates that together let a Rust
 application act as a HomeKit **controller** — discovering accessories on the
 local network, pairing with them, establishing secure sessions, and reading,
-writing, and subscribing to their characteristics. It targets the **IP
-transport** (HTTP over TCP, accessories discovered via mDNS).
+writing, and subscribing to their characteristics. It supports both the **IP
+transport** (HTTP over TCP, accessories discovered via mDNS) and **Bluetooth LE**
+(with the `ble` feature).
 
 The Rust ecosystem already has [`hap-rs`](https://github.com/ewilken/hap-rs) for
 the **accessory (device)** side. The controller side has no production-grade
@@ -28,7 +28,6 @@ Rust library today. That is the gap we are filling.
 - Not a quick MVP. HAP pairing is a security-sensitive cryptographic protocol.
   Wrong code means broken pairings or leaked long-term keys. The project is
   paced for correctness, not speed.
-- Not BLE. The Bluetooth LE transport is deferred past v1.0.
 
 ## Workspace layout
 
@@ -59,19 +58,20 @@ ends with a `cargo publish` to crates.io.
 
 | Milestone | Crate                | Goal                                                                | Target  |
 | --------- | -------------------- | ------------------------------------------------------------------- | ------- |
-| M0        | —                    | Repo, workspace, CI, roadmap, first aiohomekit vector capture       | planned |
-| M1        | `hap-tlv8`           | TLV8 reader/writer, 255-byte fragmentation, separators; proptest + fuzz | planned |
-| M2        | `hap-crypto` v0.1    | Pair Setup: SRP-6a (3072-bit, SHA-512), HKDF-SHA512, ChaCha20-Poly1305, Ed25519 | planned |
-| M3        | `hap-crypto` v0.2    | Pair Verify: X25519 ECDH, Ed25519 verify, session-key derivation    | planned |
-| M4        | `hap-transport`      | mDNS `_hap._tcp` discovery, HAP HTTP/1.1, record layer, EVENT notifications | planned |
+| M0        | —                    | Repo, workspace, CI, roadmap, first aiohomekit vector capture       | done    |
+| M1        | `hap-tlv8`           | TLV8 reader/writer, 255-byte fragmentation, separators; proptest + fuzz | done    |
+| M2        | `hap-crypto` v0.1    | Pair Setup: SRP-6a (3072-bit, SHA-512), HKDF-SHA512, ChaCha20-Poly1305, Ed25519 | done    |
+| M3        | `hap-crypto` v0.2    | Pair Verify: X25519 ECDH, Ed25519 verify, session-key derivation    | done    |
+| M4        | `hap-transport`      | mDNS `_hap._tcp` discovery, HAP HTTP/1.1, record layer, EVENT notifications | done    |
 | M5        | `hap-pairing`        | Pair Setup + Pair Verify state machines, pairings mgmt. **First pairing.** | done    |
-| M6        | `hap-model`          | Accessory/service/characteristic DB, read/write, HAP-defined types (codegen) | planned |
-| M7        | `hap-controller`     | High-level controller API, subscriptions, examples. **v1.0.**       | planned |
+| M6        | `hap-model`          | Accessory/service/characteristic DB, read/write, HAP-defined types (codegen) | done    |
+| M7        | `hap-controller`     | High-level controller API, subscriptions, examples. **v1.0.**       | done    |
+| MB        | `hap-ble` + unified  | Unified IP+BLE controller API. **Milestone B.**                     | done    |
 
 **M5 is the headline announcement milestone** — "first pure-Rust HomeKit
 controller pairs a real accessory."
 
-Features deferred past v1.0: BLE transport, MFi / hardware authentication,
+Features deferred past v1.0: MFi / hardware authentication,
 IP-camera streaming (RTP / SRTP), resident-controller behaviour, Thread
 transport, Matter bridging, `no_std`, the accessory side, and HAP-defined types
 beyond the common set. These ship in 1.x.
@@ -132,28 +132,34 @@ is the device-side counterpart we do not duplicate.
 
 ## Using the published crates
 
-Nothing is published yet. When M1 ships:
+The high-level API is available in `hap-controller`:
 
 ```toml
 [dependencies]
-hap-tlv8 = "0.1"
+hap-controller = { version = "2.0", features = ["ble"] }
 ```
 
-The high-level API (M7, `hap-controller`) will look like:
+A complete example (discovering on both transports, pairing, and streaming
+events):
 
 ```rust,ignore
-let controller = HapController::builder(store).build().await?;
-let accessory = controller.pair("X-HM://...").await?;   // QR / setup code
-let session = controller.connect(&accessory).await?;
+use hap_controller::{Discovered, HapController, JsonFileStore};
+use std::time::Duration;
+use tokio_stream::StreamExt as _;
 
-let on = session.read(light_on_characteristic).await?;            // read
-session.write(light_on_characteristic, Value::Bool(true)).await?; // write
-let mut events = session.subscribe(&[light_on_characteristic]).await?;
-while let Some(change) = events.next().await { /* live events */ }
+let mut controller = HapController::new(JsonFileStore::new("./homekit-pairings.json")).await?;
+let found = controller.discover(Duration::from_secs(8)).await?;
+let target = &found[0];  // IP or BLE
+let mut handle = controller.pair(target, "123-45-678").await?;
+
+let mut events = handle.events();
+while let Some(ev) = events.next().await {
+    println!("event: aid={} iid={} value={:?}", ev.aid, ev.iid, ev.value);
+}
 ```
 
-See [`crates/hap-controller`](crates/hap-controller/) and the `aiohomekit`
-migration guide (lands with M7).
+See [`crates/hap-controller/examples/unified_pair_and_read.rs`](crates/hap-controller/examples/unified_pair_and_read.rs)
+for the full example.
 
 ## Pairing a real accessory
 

@@ -222,6 +222,54 @@ async fn read_char_raw(
     }
 }
 
+/// Issue one encrypted Characteristic-Write carrying `value_bytes`,
+/// re-establishing the secure session exactly as [`read_char_raw`] does.
+///
+/// # Errors
+/// [`BleError::CharacteristicNotFound`] if iid overflows u16; otherwise from
+/// [`pdu::request_secure`], crypto, or reconnection failures.
+async fn write_char_raw(
+    gatt: &dyn GattConnection,
+    secure: &Mutex<Secure>,
+    reviver: &Reviver,
+    uuid: &str,
+    iid: u64,
+    value_bytes: &[u8],
+    frag_size: usize,
+) -> Result<()> {
+    let iid16 = u16::try_from(iid).map_err(|_| BleError::CharacteristicNotFound { aid: 0, iid })?;
+    let body = pdu::encode_write_body(value_bytes);
+    let mut s = secure.lock().await;
+    let mut attempts = 0;
+    loop {
+        revive_if_stale(gatt, &mut s, reviver).await?;
+        s.tid = s.tid.wrapping_add(1);
+        let tid = s.tid;
+        match pdu::request_secure(
+            gatt,
+            &mut s.session,
+            uuid,
+            OpCode::CharacteristicWrite,
+            tid,
+            iid16,
+            &body,
+            frag_size,
+        )
+        .await
+        {
+            Ok(resp) if resp.status != 0 => return Err(BleError::RequestRejected(resp.status)),
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                attempts += 1;
+                if attempts < MAX_REVIVE_RETRIES && gatt.generation().await > s.generation {
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
 /// A connected BLE accessory: holds the GATT link, the secure session, the
 /// cached attribute database, and a map from (aid, iid) to GATT characteristic
 /// UUID for issuing PDUs.
@@ -423,6 +471,39 @@ impl BleAccessory {
             Err(BleError::Disconnected | BleError::Crypto(_)) if removing_self => Ok(()),
             Err(e) => Err(e),
         }
+    }
+
+    /// Write a characteristic value, encoded per its declared format, over the
+    /// encrypted session (re-verified after a reconnect, like [`Self::read`]).
+    ///
+    /// # Errors
+    /// [`BleError::CharacteristicNotFound`] if unknown;
+    /// [`BleError::RequestRejected`] if the accessory returns a non-zero PDU
+    /// status; [`BleError::MalformedPdu`] if `value` does not match the
+    /// characteristic's format; otherwise GATT/crypto errors.
+    pub async fn write(&mut self, aid: u64, iid: u64, value: CharValue) -> Result<()> {
+        let (uuid, format) = self
+            .chars
+            .get(&(aid, iid))
+            .cloned()
+            .ok_or(BleError::CharacteristicNotFound { aid, iid })?;
+        let bytes = db::encode_value(format, &value)?;
+        write_char_raw(
+            self.gatt.as_ref(),
+            &self.secure,
+            &self.reviver,
+            &uuid,
+            iid,
+            &bytes,
+            self.frag_size,
+        )
+        .await
+    }
+
+    /// The accessory's HAP pairing id (as stored in the pairing record).
+    #[must_use]
+    pub fn pairing_id(&self) -> &str {
+        &self.reviver.pairing.pairing_id
     }
 
     /// Enable encrypted broadcast notifications for the given characteristic
@@ -665,81 +746,12 @@ impl BleAccessory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gatt::{GattCharacteristic, GattService, MockGatt};
-    use hap_crypto::SessionKeys;
-
-    #[allow(clippy::unwrap_used)]
-    fn on_le() -> Vec<u8> {
-        let hex = "00000025000010008000".to_string() + "0026bb765291";
-        let mut b: Vec<u8> = (0..16)
-            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
-            .collect();
-        b.reverse();
-        b
-    }
-
-    fn on_service() -> GattService {
-        GattService {
-            uuid: "00000043-0000-1000-8000-0026bb765291".into(), // LightBulb
-            iid: 10,
-            characteristics: vec![GattCharacteristic {
-                uuid: "00000025-0000-1000-8000-0026bb765291".into(), // On
-                iid: 11,
-            }],
-        }
-    }
-
-    #[allow(clippy::unwrap_used)]
-    fn sig_resp() -> Vec<u8> {
-        let mut body = Vec::new();
-        let mut w = hap_tlv8::Tlv8Writer::new(&mut body);
-        w.push(crate::pdu::param::CHAR_TYPE, &on_le());
-        w.push(crate::pdu::param::PROPERTIES, &0x0083u16.to_le_bytes()); // read+write+events
-        w.push(
-            crate::pdu::param::PRESENTATION_FORMAT,
-            &[0x01, 0, 0, 0, 0, 0, 0],
-        );
-        let mut resp = vec![0x02, 0x01, 0x00];
-        resp.extend_from_slice(&u16::try_from(body.len()).unwrap().to_le_bytes());
-        resp.extend_from_slice(&body);
-        resp
-    }
-
-    #[allow(clippy::unwrap_used)]
-    async fn handle_with_db() -> (BleAccessory, Arc<MockGatt>) {
-        let gatt = Arc::new(MockGatt::new().with_services(vec![on_service()]));
-        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sig_resp());
-        let session = BleSession::new(SessionKeys {
-            read_key: [0; 32],
-            write_key: [0; 32],
-        });
-        let services = gatt.enumerate().await.unwrap();
-        let accessories = crate::db::build_db(gatt.as_ref(), &services, 512)
-            .await
-            .unwrap();
-        let ctx = SecureContext {
-            session,
-            session_generation: 0,
-            keypair: ControllerKeypair::generate("test-controller".into()),
-            pairing: AccessoryPairing {
-                pairing_id: "AE:EC:86:C0:BF:D7".into(),
-                ltpk: [0; 32],
-            },
-            verify_char: "0000004e-0000-1000-8000-0026bb765291".into(),
-            verify_iid: 1,
-            pairings_char: "00000050-0000-1000-8000-0026bb765291".into(),
-            pairings_iid: 2,
-            broadcast_key: hap_crypto::BroadcastKey::from_bytes([0u8; 32]),
-            initial_gsn: 0,
-        };
-        let h = BleAccessory::new(gatt.clone(), ctx, 512, &services, accessories);
-        (h, gatt)
-    }
+    use crate::test_support::ble_accessory_with_db;
 
     #[tokio::test]
     #[allow(clippy::unwrap_used)]
     async fn find_locates_characteristic() {
-        let (h, _g) = handle_with_db().await;
+        let (h, _g) = ble_accessory_with_db().await;
         let (aid, iid) = h
             .find(ServiceType::LightBulb, CharacteristicType::On)
             .unwrap();
@@ -749,7 +761,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::unwrap_used)]
     async fn find_missing_errors() {
-        let (h, _g) = handle_with_db().await;
+        let (h, _g) = ble_accessory_with_db().await;
         let err = h
             .find(ServiceType::LightBulb, CharacteristicType::Brightness)
             .unwrap_err();
@@ -784,7 +796,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::unwrap_used)]
     async fn remove_pairing_writes_request_and_accepts_m2() {
-        let (mut h, gatt) = handle_with_db().await;
+        let (mut h, gatt) = ble_accessory_with_db().await;
 
         // The accessory replies to the encrypted RemovePairing write with a
         // sealed success PDU whose value param is a State-M2 TLV8.
@@ -803,8 +815,8 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::unwrap_used)]
     async fn remove_own_pairing_tolerates_session_teardown() {
-        // handle_with_db pairs as controller id "test-controller".
-        let (mut h, gatt) = handle_with_db().await;
+        // ble_accessory_with_db pairs as controller id "test-controller".
+        let (mut h, gatt) = ble_accessory_with_db().await;
         // The accessory tears down the session as it removes us, so the reply is
         // not validly sealed — open() fails with a crypto error. Removing our OWN
         // id must still succeed (the removal took effect on write).
@@ -817,7 +829,7 @@ mod tests {
     async fn remove_other_pairing_propagates_teardown_error() {
         // The same undecryptable reply when removing a DIFFERENT controller must
         // NOT be swallowed — only self-removal tolerates a teardown.
-        let (mut h, gatt) = handle_with_db().await;
+        let (mut h, gatt) = ble_accessory_with_db().await;
         gatt.queue_read("00000050-0000-1000-8000-0026bb765291", vec![0u8; 24]);
         let err = h.remove_pairing("some-other-controller").await.unwrap_err();
         assert!(matches!(err, BleError::Crypto(_)));
@@ -827,7 +839,7 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     async fn subscribe_then_event_decodes_value() {
         use tokio_stream::StreamExt as _;
-        let (mut h, gatt) = handle_with_db().await;
+        let (mut h, gatt) = ble_accessory_with_db().await;
 
         // A HAP-BLE connected event is a bare notification (trigger) followed by
         // an encrypted Characteristic-Read. Queue the sealed read response the
@@ -859,7 +871,7 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     async fn gsn_bump_triggers_disconnected_event_read() {
         use tokio_stream::StreamExt as _;
-        let (mut h, gatt) = handle_with_db().await;
+        let (mut h, gatt) = ble_accessory_with_db().await;
 
         // The catch-up poll will issue an encrypted read for iid 11; queue the sealed
         // response (zero session keys, recv counter 0) decoding to Bool(true).
@@ -896,8 +908,8 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     async fn encrypted_broadcast_0x11_decrypts_and_emits_event() {
         use tokio_stream::StreamExt as _;
-        // handle_with_db sets broadcast_key = BroadcastKey::from_bytes([0u8; 32]).
-        let (mut h, gatt) = handle_with_db().await;
+        // ble_accessory_with_db sets broadcast_key = BroadcastKey::from_bytes([0u8; 32]).
+        let (mut h, gatt) = ble_accessory_with_db().await;
 
         // Seal a 12-byte broadcast plaintext: gsn=1, iid=11 (LightBulb On, Bool),
         // value bytes = [0x01, 0, 0, 0, 0, 0, 0, 0] (Bool true).
@@ -947,7 +959,7 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     async fn same_change_via_poll_and_broadcast_emits_once() {
         use tokio_stream::StreamExt as _;
-        let (mut h, gatt) = handle_with_db().await;
+        let (mut h, gatt) = ble_accessory_with_db().await;
 
         // Queue the sealed Characteristic-Read response the poll will issue for
         // iid 11 (same setup as gsn_bump_triggers_disconnected_event_read).
@@ -1017,7 +1029,7 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     async fn broadcast_delivered_while_poll_read_blocked() {
         use tokio_stream::StreamExt as _;
-        let (mut h, gatt) = handle_with_db().await;
+        let (mut h, gatt) = ble_accessory_with_db().await;
 
         // Stall the poll's encrypted read of iid 11 until released; queue the
         // sealed Bool(true) response it eventually returns.
@@ -1093,7 +1105,7 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     async fn foreign_device_advert_ignored() {
         use tokio_stream::StreamExt as _;
-        let (mut h, gatt) = handle_with_db().await;
+        let (mut h, gatt) = ble_accessory_with_db().await;
 
         let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
         // watch_sleepy_events expects device_id [1,2,3,4,5,6]
@@ -1126,7 +1138,7 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     async fn stale_gsn_broadcast_ignored() {
         use tokio_stream::StreamExt as _;
-        let (mut h, gatt) = handle_with_db().await;
+        let (mut h, gatt) = ble_accessory_with_db().await;
 
         let key = hap_crypto::BroadcastKey::from_bytes([0u8; 32]);
         let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
@@ -1183,8 +1195,8 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     async fn wrong_broadcast_key_ignored() {
         use tokio_stream::StreamExt as _;
-        // handle_with_db installs broadcast_key = BroadcastKey::from_bytes([0u8;32])
-        let (mut h, gatt) = handle_with_db().await;
+        // ble_accessory_with_db installs broadcast_key = BroadcastKey::from_bytes([0u8;32])
+        let (mut h, gatt) = ble_accessory_with_db().await;
 
         // Seal with the WRONG key ([0xFF;32]).
         let wrong_key = hap_crypto::BroadcastKey::from_bytes([0xFF; 32]);
@@ -1228,7 +1240,7 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     async fn malformed_0x11_advert_ignored() {
         use tokio_stream::StreamExt as _;
-        let (mut h, gatt) = handle_with_db().await;
+        let (mut h, gatt) = ble_accessory_with_db().await;
 
         let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
         h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![])
@@ -1258,7 +1270,7 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     async fn broadcast_value_self_inconsistent_gsn_ignored() {
         use tokio_stream::StreamExt as _;
-        let (mut h, gatt) = handle_with_db().await;
+        let (mut h, gatt) = ble_accessory_with_db().await;
 
         let key = hap_crypto::BroadcastKey::from_bytes([0u8; 32]);
         let aid_bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
@@ -1300,7 +1312,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::unwrap_used)]
     async fn read_after_reconnect_re_verifies_before_using_session() {
-        let (mut h, gatt) = handle_with_db().await;
+        let (mut h, gatt) = ble_accessory_with_db().await;
 
         // Queue a perfectly valid sealed read response (recv counter 0) — it
         // would decode cleanly if the session were used directly.
@@ -1342,5 +1354,41 @@ mod tests {
         assert!(dedup_should_emit(&emitted, 12, 65535).await);
         assert!(dedup_should_emit(&emitted, 12, 1).await);
         assert!(!dedup_should_emit(&emitted, 12, 1).await);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn write_sends_secure_pdu_and_accepts_success() {
+        let (mut h, gatt) = ble_accessory_with_db().await;
+        // Sealed empty success response (control, tid, status=0), zero keys.
+        let plain = vec![0x02, 0x01, 0x00];
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+        h.write(1, 11, hap_model::format::CharValue::Bool(true))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn write_surfaces_nonzero_pdu_status() {
+        let (mut h, gatt) = ble_accessory_with_db().await;
+        let plain = vec![0x02, 0x01, 0x06]; // status 6 = invalid request
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+        let err = h
+            .write(1, 11, hap_model::format::CharValue::Bool(true))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BleError::RequestRejected(6)));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn pairing_id_exposes_the_stored_pairing() {
+        let (h, _g) = ble_accessory_with_db().await;
+        assert_eq!(h.pairing_id(), "AE:EC:86:C0:BF:D7");
     }
 }

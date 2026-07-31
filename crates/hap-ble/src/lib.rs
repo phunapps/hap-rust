@@ -4,8 +4,8 @@
 //! over BLE, reusing the pairing crypto from [`hap_crypto`], the TLV8 codec
 //! from [`hap_tlv8`], and the attribute model from [`hap_model`].
 //!
-//! This is Milestone A: a standalone transport. Unifying it with the IP
-//! `hap_controller` under one `HapController` is Milestone B.
+//! The transport-unified API lives in [`hap_controller`] (feature `ble`);
+//! this crate remains usable standalone.
 #![forbid(unsafe_code)]
 
 mod accessory;
@@ -21,6 +21,12 @@ mod pairing;
 mod pdu;
 mod scan_gate;
 mod session;
+
+/// Test-support seam: the in-memory GATT mock and a ready-made accessory
+/// fixture. Compiled for this crate's own tests and for consumers that enable
+/// the `test-support` feature. **Exempt from semver guarantees.**
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use accessory::{BleAccessory, CharacteristicEvent};
 pub use advert::HapAdvert;

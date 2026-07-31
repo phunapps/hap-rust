@@ -71,6 +71,15 @@ pub enum HapError {
     /// An `X-HM://` setup payload was structurally invalid.
     #[error("invalid setup payload (expected an X-HM:// URI)")]
     InvalidSetupPayload,
+
+    /// The operation exists on another transport but not this accessory's.
+    #[error("operation `{0}` is not supported over this accessory's transport")]
+    UnsupportedByTransport(&'static str),
+
+    /// A BLE transport failure from `hap-ble`.
+    #[cfg(feature = "ble")]
+    #[error("BLE error: {0}")]
+    Ble(#[from] hap_ble::BleError),
 }
 
 /// `Result<T, HapError>` — the public result alias for the whole library.

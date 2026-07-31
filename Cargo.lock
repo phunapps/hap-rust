@@ -720,7 +720,7 @@ dependencies = [
 
 [[package]]
 name = "hap-ble"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bluest",
@@ -734,15 +734,17 @@ dependencies = [
 
 [[package]]
 name = "hap-controller"
-version = "1.2.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
+ "hap-ble",
  "hap-crypto",
  "hap-model",
  "hap-pairing",
  "hap-tlv8",
  "hap-transport",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -784,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "hap-pairing"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",

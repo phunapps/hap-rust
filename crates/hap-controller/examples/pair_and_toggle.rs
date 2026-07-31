@@ -19,7 +19,7 @@ async fn main() -> hap_controller::Result<()> {
 
     let found = controller.discover(Duration::from_secs(5)).await?;
     let target = found.first().expect("no accessory found to pair with");
-    println!("Pairing with {} ...", target.name);
+    println!("Pairing with {} ...", target.name());
 
     let mut handle = controller.pair(target, &setup_code).await?;
     handle.accessories().await?; // populate the cache so find() works

@@ -1,5 +1,7 @@
 //! The GATT I/O seam. `GattConnection` is the boundary the rest of the crate is
 //! written against; `MockGatt` drives it in CI, `BluestConnection` (see bluest_gatt) on hardware.
+//!
+//! The `MockGatt` type is a testing seam — exempt from semver guarantees.
 
 use crate::error::Result;
 use async_trait::async_trait;
@@ -108,8 +110,8 @@ pub(crate) const DEFAULT_FRAGMENT_SIZE: usize = 180;
 /// via [`MockGatt::notifier`] so tests can push events; `enumerate` returns a
 /// seeded service list. Optionally, per-characteristic canned read responses can
 /// be queued with [`MockGatt::queue_read`] (FIFO) to script request/response.
-#[cfg(test)]
-pub(crate) struct MockGatt {
+#[cfg(any(test, feature = "test-support"))]
+pub struct MockGatt {
     values: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
     queued:
         std::sync::Mutex<std::collections::HashMap<String, std::collections::VecDeque<Vec<u8>>>>,
@@ -123,7 +125,7 @@ pub(crate) struct MockGatt {
         std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Notify>>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Default for MockGatt {
     fn default() -> Self {
         let (advert_tx, advert_rx) = mpsc::channel(16);
@@ -140,22 +142,35 @@ impl Default for MockGatt {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::unwrap_used)] // test double: lock poisoning is not a real concern in single-process tests
 impl MockGatt {
-    pub(crate) fn new() -> Self {
+    /// Create a new empty mock GATT device.
+    pub fn new() -> Self {
         Self::default()
     }
 
-    pub(crate) fn with_services(self, services: Vec<GattService>) -> Self {
+    /// Seed this mock with a service list.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal service list lock is poisoned (should never happen
+    /// in a single-threaded test).
+    #[must_use]
+    pub fn with_services(self, services: Vec<GattService>) -> Self {
         *self.services.lock().unwrap() = services;
         self
     }
 
     /// Queue a canned response that the next `read` of `char_uuid` returns
     /// instead of the last-written value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal queued reads lock is poisoned (should never happen
+    /// in a single-threaded test).
     #[allow(dead_code)] // used by later tasks (PDU transport / pairing / db)
-    pub(crate) fn queue_read(&self, char_uuid: &str, value: Vec<u8>) {
+    pub fn queue_read(&self, char_uuid: &str, value: Vec<u8>) {
         self.queued
             .lock()
             .unwrap()
@@ -165,30 +180,42 @@ impl MockGatt {
     }
 
     /// A sender that pushes a notification to subscribers of `char_uuid`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal senders lock is poisoned (should never happen in a
+    /// single-threaded test).
     #[allow(dead_code)] // used by later tasks (events)
-    pub(crate) fn notifier(&self, char_uuid: &str) -> Option<mpsc::Sender<Vec<u8>>> {
+    pub fn notifier(&self, char_uuid: &str) -> Option<mpsc::Sender<Vec<u8>>> {
         self.senders.lock().unwrap().get(char_uuid).cloned()
     }
 
     /// Advance the link generation, simulating a reconnect that invalidated any
     /// secure session minted at an earlier generation.
     #[allow(dead_code)] // used by the reconnect tests
-    pub(crate) fn bump_generation(&self) {
+    pub fn bump_generation(&self) {
+        // No panics: the generation counter does not use locks.
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// A sender that pushes a raw advert to a `watch_adverts` subscriber.
     #[allow(dead_code)] // used by later tasks (broadcast / disconnected-event poll)
-    pub(crate) fn advert_sender(&self) -> mpsc::Sender<RawAdvert> {
+    pub fn advert_sender(&self) -> mpsc::Sender<RawAdvert> {
+        // No panics: we simply clone a channel sender.
         self.advert_tx.clone()
     }
 
     /// Make the next `read` of `char_uuid` await the returned `Notify` before
     /// serving its (queued or last-written) value — simulates a slow read
     /// (e.g. a reconnect-read) so tests can assert other work is not blocked.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal blocked reads lock is poisoned (should never happen
+    /// in a single-threaded test).
     #[allow(dead_code)] // used by the poll-off-advert-task tests
-    pub(crate) fn block_next_read(&self, char_uuid: &str) -> std::sync::Arc<tokio::sync::Notify> {
+    pub fn block_next_read(&self, char_uuid: &str) -> std::sync::Arc<tokio::sync::Notify> {
         let gate = std::sync::Arc::new(tokio::sync::Notify::new());
         self.blocked
             .lock()
@@ -198,7 +225,7 @@ impl MockGatt {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::unwrap_used)] // test double: lock poisoning is not a real concern in single-process tests
 #[async_trait]
 impl AdvertSource for MockGatt {
@@ -214,7 +241,7 @@ impl AdvertSource for MockGatt {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::unwrap_used)] // test double: lock poisoning is not a real concern in single-process tests
 #[async_trait]
 impl GattConnection for MockGatt {

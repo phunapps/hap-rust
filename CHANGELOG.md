@@ -8,6 +8,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## 2.0.0 — 2026-07-31 — Milestone B (unified controller)
+
+One controller API across IP and Bluetooth LE. `hap-pairing` bumps to `2.0.0`
+(transport-aware store, v1 files migrate transparently), `hap-ble` to `0.3.0`
+(public `write`, `test-support` feature), `hap-controller` to `2.0.0`.
+
+### `hap-controller` 2.0.0
+
+- `discover` now returns `Vec<Discovered>` spanning mDNS and (with the new
+  `ble` cargo feature) the BLE scan; `discover_ip`/`discover_ble` remain as
+  typed escape hatches. `pair` takes a `&Discovered`; `connect` dispatches on
+  the stored record's transport.
+- `AccessoryHandle` is transport-unified: read/write/subscribe/events work
+  identically over both transports; batch reads/writes loop sequentially on
+  BLE; IP-only operations (`unsubscribe`, timed writes, write-with-response,
+  pairings list/add, identify) return the new
+  `HapError::UnsupportedByTransport` on BLE.
+- New `save_state` persists BLE broadcast material (key + latest GSN).
+- **Migration:** v1 pairing-store files load transparently and are rewritten
+  as version 2 on the next save. Code constructing `StoredAccessory` must
+  switch from `addr` to `transport: StoredTransport::Ip { addr }`.
+
+### `hap-pairing` 2.0.0
+
+- `StoredAccessory.transport: StoredTransport` (`Ip { addr }` or
+  `Ble { device_id, broadcast }` with zeroizing key material); JSON store
+  document version 2 with transparent v1 migration; `WrongTransport` error;
+  `format_device_id`/`parse_device_id` helpers.
+
+### `hap-ble` 0.3.0
+
+- Public `BleAccessory::write` (typed, format-encoded, session-revived) and
+  `pairing_id`; `BleError::RequestRejected`; `test-support` feature exposing
+  the GATT mock and accessory fixture (semver-exempt testing seam).
+
 ## 1.4.0 — 2026-07-27
 
 Live disconnected-event delivery on macOS. `hap-ble` bumps to `0.2.0`

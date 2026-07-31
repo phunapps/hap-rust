@@ -1,4 +1,4 @@
-//! [`AccessoryHandle`]: one secure session to one accessory, plus a cached
+//! [`IpHandle`]: one secure session to one accessory, plus a cached
 //! accessory tree and an event stream.
 
 use std::collections::{HashMap, HashSet};
@@ -16,7 +16,7 @@ use crate::error::{HapError, Result};
 use crate::event::{into_stream, CharacteristicEvent};
 use crate::reconnect::{backoff, ConnectionState, Reconnected, ReconnectingSession, Reconnector};
 
-/// Default per-request timeout applied to every new [`AccessoryHandle`].
+/// Default per-request timeout applied to every new [`IpHandle`].
 ///
 /// A foreground operation (read, write, subscribe) that receives no response
 /// within this window fails with [`HapError::ConnectionLost`] rather than
@@ -38,7 +38,7 @@ pub struct SessionResponse {
     pub body: Vec<u8>,
 }
 
-/// The transport seam used by [`AccessoryHandle`] for HTTP-style requests and
+/// The transport seam used by [`IpHandle`] for HTTP-style requests and
 /// the `EVENT/1.0` notification channel.
 ///
 /// This exists so the handle's `read`/`write`/`subscribe`/`events` logic can be
@@ -105,9 +105,9 @@ impl Session for SecureSession {
 /// Obtain one from [`crate::HapController::pair`] or
 /// [`crate::HapController::connect`]. Methods that touch the network take
 /// `&mut self` because they mutate the cached accessory tree; the event
-/// [`Stream`] from [`AccessoryHandle::events`] can be held concurrently because
+/// [`Stream`] from [`IpHandle::events`] can be held concurrently because
 /// it is fed by a broadcast channel.
-pub struct AccessoryHandle {
+pub(crate) struct IpHandle {
     conn: Arc<ReconnectingSession>,
     accessories: Option<Vec<Accessory>>,
     events_tx: broadcast::Sender<CharacteristicEvent>,
@@ -129,7 +129,7 @@ impl Reconnector for NoReconnect {
     }
 }
 
-impl AccessoryHandle {
+impl IpHandle {
     /// Build a handle from an established session plus a [`Reconnector`] that can
     /// re-establish it. Crate-internal — used by the controller after Pair
     /// Verify. Must be called from within a Tokio runtime, since it spawns the
@@ -143,9 +143,9 @@ impl AccessoryHandle {
     }
 
     /// Build a handle around an arbitrary [`Session`] with no reconnection.
-    /// Hidden test seam — used by this crate's integration tests to wrap a mock.
-    #[doc(hidden)]
-    pub fn from_session(session: Box<dyn Session>) -> Self {
+    /// Test seam — used by `unified::AccessoryHandle::from_session` (itself a
+    /// hidden test seam for this crate's integration tests) to wrap a mock.
+    pub(crate) fn from_session(session: Box<dyn Session>) -> Self {
         Self::build(
             Arc::from(session),
             Box::new(NoReconnect),
@@ -153,10 +153,10 @@ impl AccessoryHandle {
         )
     }
 
-    /// Build a handle around a session plus a custom [`Reconnector`]. Hidden test
-    /// seam — used by the reconnect tests to drive a controlled reconnector.
-    #[doc(hidden)]
-    pub fn from_parts(session: Arc<dyn Session>, reconnector: Box<dyn Reconnector>) -> Self {
+    /// Build a handle around a session plus a custom [`Reconnector`]. Test
+    /// seam — used by `unified::AccessoryHandle::from_parts` (itself a hidden
+    /// test seam for the reconnect tests) to drive a controlled reconnector.
+    pub(crate) fn from_parts(session: Arc<dyn Session>, reconnector: Box<dyn Reconnector>) -> Self {
         Self::build(session, reconnector, DEFAULT_REQUEST_TIMEOUT)
     }
 
@@ -292,7 +292,7 @@ impl AccessoryHandle {
     /// [`HapError::Transport`] if the read fails, [`HapError::Http`] if the
     /// accessory returns a non-success status, or [`HapError::Model`] if the
     /// JSON cannot be parsed.
-    pub async fn accessories(&mut self) -> Result<&[Accessory]> {
+    pub(crate) async fn accessories(&mut self) -> Result<&[Accessory]> {
         // A reconnect that observed a config-number (`c#`) change requests a
         // refresh; drop the cached tree so it is re-fetched below.
         if self.needs_refresh.swap(false, Ordering::Relaxed) {
@@ -337,7 +337,7 @@ impl AccessoryHandle {
     // Take the type enums by value for caller ergonomics — `find(ServiceType::
     // Outlet, CharacteristicType::On)` reads better than threading references.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn find(
+    pub(crate) fn find(
         &self,
         service: ServiceType,
         characteristic: CharacteristicType,
@@ -369,7 +369,10 @@ impl AccessoryHandle {
     ///
     /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
     /// if any entry fails to decode (including a non-zero per-characteristic status).
-    pub async fn read_many(&mut self, ids: &[(u64, u64)]) -> Result<Vec<((u64, u64), CharValue)>> {
+    pub(crate) async fn read_many(
+        &mut self,
+        ids: &[(u64, u64)],
+    ) -> Result<Vec<((u64, u64), CharValue)>> {
         let path = hap_model::build_read_request(ids);
         let resp = self
             .request("GET", &path, "application/hap+json", b"")
@@ -406,7 +409,7 @@ impl AccessoryHandle {
     ///
     /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
     /// on a per-characteristic failure (207 Multi-Status body).
-    pub async fn write_many(&mut self, writes: &[((u64, u64), CharValue)]) -> Result<()> {
+    pub(crate) async fn write_many(&mut self, writes: &[((u64, u64), CharValue)]) -> Result<()> {
         let body = hap_model::build_write_request(writes);
         self.put_characteristics(&body).await
     }
@@ -418,7 +421,7 @@ impl AccessoryHandle {
     /// [`HapError::Transport`] on a session failure, [`HapError::Http`] on a
     /// non-success status, or [`HapError::Model`] if the response cannot be
     /// decoded (including a non-zero per-characteristic HAP status).
-    pub async fn read(&mut self, aid: u64, iid: u64) -> Result<CharValue> {
+    pub(crate) async fn read(&mut self, aid: u64, iid: u64) -> Result<CharValue> {
         let mut values = self.read_many(&[(aid, iid)]).await?;
         if values.is_empty() {
             return Err(HapError::CharacteristicNotFound { aid, iid });
@@ -433,7 +436,7 @@ impl AccessoryHandle {
     /// [`HapError::Transport`] on a session failure, [`HapError::Http`] on a
     /// non-success status, or [`HapError::Model`] if the accessory reports a
     /// non-zero per-characteristic status (HTTP 207 Multi-Status body).
-    pub async fn write(&mut self, aid: u64, iid: u64, value: CharValue) -> Result<()> {
+    pub(crate) async fn write(&mut self, aid: u64, iid: u64, value: CharValue) -> Result<()> {
         self.write_many(&[((aid, iid), value)]).await
     }
 
@@ -445,7 +448,7 @@ impl AccessoryHandle {
     /// [`HapError::Transport`] if the subscribe write fails, [`HapError::Http`]
     /// on a non-success status, or [`HapError::Model`] on a per-characteristic
     /// failure.
-    pub async fn subscribe(&mut self, aid: u64, iid: u64) -> Result<()> {
+    pub(crate) async fn subscribe(&mut self, aid: u64, iid: u64) -> Result<()> {
         let body = hap_model::build_subscribe_request(&[(aid, iid)], true);
         self.put_characteristics(&body).await?;
         // Record the id so the supervisor can re-issue it after a reconnect.
@@ -461,7 +464,7 @@ impl AccessoryHandle {
     ///
     /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
     /// on a per-characteristic failure.
-    pub async fn unsubscribe(&mut self, aid: u64, iid: u64) -> Result<()> {
+    pub(crate) async fn unsubscribe(&mut self, aid: u64, iid: u64) -> Result<()> {
         let body = hap_model::build_subscribe_request(&[(aid, iid)], false);
         self.put_characteristics(&body).await?;
         if let Ok(mut s) = self.subscribed.lock() {
@@ -474,7 +477,7 @@ impl AccessoryHandle {
     ///
     /// Each call returns an independent receiver; transitions that arrive while
     /// a particular stream is lagging are dropped for that stream.
-    pub fn connection_state(&self) -> impl Stream<Item = ConnectionState> {
+    pub(crate) fn connection_state(&self) -> impl Stream<Item = ConnectionState> {
         crate::event::into_broadcast_stream(self.conn.subscribe_state())
     }
 
@@ -484,7 +487,7 @@ impl AccessoryHandle {
     /// Multiple streams may be held at once; each is an independent broadcast
     /// receiver. Events that arrive while a particular stream is lagging are
     /// dropped for that stream.
-    pub fn events(&self) -> impl Stream<Item = CharacteristicEvent> {
+    pub(crate) fn events(&self) -> impl Stream<Item = CharacteristicEvent> {
         into_stream(self.events_tx.subscribe())
     }
 
@@ -495,7 +498,7 @@ impl AccessoryHandle {
     ///
     /// [`HapError::Transport`]/[`HapError::Http`] on either request, [`HapError::Model`]
     /// on a per-characteristic failure.
-    pub async fn write_timed(
+    pub(crate) async fn write_timed(
         &mut self,
         aid: u64,
         iid: u64,
@@ -528,7 +531,7 @@ impl AccessoryHandle {
     /// [`HapError::Transport`]/[`HapError::Http`] on the request, [`HapError::Model`]
     /// if the response cannot be decoded or the accessory rejects the read-response,
     /// [`HapError::CharacteristicNotFound`] if the accessory returns no value.
-    pub async fn write_with_response(
+    pub(crate) async fn write_with_response(
         &mut self,
         aid: u64,
         iid: u64,
