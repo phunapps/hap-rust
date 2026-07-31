@@ -10,7 +10,8 @@ use hap_transport::{DiscoveredAccessory, HapConnection};
 
 use crate::discovered::Discovered;
 use crate::error::{HapError, Result};
-use crate::handle::AccessoryHandle;
+use crate::handle::IpHandle;
+use crate::unified::AccessoryHandle;
 
 /// Re-establishes a secure session for an [`AccessoryHandle`] by re-running
 /// Pair Verify against the stored pairing. Owned by the handle's supervisor.
@@ -215,11 +216,11 @@ impl HapController {
             stored: stored.clone(),
             keypair: self.keypair.clone(),
         });
-        Ok(AccessoryHandle::connect(
+        Ok(AccessoryHandle::from_ip(IpHandle::connect(
             Arc::new(session),
             reconnector,
             self.request_timeout,
-        ))
+        )))
     }
 
     /// Open a new secure session to an already-paired accessory.
@@ -236,11 +237,11 @@ impl HapController {
             stored,
             keypair: self.keypair.clone(),
         });
-        Ok(AccessoryHandle::connect(
+        Ok(AccessoryHandle::from_ip(IpHandle::connect(
             Arc::new(session),
             reconnector,
             self.request_timeout,
-        ))
+        )))
     }
 
     /// Remove a pairing both from the accessory (`/pairings` remove of this

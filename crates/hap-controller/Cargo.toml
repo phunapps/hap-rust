@@ -30,6 +30,11 @@ thiserror = { workspace = true }
 [features]
 ble = ["dep:hap-ble"]
 
+[[test]]
+name = "ble_handle"
+path = "tests/ble_handle.rs"
+required-features = ["ble"]
+
 [dev-dependencies]
 hap-ble = { path = "../hap-ble", version = "0.3.0", features = ["test-support"] }
 # Integration tests are a separate crate: they only see hap-controller's public
