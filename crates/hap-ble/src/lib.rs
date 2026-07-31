@@ -22,6 +22,12 @@ mod pdu;
 mod scan_gate;
 mod session;
 
+/// Test-support seam: the in-memory GATT mock and a ready-made accessory
+/// fixture. Compiled for this crate's own tests and for consumers that enable
+/// the `test-support` feature. **Exempt from semver guarantees.**
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 pub use accessory::{BleAccessory, CharacteristicEvent};
 pub use advert::HapAdvert;
 pub use bluest_gatt::BluestConnection;
