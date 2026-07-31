@@ -21,7 +21,7 @@
 //!
 //! ```no_run
 //! # async fn run() -> Result<(), hap_pairing::PairingError> {
-//! use hap_pairing::{pair, JsonFileStore, PairingStore, StoredAccessory};
+//! use hap_pairing::{pair, JsonFileStore, PairingStore, StoredAccessory, StoredTransport};
 //! use hap_transport::HapConnection;
 //!
 //! let store = JsonFileStore::new("controller.json");
@@ -37,7 +37,7 @@
 //! let addr = "192.0.2.10:51826".parse().expect("valid addr");
 //! let conn = HapConnection::connect(addr).await?;
 //! let (pairing, _session) = pair(conn, "123-45-678", &controller).await?;
-//! store.save_pairing(&StoredAccessory { pairing, addr }).await?;
+//! store.save_pairing(&StoredAccessory { pairing, transport: StoredTransport::Ip { addr } }).await?;
 //! # Ok(()) }
 //! ```
 
@@ -55,5 +55,8 @@ mod wire;
 pub use error::{PairingError, Result};
 pub use pairings::{PairingInfo, PairingsAdmin};
 pub use setup::pair;
-pub use store::{JsonFileStore, PairingStore, StoredAccessory};
+pub use store::{
+    format_device_id, parse_device_id, JsonFileStore, PairingStore, StoredAccessory,
+    StoredBroadcast, StoredTransport,
+};
 pub use verify::connect;

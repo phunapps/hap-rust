@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use hap_controller::{AccessoryHandle, PairingStore, Session, SessionResponse, StoredAccessory};
+use hap_controller::{
+    AccessoryHandle, PairingStore, Session, SessionResponse, StoredAccessory, StoredTransport,
+};
 use hap_crypto::{AccessoryPairing, ControllerKeypair};
 
 /// Load a fixture from `test-vectors/accessories/` (two levels up from the crate).
@@ -38,7 +40,9 @@ pub fn sample_pairing(id: &str) -> StoredAccessory {
             pairing_id: id.to_string(),
             ltpk: [0u8; 32],
         },
-        addr: "127.0.0.1:0".parse().unwrap(),
+        transport: StoredTransport::Ip {
+            addr: "127.0.0.1:0".parse().unwrap(),
+        },
     }
 }
 

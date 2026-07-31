@@ -31,7 +31,9 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use clap::Parser;
 use hap_crypto::ControllerKeypair;
-use hap_pairing::{pair, JsonFileStore, PairingStore, PairingsAdmin, StoredAccessory};
+use hap_pairing::{
+    pair, JsonFileStore, PairingStore, PairingsAdmin, StoredAccessory, StoredTransport,
+};
 use hap_transport::{discover, HapConnection};
 
 /// Pair a HomeKit accessory and prove the secure session with `ListPairings`.
@@ -115,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
     store
         .save_pairing(&StoredAccessory {
             pairing: pairing.clone(),
-            addr,
+            transport: StoredTransport::Ip { addr },
         })
         .await?;
     println!(

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hap_crypto::ControllerKeypair;
-use hap_pairing::{PairingStore, PairingsAdmin, StoredAccessory};
+use hap_pairing::{PairingStore, PairingsAdmin, StoredAccessory, StoredTransport};
 use hap_transport::{DiscoveredAccessory, HapConnection};
 
 use crate::error::{HapError, Result};
@@ -144,7 +144,9 @@ impl HapController {
         let (pairing, session) = hap_pairing::pair(conn, &normalized, &self.keypair).await?;
         let stored = StoredAccessory {
             pairing,
-            addr: accessory.addr,
+            transport: StoredTransport::Ip {
+                addr: accessory.addr,
+            },
         };
         self.store.save_pairing(&stored).await?;
         let id = stored.pairing.pairing_id.clone();

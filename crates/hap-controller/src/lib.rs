@@ -65,5 +65,7 @@ pub use handle::{Session, SessionResponse};
 pub use hap_model::{
     Accessory, CharValue, Characteristic, CharacteristicType, HapStatus, Service, ServiceType,
 };
-pub use hap_pairing::{JsonFileStore, PairingInfo, PairingStore, StoredAccessory};
+pub use hap_pairing::{
+    JsonFileStore, PairingInfo, PairingStore, StoredAccessory, StoredBroadcast, StoredTransport,
+};
 pub use hap_transport::DiscoveredAccessory;

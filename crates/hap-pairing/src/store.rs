@@ -15,16 +15,47 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{PairingError, Result};
 
-/// A persisted accessory: its [`AccessoryPairing`] plus the socket address it
-/// was last reachable at (a hint for [`connect`](crate::connect); discovery can
-/// override it).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Where and how a stored accessory is reached.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StoredTransport {
+    /// HAP over IP: the socket address the accessory was last reachable at.
+    Ip {
+        /// Last-known address (discovery can override it).
+        addr: SocketAddr,
+    },
+    /// HAP over BLE: the accessory's 6-byte HAP device id from its
+    /// advertisements, plus persisted broadcast material, if any.
+    Ble {
+        /// The HAP device id (matches the id in `0x06` advertisements).
+        device_id: [u8; 6],
+        /// Broadcast key + last GSN, if broadcasts were provisioned.
+        broadcast: Option<StoredBroadcast>,
+    },
+}
+
+/// Persisted HAP-BLE broadcast material (key + last-seen GSN).
+#[derive(Debug, Clone)]
+pub struct StoredBroadcast {
+    /// The broadcast decryption key (zeroizing; redacted `Debug`).
+    pub key: hap_crypto::BroadcastKey,
+    /// The last Global State Number observed.
+    pub gsn: u16,
+}
+
+// `BroadcastKey` deliberately has no `PartialEq`; compare via its bytes.
+impl PartialEq for StoredBroadcast {
+    fn eq(&self, other: &Self) -> bool {
+        self.key.as_bytes() == other.key.as_bytes() && self.gsn == other.gsn
+    }
+}
+
+/// A persisted accessory: its pairing plus how to reach it.
+#[derive(Debug, Clone, PartialEq)]
 pub struct StoredAccessory {
-    /// The pairing established by [`pair`](crate::pair): accessory pairing id +
-    /// accessory long-term public key.
+    /// The pairing established by [`pair`](crate::pair): pairing id + accessory LTPK.
     pub pairing: AccessoryPairing,
-    /// The address the accessory was last reachable at.
-    pub addr: SocketAddr,
+    /// The transport this accessory is reached over.
+    pub transport: StoredTransport,
 }
 
 /// Persistence boundary for the controller identity and its known accessories.
@@ -90,6 +121,8 @@ pub struct JsonFileStore {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Document {
     #[serde(default)]
+    version: Option<u32>,
+    #[serde(default)]
     controller: Option<ControllerRecord>,
     #[serde(default)]
     accessories: Vec<AccessoryRecord>,
@@ -105,9 +138,34 @@ struct ControllerRecord {
 #[derive(Debug, Serialize, Deserialize)]
 struct AccessoryRecord {
     id: String,
-    addr: SocketAddr,
     /// Accessory Ed25519 LTPK, hex-encoded (32 bytes -> 64 hex chars).
     ltpk_hex: String,
+    /// v2 transport record. Absent in v1 documents (which carry `addr`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transport: Option<TransportRecord>,
+    /// Legacy v1 field: bare IP address. Never written by v2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    addr: Option<SocketAddr>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum TransportRecord {
+    Ip {
+        addr: SocketAddr,
+    },
+    Ble {
+        device_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        broadcast: Option<BroadcastRecord>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BroadcastRecord {
+    /// Broadcast key, hex-encoded (32 bytes -> 64 hex chars).
+    key_hex: String,
+    gsn: u16,
 }
 
 impl JsonFileStore {
@@ -126,7 +184,13 @@ impl JsonFileStore {
     async fn read_doc(&self) -> Result<Document> {
         match tokio::fs::read(&self.path).await {
             Ok(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|e| PairingError::Store(e.to_string()))
+                let doc: Document = serde_json::from_slice(&bytes)
+                    .map_err(|e| PairingError::Store(e.to_string()))?;
+                // Validate version: absent (v1) or 1, 2 are accepted; others rejected.
+                match doc.version {
+                    None | Some(1 | 2) => Ok(doc),
+                    Some(_) => Err(PairingError::Malformed("unsupported store version")),
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Document::default()),
             Err(e) => Err(PairingError::Store(e.to_string())),
@@ -134,9 +198,10 @@ impl JsonFileStore {
     }
 
     /// Serialize and write the document, overwriting the file.
-    async fn write_doc(&self, doc: &Document) -> Result<()> {
+    async fn write_doc(&self, mut doc: Document) -> Result<()> {
+        doc.version = Some(2);
         let bytes =
-            serde_json::to_vec_pretty(doc).map_err(|e| PairingError::Store(e.to_string()))?;
+            serde_json::to_vec_pretty(&doc).map_err(|e| PairingError::Store(e.to_string()))?;
         tokio::fs::write(&self.path, bytes)
             .await
             .map_err(|e| PairingError::Store(e.to_string()))
@@ -156,21 +221,59 @@ fn controller_from_record(r: ControllerRecord) -> Result<ControllerKeypair> {
 }
 
 fn accessory_to_record(a: &StoredAccessory) -> AccessoryRecord {
+    let transport = match &a.transport {
+        StoredTransport::Ip { addr } => TransportRecord::Ip { addr: *addr },
+        StoredTransport::Ble {
+            device_id,
+            broadcast,
+        } => TransportRecord::Ble {
+            device_id: format_device_id(device_id),
+            broadcast: broadcast.as_ref().map(|b| BroadcastRecord {
+                key_hex: encode_hex(b.key.as_bytes()),
+                gsn: b.gsn,
+            }),
+        },
+    };
     AccessoryRecord {
         id: a.pairing.pairing_id.clone(),
-        addr: a.addr,
         ltpk_hex: encode_hex(&a.pairing.ltpk),
+        transport: Some(transport),
+        addr: None,
     }
 }
 
 fn accessory_from_record(r: AccessoryRecord) -> Result<StoredAccessory> {
     let ltpk = decode_key_32(&r.ltpk_hex)?;
+    let transport = match (r.transport, r.addr) {
+        (Some(TransportRecord::Ip { addr }), _) | (None, Some(addr)) => {
+            StoredTransport::Ip { addr }
+        }
+        (
+            Some(TransportRecord::Ble {
+                device_id,
+                broadcast,
+            }),
+            _,
+        ) => StoredTransport::Ble {
+            device_id: parse_device_id(&device_id)
+                .ok_or(PairingError::Malformed("malformed BLE device id"))?,
+            broadcast: broadcast
+                .map(|b| {
+                    Ok::<_, PairingError>(StoredBroadcast {
+                        key: hap_crypto::BroadcastKey::from_bytes(decode_key_32(&b.key_hex)?),
+                        gsn: b.gsn,
+                    })
+                })
+                .transpose()?,
+        },
+        (None, None) => return Err(PairingError::Malformed("record has no transport")),
+    };
     Ok(StoredAccessory {
         pairing: AccessoryPairing {
             pairing_id: r.id,
             ltpk,
         },
-        addr: r.addr,
+        transport,
     })
 }
 
@@ -215,6 +318,30 @@ fn hex_digit(c: u8) -> Result<u8> {
     }
 }
 
+/// Render a 6-byte HAP device id as colon-separated lowercase hex.
+#[must_use]
+pub fn format_device_id(id: &[u8; 6]) -> String {
+    id.iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// Parse a colon-separated hex device id (`"59:fa:bc:61:09:d2"`).
+#[must_use]
+pub fn parse_device_id(s: &str) -> Option<[u8; 6]> {
+    let mut out = [0u8; 6];
+    let mut parts = s.split(':');
+    for slot in &mut out {
+        let p = parts.next()?;
+        if p.len() != 2 {
+            return None;
+        }
+        *slot = u8::from_str_radix(p, 16).ok()?;
+    }
+    parts.next().is_none().then_some(out)
+}
+
 #[async_trait]
 impl PairingStore for JsonFileStore {
     async fn load_controller(&self) -> Result<Option<ControllerKeypair>> {
@@ -228,7 +355,7 @@ impl PairingStore for JsonFileStore {
     async fn save_controller(&self, k: &ControllerKeypair) -> Result<()> {
         let mut doc = self.read_doc().await?;
         doc.controller = Some(controller_to_record(k));
-        self.write_doc(&doc).await
+        self.write_doc(doc).await
     }
 
     async fn load_pairings(&self) -> Result<Vec<StoredAccessory>> {
@@ -247,13 +374,13 @@ impl PairingStore for JsonFileStore {
         } else {
             doc.accessories.push(record);
         }
-        self.write_doc(&doc).await
+        self.write_doc(doc).await
     }
 
     async fn delete_pairing(&self, id: &str) -> Result<()> {
         let mut doc = self.read_doc().await?;
         doc.accessories.retain(|r| r.id != id);
-        self.write_doc(&doc).await
+        self.write_doc(doc).await
     }
 }
 
@@ -278,7 +405,9 @@ mod tests {
                 pairing_id: id.to_string(),
                 ltpk: [0x42u8; 32],
             },
-            addr: addr.parse().unwrap(),
+            transport: StoredTransport::Ip {
+                addr: addr.parse().unwrap(),
+            },
         }
     }
 
@@ -346,5 +475,85 @@ mod tests {
         let pairings = reopened.load_pairings().await.unwrap();
         assert_eq!(pairings.len(), 1);
         assert_eq!(pairings[0], acc);
+    }
+
+    /// A v1 document (no `version`, records shaped `{id, addr, ltpk_hex}`)
+    /// loads as Ip records and is rewritten as v2 on the next save.
+    #[tokio::test]
+    async fn v1_document_migrates_to_ip_records() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("pairings.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "controller": { "id": "ctl", "signing_key_hex": "0000000000000000000000000000000000000000000000000000000000000000" },
+  "accessories": [ { "id": "AA:BB", "addr": "192.168.1.9:5001",
+    "ltpk_hex": "1111111111111111111111111111111111111111111111111111111111111111" } ]
+}"#,
+        )
+        .unwrap();
+        let store = JsonFileStore::new(&path);
+        let loaded = store.load_pairings().await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(
+            loaded[0].transport,
+            StoredTransport::Ip {
+                addr: "192.168.1.9:5001".parse().unwrap()
+            }
+        );
+        // A save rewrites the document as v2.
+        store.save_pairing(&loaded[0]).await.unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"version\": 2"));
+    }
+
+    #[tokio::test]
+    async fn ble_record_roundtrips_with_and_without_broadcast() {
+        let (_d, store) = tmp_store();
+        let with = StoredAccessory {
+            pairing: AccessoryPairing {
+                pairing_id: "ble-1".into(),
+                ltpk: [7u8; 32],
+            },
+            transport: StoredTransport::Ble {
+                device_id: [0x59, 0xfa, 0xbc, 0x61, 0x09, 0xd2],
+                broadcast: Some(StoredBroadcast {
+                    key: hap_crypto::BroadcastKey::from_bytes([9u8; 32]),
+                    gsn: 41,
+                }),
+            },
+        };
+        let without = StoredAccessory {
+            pairing: AccessoryPairing {
+                pairing_id: "ble-2".into(),
+                ltpk: [8u8; 32],
+            },
+            transport: StoredTransport::Ble {
+                device_id: [1, 2, 3, 4, 5, 6],
+                broadcast: None,
+            },
+        };
+        store.save_pairing(&with).await.unwrap();
+        store.save_pairing(&without).await.unwrap();
+        let loaded = store.load_pairings().await.unwrap();
+        assert_eq!(loaded, vec![with, without]);
+    }
+
+    #[tokio::test]
+    async fn unknown_version_is_rejected() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("pairings.json");
+        std::fs::write(&path, r#"{ "version": 3, "accessories": [] }"#).unwrap();
+        let err = JsonFileStore::new(&path).load_pairings().await.unwrap_err();
+        assert!(matches!(err, PairingError::Malformed(_)));
+    }
+
+    #[test]
+    fn device_id_string_roundtrips() {
+        let id = [0x59, 0xfa, 0xbc, 0x61, 0x09, 0xd2];
+        assert_eq!(format_device_id(&id), "59:fa:bc:61:09:d2");
+        assert_eq!(parse_device_id("59:fa:bc:61:09:d2"), Some(id));
+        assert_eq!(parse_device_id("59:fa:bc:61:09"), None); // five groups
+        assert_eq!(parse_device_id("zz:fa:bc:61:09:d2"), None); // non-hex
     }
 }

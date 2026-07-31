@@ -9,7 +9,7 @@ use hap_transport::{discover, HapConnection, SecureSession};
 
 use crate::error::{PairingError, Result};
 use crate::setup::check_tlv_error;
-use crate::store::StoredAccessory;
+use crate::store::{StoredAccessory, StoredTransport};
 use crate::wire::PairingConn;
 
 /// The HAP Pair Verify endpoint.
@@ -26,6 +26,7 @@ const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// stored accessory LTPK and upgrades the connection to a [`SecureSession`].
 ///
 /// # Errors
+/// - [`PairingError::WrongTransport`] if the stored record is BLE (not IP).
 /// - [`PairingError::UnknownAccessory`] if the stored address fails and no
 ///   matching accessory is found on the network.
 /// - [`PairingError::Crypto`] if the accessory's Ed25519 signature does not
@@ -35,7 +36,10 @@ pub async fn connect(
     accessory: &StoredAccessory,
     controller: &ControllerKeypair,
 ) -> Result<SecureSession> {
-    let conn = if let Ok(c) = HapConnection::connect(accessory.addr).await {
+    let StoredTransport::Ip { addr } = &accessory.transport else {
+        return Err(PairingError::WrongTransport);
+    };
+    let conn = if let Ok(c) = HapConnection::connect(*addr).await {
         c
     } else {
         let found = discover(DISCOVERY_TIMEOUT).await?;

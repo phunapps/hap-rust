@@ -42,6 +42,11 @@ pub enum PairingError {
     /// The requested accessory/pairing was not found in the store.
     #[error("no stored pairing for accessory id {0:?}")]
     UnknownAccessory(String),
+
+    /// The stored record's transport does not match the requested operation
+    /// (e.g. an IP connect against a BLE record).
+    #[error("stored pairing uses a different transport")]
+    WrongTransport,
 }
 
 /// `Result<T, PairingError>` for convenience.
