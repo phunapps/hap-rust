@@ -127,7 +127,7 @@ impl AccessoryHandle {
     ///
     /// IP: [`HapError::Transport`](crate::HapError::Transport) on a session failure, [`HapError::Http`](crate::HapError::Http)
     /// on a non-success status, or [`HapError::Model`](crate::HapError::Model) if the response cannot
-    /// be decoded. BLE: [`HapError::Ble`](crate::HapError::Ble) on a GATT/PDU/crypto failure or an
+    /// be decoded. BLE: `HapError::Ble` on a GATT/PDU/crypto failure or an
     /// unknown characteristic.
     pub async fn read(&mut self, aid: u64, iid: u64) -> Result<CharValue> {
         match &mut self.inner {
@@ -143,7 +143,7 @@ impl AccessoryHandle {
     ///
     /// IP: [`HapError::Transport`](crate::HapError::Transport) on a session failure, [`HapError::Http`](crate::HapError::Http)
     /// on a non-success status, or [`HapError::Model`](crate::HapError::Model) on a per-characteristic
-    /// failure. BLE: [`HapError::Ble`](crate::HapError::Ble) on a GATT/PDU/crypto failure, an
+    /// failure. BLE: `HapError::Ble` on a GATT/PDU/crypto failure, an
     /// unknown characteristic, or a non-zero PDU status.
     pub async fn write(&mut self, aid: u64, iid: u64, value: CharValue) -> Result<()> {
         match &mut self.inner {
@@ -160,7 +160,7 @@ impl AccessoryHandle {
     ///
     /// IP: [`HapError::Transport`](crate::HapError::Transport) if the subscribe write fails,
     /// [`HapError::Http`](crate::HapError::Http) on a non-success status, or [`HapError::Model`](crate::HapError::Model) on
-    /// a per-characteristic failure. BLE: [`HapError::Ble`](crate::HapError::Ble) if the
+    /// a per-characteristic failure. BLE: `HapError::Ble` if the
     /// characteristic is unknown or the GATT subscription fails.
     pub async fn subscribe(&mut self, aid: u64, iid: u64) -> Result<()> {
         match &mut self.inner {
@@ -177,7 +177,7 @@ impl AccessoryHandle {
     ///
     /// IP: [`HapError::Transport`](crate::HapError::Transport)/[`HapError::Http`](crate::HapError::Http) on the request,
     /// [`HapError::Model`](crate::HapError::Model) if any entry fails to decode. BLE:
-    /// [`HapError::Ble`](crate::HapError::Ble) from the first failing read.
+    /// `HapError::Ble` from the first failing read.
     pub async fn read_many(&mut self, ids: &[(u64, u64)]) -> Result<Vec<((u64, u64), CharValue)>> {
         match &mut self.inner {
             Inner::Ip(h) => h.read_many(ids).await,
@@ -199,7 +199,7 @@ impl AccessoryHandle {
     ///
     /// IP: [`HapError::Transport`](crate::HapError::Transport)/[`HapError::Http`](crate::HapError::Http) on the request,
     /// [`HapError::Model`](crate::HapError::Model) on a per-characteristic failure. BLE:
-    /// [`HapError::Ble`](crate::HapError::Ble) from the first failing write.
+    /// `HapError::Ble` from the first failing write.
     pub async fn write_many(&mut self, writes: &[((u64, u64), CharValue)]) -> Result<()> {
         match &mut self.inner {
             Inner::Ip(h) => h.write_many(writes).await,

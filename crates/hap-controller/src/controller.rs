@@ -111,7 +111,7 @@ impl HapController {
     ///
     /// # Errors
     ///
-    /// [`HapError::Transport`] / [`HapError::Ble`] as above.
+    /// [`HapError::Transport`] / `HapError::Ble` as above.
     pub async fn discover(&self, timeout: Duration) -> Result<Vec<Discovered>> {
         #[cfg(feature = "ble")]
         {
