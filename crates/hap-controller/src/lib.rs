@@ -18,7 +18,7 @@
 //! let store = JsonFileStore::new("./homekit-pairings.json");
 //! let mut controller = HapController::new(store).await?;
 //!
-//! let found = controller.discover(Duration::from_secs(5)).await?;
+//! let found = controller.discover_ip(Duration::from_secs(5)).await?;
 //! let plug = &found[0];
 //! let mut handle = controller.pair(plug, "123-45-678").await?;
 //!
@@ -35,6 +35,7 @@
 #![forbid(unsafe_code)]
 
 mod controller;
+mod discovered;
 mod error;
 mod event;
 mod handle;
@@ -42,6 +43,7 @@ mod reconnect;
 mod setup_payload;
 
 pub use controller::HapController;
+pub use discovered::Discovered;
 pub use error::{HapError, Result};
 pub use event::CharacteristicEvent;
 pub use handle::AccessoryHandle;

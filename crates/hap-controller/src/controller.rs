@@ -8,6 +8,7 @@ use hap_crypto::ControllerKeypair;
 use hap_pairing::{PairingStore, PairingsAdmin, StoredAccessory, StoredTransport};
 use hap_transport::{DiscoveredAccessory, HapConnection};
 
+use crate::discovered::Discovered;
 use crate::error::{HapError, Result};
 use crate::handle::AccessoryHandle;
 
@@ -102,14 +103,71 @@ impl HapController {
         self.request_timeout = timeout;
     }
 
+    /// Discover accessories on every enabled transport for up to `timeout`:
+    /// an mDNS browse and (with the `ble` feature) a BLE scan run
+    /// concurrently. If one transport's scan fails while the other succeeds,
+    /// the successful side is returned; if both fail, the IP error surfaces.
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Transport`] / [`HapError::Ble`] as above.
+    pub async fn discover(&self, timeout: Duration) -> Result<Vec<Discovered>> {
+        #[cfg(feature = "ble")]
+        {
+            let (ip, ble) = tokio::join!(hap_transport::discover(timeout), hap_ble::scan(timeout));
+            let mut out: Vec<Discovered> = Vec::new();
+            let mut ip_err = None;
+            match ip {
+                Ok(found) => out.extend(found.into_iter().map(Discovered::Ip)),
+                Err(e) => ip_err = Some(HapError::from(e)),
+            }
+            match ble {
+                Ok(found) => out.extend(found.into_iter().map(Discovered::Ble)),
+                Err(e) => {
+                    if let Some(ip_err) = ip_err {
+                        // Both transports failed: surface the IP error.
+                        let _ = e;
+                        return Err(ip_err);
+                    }
+                }
+            }
+            if out.is_empty() {
+                if let Some(e) = ip_err {
+                    return Err(e);
+                }
+            }
+            Ok(out)
+        }
+        #[cfg(not(feature = "ble"))]
+        {
+            Ok(hap_transport::discover(timeout)
+                .await?
+                .into_iter()
+                .map(Discovered::Ip)
+                .collect())
+        }
+    }
+
     /// Discover `_hap._tcp` accessories on the local network for up to
-    /// `timeout`.
+    /// `timeout`. IP only; see [`discover`](Self::discover) for a unified method.
     ///
     /// # Errors
     ///
     /// Returns [`HapError::Transport`] if the mDNS browse fails.
-    pub async fn discover(&self, timeout: Duration) -> Result<Vec<DiscoveredAccessory>> {
+    pub async fn discover_ip(&self, timeout: Duration) -> Result<Vec<DiscoveredAccessory>> {
         Ok(hap_transport::discover(timeout).await?)
+    }
+
+    /// Discover only BLE accessories (typed escape hatch).
+    ///
+    /// # Errors
+    /// [`HapError::Ble`] if the scan fails.
+    #[cfg(feature = "ble")]
+    pub async fn discover_ble(
+        &self,
+        timeout: Duration,
+    ) -> Result<Vec<hap_ble::DiscoveredBleAccessory>> {
+        Ok(hap_ble::scan(timeout).await?)
     }
 
     /// The accessory ids of every pairing currently in the store.

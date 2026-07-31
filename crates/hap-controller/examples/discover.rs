@@ -21,8 +21,7 @@ async fn main() -> hap_controller::Result<()> {
         return Ok(());
     }
     for acc in &found {
-        // `DiscoveredAccessory`'s fields are public (hap-transport).
-        println!("- {}  ({})  paired={}", acc.name, acc.id, acc.paired);
+        println!("- {}  ({})  paired={}", acc.name(), acc.id(), acc.paired());
     }
     Ok(())
 }

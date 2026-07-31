@@ -737,6 +737,7 @@ name = "hap-controller"
 version = "1.2.0"
 dependencies = [
  "async-trait",
+ "hap-ble",
  "hap-crypto",
  "hap-model",
  "hap-pairing",
