@@ -2,7 +2,7 @@
 //! then stream events. Run:
 //! `cargo run -p hap-controller --features ble --example unified_pair_and_read -- <setup-code>`
 #![allow(clippy::expect_used, clippy::unwrap_used)] // example binary
-use hap_controller::{Discovered, HapController, JsonFileStore};
+use hap_controller::{CharacteristicType, Discovered, HapController, JsonFileStore, ServiceType};
 use std::time::Duration;
 use tokio_stream::StreamExt as _;
 
@@ -27,6 +27,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut handle = controller.pair(target, &setup_code).await?;
     let accessories = handle.accessories().await?;
     println!("{} accessories in database", accessories.len());
+
+    // Try to read the On characteristic from a LightBulb service
+    match handle.find(ServiceType::LightBulb, CharacteristicType::On) {
+        Ok((aid, iid)) => match handle.read(aid, iid).await {
+            Ok(value) => println!("On = {value:?}"),
+            Err(e) => println!("read failed: {e}"),
+        },
+        Err(_) => println!("no LightBulb/On characteristic found"),
+    }
 
     let mut events = handle.events();
     println!("streaming events for 60s ...");

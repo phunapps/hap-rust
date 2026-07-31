@@ -65,12 +65,13 @@ ends with a `cargo publish` to crates.io.
 | M4        | `hap-transport`      | mDNS `_hap._tcp` discovery, HAP HTTP/1.1, record layer, EVENT notifications | done    |
 | M5        | `hap-pairing`        | Pair Setup + Pair Verify state machines, pairings mgmt. **First pairing.** | done    |
 | M6        | `hap-model`          | Accessory/service/characteristic DB, read/write, HAP-defined types (codegen) | done    |
-| MB       | `hap-ble` + unified  | BLE transport, unified controller API across IP and BLE. **Milestone B.** | done    |
+| M7        | `hap-controller`     | High-level controller API, subscriptions, examples. **v1.0.**       | done    |
+| MB        | `hap-ble` + unified  | Unified IP+BLE controller API. **Milestone B.**                     | done    |
 
 **M5 is the headline announcement milestone** — "first pure-Rust HomeKit
 controller pairs a real accessory."
 
-Features deferred past v1.0: BLE transport, MFi / hardware authentication,
+Features deferred past v1.0: MFi / hardware authentication,
 IP-camera streaming (RTP / SRTP), resident-controller behaviour, Thread
 transport, Matter bridging, `no_std`, the accessory side, and HAP-defined types
 beyond the common set. These ship in 1.x.

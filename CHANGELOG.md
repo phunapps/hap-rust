@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
-## 2.0.0 — Milestone B (unified controller)
+## 2.0.0 — 2026-07-31 — Milestone B (unified controller)
 
 One controller API across IP and Bluetooth LE. `hap-pairing` bumps to `2.0.0`
 (transport-aware store, v1 files migrate transparently), `hap-ble` to `0.3.0`

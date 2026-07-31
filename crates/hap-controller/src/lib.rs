@@ -53,8 +53,9 @@
 //! | Operation | IP | BLE | Note |
 //! |-----------|:--:|:---:|------|
 //! | `read` / `write` | ✓ | ✓ | Batch reads/writes loop on BLE |
-//! | `subscribe` / `unsubscribe` | ✓ | ✗ | Event polling only on BLE |
-//! | `timed_write` | ✓ | ✗ | Not in HAP-BLE spec |
+//! | `subscribe` | ✓ | ✓ | Event polling on BLE via `events()` |
+//! | `unsubscribe` | ✓ | ✗ | Not in HAP-BLE spec |
+//! | `write_timed` | ✓ | ✗ | Not in HAP-BLE spec |
 //! | `write_with_response` | ✓ | ✗ | Not in HAP-BLE spec |
 //! | `identify` | ✓ | ✗ | Not in HAP-BLE spec |
 //! | `list_pairings` / `add_pairing` | ✓ | ✗ | Not in HAP-BLE spec |
