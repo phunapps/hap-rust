@@ -92,5 +92,6 @@ mod tests {
         assert_eq!(d.id(), "59:fa:bc:61:09:d2");
         assert_eq!(d.name(), "59:fa:bc:61:09:d2");
         assert!(d.paired());
+        assert_eq!(d.category(), 10);
     }
 }

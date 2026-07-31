@@ -134,11 +134,11 @@ impl HapController {
                     }
                 }
             }
-            if out.is_empty() {
-                if let Some(e) = ip_err {
-                    return Err(e);
-                }
-            }
+            // A successful BLE scan (even an empty one) means the BLE side
+            // did not fail, so it masks an IP-side error per the doc above:
+            // "if one transport's scan fails while the other succeeds, the
+            // successful side is returned". Only a BLE *failure* falls
+            // through to the both-failed check above.
             Ok(out)
         }
         #[cfg(not(feature = "ble"))]
@@ -363,6 +363,11 @@ impl HapController {
     /// with `HapError::Ble`.
     pub async fn remove_pairing(&mut self, accessory_id: &str) -> Result<()> {
         let stored = self.load_stored(accessory_id).await?;
+        // `load_stored` may have matched case-insensitively or via the BLE
+        // device-id fallback; use the record's own canonical id for every
+        // operation below so the store delete and cache retain compare
+        // exactly, not against whatever casing/form the caller passed in.
+        let canonical_id = stored.pairing.pairing_id.clone();
         match &stored.transport {
             StoredTransport::Ip { .. } => {
                 let mut session = hap_pairing::connect(&stored, &self.keypair).await?;
@@ -371,7 +376,7 @@ impl HapController {
             }
             #[cfg(feature = "ble")]
             StoredTransport::Ble { .. } => {
-                let mut handle = self.connect(accessory_id).await?;
+                let mut handle = self.connect(&canonical_id).await?;
                 let controller_id = self.keypair.id.clone();
                 let Some(b) = handle.as_ble() else {
                     return Err(HapError::UnsupportedByTransport("remove_pairing"));
@@ -385,8 +390,8 @@ impl HapController {
                 ));
             }
         }
-        self.store.delete_pairing(accessory_id).await?;
-        self.cached_ids.retain(|id| id != accessory_id);
+        self.store.delete_pairing(&canonical_id).await?;
+        self.cached_ids.retain(|id| id != &canonical_id);
         Ok(())
     }
 
@@ -497,14 +502,33 @@ impl HapController {
         Ok(())
     }
 
-    /// Load the stored pairing for `accessory_id`, or [`HapError::UnknownAccessory`].
+    /// Load the stored pairing matching `accessory_id`, or
+    /// [`HapError::UnknownAccessory`].
+    ///
+    /// The `pairing_id` match is ASCII-case-insensitive: BLE accessory ids
+    /// surface in two casings — [`Discovered::id`] yields the lowercase
+    /// advertised device-id string, while the store keys BLE records by the
+    /// accessory-cased Pair Setup id captured at `pair` time. If no
+    /// `pairing_id` matches and `accessory_id` parses as a BLE device-id
+    /// string, this falls back to matching a stored BLE record's
+    /// `device_id` bytes, so either casing or either id form finds the
+    /// same record.
     async fn load_stored(&self, accessory_id: &str) -> Result<StoredAccessory> {
-        self.store
-            .load_pairings()
-            .await?
-            .into_iter()
-            .find(|s| s.pairing.pairing_id == accessory_id)
-            .ok_or_else(|| HapError::UnknownAccessory(accessory_id.to_string()))
+        let all = self.store.load_pairings().await?;
+        if let Some(found) = all
+            .iter()
+            .find(|s| s.pairing.pairing_id.eq_ignore_ascii_case(accessory_id))
+        {
+            return Ok(found.clone());
+        }
+        if let Some(bytes) = hap_pairing::parse_device_id(accessory_id) {
+            if let Some(found) = all.iter().find(|s| {
+                matches!(&s.transport, StoredTransport::Ble { device_id, .. } if *device_id == bytes)
+            }) {
+                return Ok(found.clone());
+            }
+        }
+        Err(HapError::UnknownAccessory(accessory_id.to_string()))
     }
 }
 

@@ -57,9 +57,9 @@
 //! | `unsubscribe` | ✓ | ✗ | Not in HAP-BLE spec |
 //! | `write_timed` | ✓ | ✗ | Not in HAP-BLE spec |
 //! | `write_with_response` | ✓ | ✗ | Not in HAP-BLE spec |
-//! | `identify` | ✓ | ✗ | Not in HAP-BLE spec |
+//! | `identify` | ✓ | ✗ | not in this milestone |
 //! | `list_pairings` / `add_pairing` | ✓ | ✗ | Not in HAP-BLE spec |
-//! | `remove_pairing` | ✓ | ✗ | Not in HAP-BLE spec |
+//! | `remove_pairing` | ✓ | ✓ | removes this controller's own pairing |
 //!
 //! ## BLE Lifecycle
 //!
@@ -70,8 +70,9 @@
 //! 2. **Watch sleepy events**: call `watch_sleepy_events`
 //!    to monitor the device's wake-sleep pattern.
 //! 3. **Persist state**: call [`HapController::save_state`] to write BLE broadcast
-//!    material (signing key + latest GSN counter) to the pairing store. This step
-//!    is required before reconnecting to a BLE accessory.
+//!    material (signing key + latest GSN counter) to the pairing store.
+//!    Recommended before shutdown so a later `connect` resumes broadcast
+//!    dedup at the latest GSN; without it, already-seen events may re-emit.
 
 #![forbid(unsafe_code)]
 
