@@ -18,7 +18,7 @@
 //! let store = JsonFileStore::new("./homekit-pairings.json");
 //! let mut controller = HapController::new(store).await?;
 //!
-//! let found = controller.discover_ip(Duration::from_secs(5)).await?;
+//! let found = controller.discover(Duration::from_secs(5)).await?;
 //! let plug = &found[0];
 //! let mut handle = controller.pair(plug, "123-45-678").await?;
 //!

@@ -744,6 +744,7 @@ dependencies = [
  "hap-tlv8",
  "hap-transport",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-stream",
