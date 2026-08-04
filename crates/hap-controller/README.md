@@ -67,10 +67,11 @@ call-by-call map from the `aiohomekit` controller API to `hap-controller`.
 
 ## Deferred past v1.0
 
-BLE transport (GATT, HAP-BLE), IP-camera streaming (RTP/SRTP), MFi / hardware
-authentication, the resident-controller role, Thread transport / Matter
-bridging, `no_std`, the accessory side, and HAP service/characteristic types
-beyond the common set. These ship in the 1.x line.
+IP-camera streaming (RTP/SRTP), MFi / hardware authentication, the
+resident-controller role, Thread transport / Matter bridging, `no_std`, the
+accessory side, and HAP service/characteristic types beyond the common set.
+These ship in the 2.x line. (BLE shipped in Milestone B — enable the `ble`
+feature.)
 
 ## License
 

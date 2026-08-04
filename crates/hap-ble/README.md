@@ -5,9 +5,11 @@ HomeKit controller stack. Discover, pair with, read from, and stream events off
 a HomeKit accessory over BLE, reusing the same Pair Setup / Pair Verify crypto
 as the IP transport.
 
-> **Status:** Milestone A — a standalone transport. Unifying it with the IP
-> `hap-controller` under one API is Milestone B. Characteristic **write**,
-> broadcast notifications, and Thread are out of scope for this milestone.
+> **Status:** stable transport (`0.3`). Usable standalone, or unified with the
+> IP transport under one `hap-controller` API via its `ble` feature
+> (Milestone B). Characteristic read/write, connected events, and durable
+> sleepy-device notifications (encrypted broadcasts + disconnected-event polls)
+> are supported. Thread is out of scope.
 
 ## Example
 
