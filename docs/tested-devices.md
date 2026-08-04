@@ -171,3 +171,40 @@ triggers ~90 s apart.
 - Still **no `0x11` encrypted broadcasts** from this accessory (unchanged
   device limitation); the broadcast decrypt path remains CI-vector-validated
   only.
+
+## Milestone B unified controller — live validation (2026-08-04, Onvis SMS2)
+
+Validated the unified `HapController` (`hap-controller` 2.0.0 with the `ble`
+feature over `hap-ble` 0.3.0) end-to-end on the real Onvis SMS2. A factory
+reset regenerated the accessory's HAP device id (now `2a:3a:ce:c4:b9:6d`).
+
+- **Unified discovery spans both transports.** A single `discover()` returned
+  IP accessories (a paired bulb, an unpaired bulb on the LAN) and the BLE Onvis
+  concurrently as one `Vec<Discovered>`. A sleepy accessory can miss any single
+  scan window, so a discovery-retry loop is needed to catch it (mirrors the
+  standalone `hap-ble` guidance).
+- **Unified pair + read over BLE.** `pair(&Discovered::Ble)` paired the Onvis,
+  built its attribute database, and a `find(MotionSensor, MotionDetected)` +
+  `read` through the unified `AccessoryHandle` returned `Bool(false)` — the
+  handle's BLE dispatch works through the same API as IP.
+- **Transport-aware store, v2 schema.** The persisted record carried
+  `"version": 2`, `transport.type = "ble"`, the lowercase `device_id`, and the
+  broadcast `key_hex` + `gsn` — exactly the Task 1 schema, written by the
+  unified pair path.
+- **Critical id round-trip fix, proven live.** The advert id is lowercase
+  (`2a:3a:…`) while the store keys the record under the accessory's uppercase
+  Pair-Setup id (`2A:3A:…`). A fresh process re-discovered the paired device
+  and `connect(<lowercase advert id>)` resolved the uppercase-keyed record,
+  ran Pair Verify, and reconnected — the exact case-mismatch the final
+  whole-branch review flagged Critical, confirmed fixed on hardware.
+- **`remove_pairing` over BLE cleans up the accessory** when called without a
+  competing live handle (own-id removal → store delete → device pairable). It
+  needs retry tolerance for the sleepy advertising window (succeeded on the
+  second attempt here).
+
+**Sharp edge found (follow-up, not a correctness bug):** `remove_pairing`'s BLE
+arm does its own scan-and-connect, so calling it while still holding a live
+`AccessoryHandle` to the *same* device fails with `AccessoryNotFound` on macOS
+— a connected peripheral stops advertising, so the internal scan finds nothing.
+Callers should drop the handle first, or a future `remove_pairing` overload
+could reuse an existing connection. Filed for a `hap-controller` 2.x follow-up.
