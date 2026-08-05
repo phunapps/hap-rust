@@ -64,8 +64,9 @@ fn rejects_invalid_base36() {
 fn decodes_ble_and_nfc_flags() {
     // Encode a payload with a chosen flag nibble, then assert the decode.
     // Layout: [category:8][flags:4][setup_code:27] within the 9-char base-36.
-    // Reuse the existing decode by constructing the X-HM string via the same
-    // encoder the oracle uses. Flag bits: ip=0x2, ble=0x4, nfc=0x8.
+    // This is a round-trip against our own encode/decode bit assumptions for
+    // the ble/nfc bits (unlike vectors 1/2 above, not cross-checked against
+    // an independently captured vector). Flag bits: ip=0x2, ble=0x4, nfc=0x8.
     fn encode(setup_code: u32, category: u16, flags: u8, setup_id: &str) -> String {
         let value: u64 = ((u64::from(category)) << 31)
             | ((u64::from(flags) & 0xF) << 27)

@@ -318,7 +318,10 @@ impl HapController {
     /// [`HapError::NoMatchingAccessory`] if none matched within `timeout`;
     /// [`HapError::AmbiguousMatch`] if several category-plausible accessories
     /// matched with no setup hash to disambiguate; otherwise the usual
-    /// pairing/transport/crypto errors from [`pair`](Self::pair).
+    /// pairing/transport/crypto errors from [`pair`](Self::pair). Since
+    /// discovery retries in windows until `timeout`, `AmbiguousMatch`'s
+    /// candidates are always from the single most recent ambiguous scan
+    /// round, not accumulated across the whole retry loop.
     pub async fn pair_with_payload(
         &mut self,
         payload: &SetupPayload,

@@ -28,8 +28,8 @@ symmetrically over IP and BLE.
 - `DiscoveredAccessory.setup_hash` decoded from the `sh` mDNS TXT.
 
 ### `hap-ble` 0.4.0
-- `DiscoveredBleAccessory.setup_hash` from the advertisement; base advert floor
-  lowered 17→15 so hashless short adverts still discover.
+- **Breaking:** `DiscoveredBleAccessory.setup_hash` from the advertisement; base
+  advert floor lowered 17→15 so hashless short adverts still discover.
 
 ## 2.0.0 — 2026-08-04 — Milestone B (unified controller)
 

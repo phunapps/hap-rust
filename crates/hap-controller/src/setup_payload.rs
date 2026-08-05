@@ -3,6 +3,11 @@
 use crate::error::{HapError, Result};
 
 /// Pairing-capability flags from a setup payload.
+///
+/// The flag nibble's `ip` bit (`0x2`) is verified against captured
+/// `aiohomekit` vectors; the `ble` (`0x4`) and `nfc` (`0x8`) bits follow the
+/// community-reverse-engineered X-HM layout and have not been independently
+/// confirmed against a captured vector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SetupFlags {
     /// Supports IP (Wi-Fi/Ethernet) pairing.
