@@ -22,9 +22,11 @@ impl SetupPayload {
     /// Prefers a precise setup-hash identity match (`Exact`); a hash that is
     /// present but unequal is a definitive non-match (`None`, never a category
     /// fallback). Absent a usable hash, falls back to a category comparison
-    /// (`Category`). The accessory's device id is uppercased before hashing so
-    /// the case-sensitive hash matches the canonical form the accessory used
-    /// (BLE advertises the device id lowercased; IP already uppercase).
+    /// (`Category`). Accepts the hash computed over either the verbatim
+    /// advertised device id or its uppercased form: `aiohomekit` hashes the
+    /// device id exactly as advertised, but HAP's canonical form is uppercase
+    /// (and our BLE parser lowercases the advertised id, so the uppercased
+    /// form reconstructs it) — a nonconforming accessory could hash either.
     #[must_use]
     pub fn match_kind(&self, d: &Discovered) -> Option<PayloadMatch> {
         let (adv_hash, device_id): (Option<[u8; 4]>, &str) = match d {
@@ -33,8 +35,15 @@ impl SetupPayload {
             Discovered::Ble(b) => (b.setup_hash, b.device_id.as_str()),
         };
         if let (Some(setup_id), Some(h)) = (self.setup_id.as_deref(), adv_hash) {
-            let computed = hap_crypto::setup_hash(setup_id, &device_id.to_ascii_uppercase());
-            return (computed == h).then_some(PayloadMatch::Exact);
+            // The accessory hashed over its advertised device-id string. HAP
+            // canonical form is uppercase (and BLE's advert id is lowercased by
+            // our parser, so the uppercased form reconstructs it), but a
+            // nonconforming accessory could advertise/hash a lowercase id — so
+            // accept either. Two independent 4-byte hashes colliding is
+            // negligible, so this only widens correct matches.
+            let matches_hash = hap_crypto::setup_hash(setup_id, device_id) == h
+                || hap_crypto::setup_hash(setup_id, &device_id.to_ascii_uppercase()) == h;
+            return matches_hash.then_some(PayloadMatch::Exact);
         }
         (d.category() == self.category).then_some(PayloadMatch::Category)
     }
@@ -108,5 +117,72 @@ mod tests {
             Some(PayloadMatch::Category)
         );
         assert_eq!(payload("7OSX", 99).match_kind(&d), None); // wrong category
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[allow(
+    clippy::unreadable_literal,
+    clippy::items_after_statements,
+    clippy::decimal_bitwise_operands
+)] // brief's verbatim X-HM test-encoder helper; style-only, no assertions weakened
+mod ip_tests {
+    use super::*;
+    use crate::{Discovered, SetupPayload};
+
+    // Build an IP Discovered via the transport test helper (the struct is
+    // #[non_exhaustive]); sh is base64 of the 4-byte setup hash.
+    fn ip(id: &str, category: u16, setup_hash: Option<[u8; 4]>) -> Discovered {
+        use base64::Engine as _;
+        let mut txt = std::collections::HashMap::new();
+        txt.insert("id".to_string(), id.to_string());
+        txt.insert("ci".to_string(), category.to_string());
+        if let Some(h) = setup_hash {
+            txt.insert(
+                "sh".to_string(),
+                base64::engine::general_purpose::STANDARD.encode(h),
+            );
+        }
+        let d = hap_transport::discovery_test_support::parse_txt(
+            "Acc._hap._tcp.local.",
+            "127.0.0.1:80".parse().unwrap(),
+            &txt,
+        )
+        .unwrap();
+        Discovered::Ip(d)
+    }
+
+    fn payload_ip(setup_id: &str, category: u16) -> SetupPayload {
+        // reuse the same X-HM encoder used elsewhere; inline a minimal copy.
+        let value: u64 = ((u64::from(category)) << 31) | (0x2u64 << 27) | 11122333u64;
+        const DGT: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let mut buf = [b'0'; 9];
+        let mut v = value;
+        for i in (0..9).rev() {
+            buf[i] = DGT[(v % 36) as usize];
+            v /= 36;
+        }
+        SetupPayload::parse(&format!(
+            "X-HM://{}{setup_id}",
+            String::from_utf8(buf.to_vec()).unwrap()
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn ip_exact_hash_matches() {
+        let h = hap_crypto::setup_hash("7OSX", "AA:BB:CC:DD:EE:FF");
+        let d = ip("AA:BB:CC:DD:EE:FF", 10, Some(h));
+        assert_eq!(
+            payload_ip("7OSX", 10).match_kind(&d),
+            Some(PayloadMatch::Exact)
+        );
+    }
+
+    #[test]
+    fn ip_wrong_hash_is_none() {
+        let d = ip("AA:BB:CC:DD:EE:FF", 10, Some([0, 0, 0, 0]));
+        assert_eq!(payload_ip("7OSX", 10).match_kind(&d), None);
     }
 }
