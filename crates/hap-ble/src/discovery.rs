@@ -83,6 +83,10 @@ pub struct DiscoveredBleAccessory {
     pub config_number: u8,
     /// Whether the accessory advertises as already paired.
     pub paired: bool,
+    /// The accessory's setup hash from the advertisement (4 bytes at `[15..19]`),
+    /// if the advert is long enough to include it. Used to precisely match a
+    /// scanned QR to this accessory.
+    pub setup_hash: Option<[u8; 4]>,
 }
 
 /// Parse a HAP manufacturer-data payload (the bytes after the 0x004C company id)
@@ -91,8 +95,8 @@ pub(crate) fn parse_hap_advert(
     mfg: &[u8],
     peripheral_id: String,
 ) -> Option<DiscoveredBleAccessory> {
-    // Minimum length 17 for the full discovery payload (type 0x06 only).
-    if mfg.len() < 17 {
+    // Minimum length 15 for the base discovery payload (through compat version).
+    if mfg.len() < 15 {
         return None;
     }
     let parsed = crate::advert::HapAdvert::parse(mfg)?;
@@ -116,6 +120,11 @@ pub(crate) fn parse_hap_advert(
     };
     let category = u16::from_le_bytes([mfg[9], mfg[10]]);
     let config_number = mfg[13];
+    let setup_hash = if mfg.len() >= 19 {
+        Some([mfg[15], mfg[16], mfg[17], mfg[18]])
+    } else {
+        None
+    };
     Some(DiscoveredBleAccessory {
         peripheral_id,
         device_id: device_id_str,
@@ -123,6 +132,7 @@ pub(crate) fn parse_hap_advert(
         global_state_number: gsn,
         config_number,
         paired,
+        setup_hash,
     })
 }
 
@@ -157,10 +167,42 @@ mod tests {
         assert_eq!(d.peripheral_id, "11:22:33:44:55:66");
         // status flag bit0 set in our sample = the "not paired" advertisement.
         assert!(!d.paired);
+        // sample_mfg() is 17 bytes, so setup_hash is None.
+        assert_eq!(d.setup_hash, None);
     }
 
     #[test]
     fn rejects_non_hap_advert() {
         assert!(parse_hap_advert(&[0x01, 0x02], "x".into()).is_none());
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn parses_setup_hash_when_present() {
+        // 0x06 advert: type, STL, SF, device_id[6], ACID[2], GSN[2], config,
+        // compat, setup_hash[4]  → 19 bytes.
+        let mfg = [
+            0x06, 0x31, 0x01, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, // type/stl/sf/devid
+            0x0A, 0x00, // ACID (category 10)
+            0x05, 0x00, // GSN
+            0x02, // config number
+            0x02, // compatible version
+            0x5c, 0x8a, 0x27, 0x40, // setup hash
+        ];
+        let d = parse_hap_advert(&mfg, "periph-1".into()).unwrap();
+        assert_eq!(d.setup_hash, Some([0x5c, 0x8a, 0x27, 0x40]));
+        assert_eq!(d.device_id, "aa:bb:cc:dd:ee:ff"); // NOTE: parser lowercases
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn setup_hash_absent_on_short_advert() {
+        // 17-byte advert (no 4-byte hash) → setup_hash None, still parses.
+        let mfg = [
+            0x06, 0x31, 0x01, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x0A, 0x00, 0x05, 0x00, 0x02,
+            0x02, 0x12, 0x34,
+        ];
+        let d = parse_hap_advert(&mfg, "periph-1".into()).unwrap();
+        assert_eq!(d.setup_hash, None);
     }
 }
