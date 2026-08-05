@@ -1,6 +1,6 @@
 [package]
 name = "hap-transport"
-version = "1.1.0"
+version = "1.2.0"
 description = "HomeKit Accessory Protocol IP transport: mDNS discovery, HAP HTTP/1.1, and the ChaCha20-Poly1305 record layer."
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,7 @@ readme = "README.md"
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "net", "io-util", "sync", "macros", "time"] }
 mdns-sd = { workspace = true }

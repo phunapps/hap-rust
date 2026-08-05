@@ -13,6 +13,8 @@ use hap_transport::{DiscoveredAccessory, HapConnection};
 use crate::discovered::Discovered;
 use crate::error::{HapError, Result};
 use crate::handle::IpHandle;
+use crate::payload_match::PayloadMatch;
+use crate::setup_payload::SetupPayload;
 use crate::unified::AccessoryHandle;
 
 /// Re-establishes a secure session for an [`AccessoryHandle`] by re-running
@@ -66,6 +68,38 @@ pub struct HapController {
     /// of the store (the v1.0 single-controller model).
     cached_ids: Vec<String>,
     request_timeout: std::time::Duration,
+}
+
+/// The outcome of matching a scanned payload against discovered accessories.
+#[derive(Debug)]
+enum Selection<'a> {
+    One(&'a Discovered),
+    None,
+    Ambiguous(Vec<String>),
+}
+
+/// Prefer a unique `Exact` match; else a unique `Category` match; else
+/// `None`/`Ambiguous`. Paired accessories are ignored (`match_kind` does not
+/// filter them, so filter here).
+fn select_match<'a>(found: &'a [Discovered], payload: &SetupPayload) -> Selection<'a> {
+    let unpaired = || found.iter().filter(|d| !d.paired());
+    let exact: Vec<&Discovered> = unpaired()
+        .filter(|d| payload.match_kind(d) == Some(PayloadMatch::Exact))
+        .collect();
+    if exact.len() == 1 {
+        return Selection::One(exact[0]);
+    }
+    if exact.len() > 1 {
+        return Selection::Ambiguous(exact.iter().map(|d| d.id().to_string()).collect());
+    }
+    let cat: Vec<&Discovered> = unpaired()
+        .filter(|d| payload.match_kind(d) == Some(PayloadMatch::Category))
+        .collect();
+    match cat.len() {
+        0 => Selection::None,
+        1 => Selection::One(cat[0]),
+        _ => Selection::Ambiguous(cat.iter().map(|d| d.id().to_string()).collect()),
+    }
 }
 
 impl HapController {
@@ -274,6 +308,50 @@ impl HapController {
             self.cached_ids.push(id);
         }
         Ok(AccessoryHandle::from_ble(paired.accessory))
+    }
+
+    /// Discover on the enabled transports (retrying within `timeout` for sleepy
+    /// BLE devices), identify the single accessory the scanned setup payload
+    /// refers to, and pair it with the payload's setup code.
+    ///
+    /// # Errors
+    /// [`HapError::NoMatchingAccessory`] if none matched within `timeout`;
+    /// [`HapError::AmbiguousMatch`] if several category-plausible accessories
+    /// matched with no setup hash to disambiguate; otherwise the usual
+    /// pairing/transport/crypto errors from [`pair`](Self::pair). Since
+    /// discovery retries in windows until `timeout`, `AmbiguousMatch`'s
+    /// candidates are always from the single most recent ambiguous scan
+    /// round, not accumulated across the whole retry loop.
+    pub async fn pair_with_payload(
+        &mut self,
+        payload: &SetupPayload,
+        timeout: Duration,
+    ) -> Result<AccessoryHandle> {
+        const SCAN_WINDOW: Duration = Duration::from_secs(8);
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_ambiguous: Option<Vec<String>> = None;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let window = remaining.min(SCAN_WINDOW);
+            let found = self.discover(window).await?;
+            let chosen = match select_match(&found, payload) {
+                Selection::One(d) => Some(d.clone()),
+                Selection::Ambiguous(ids) => {
+                    last_ambiguous = Some(ids);
+                    None
+                }
+                Selection::None => None,
+            };
+            if let Some(target) = chosen {
+                return self.pair(&target, &payload.setup_code).await;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(match last_ambiguous {
+                    Some(candidates) => HapError::AmbiguousMatch { candidates },
+                    None => HapError::NoMatchingAccessory,
+                });
+            }
+        }
     }
 
     /// How long [`connect`](Self::connect) scans for a stored BLE accessory's
@@ -540,5 +618,84 @@ fn normalize_setup_code(code: &str) -> Result<String> {
         Ok(digits)
     } else {
         Err(HapError::InvalidSetupCode)
+    }
+}
+
+#[cfg(all(test, feature = "ble"))]
+#[allow(clippy::unwrap_used)]
+#[allow(
+    clippy::unreadable_literal,
+    clippy::items_after_statements,
+    clippy::decimal_bitwise_operands
+)] // brief's verbatim X-HM test-encoder helper; style-only, no assertions weakened
+mod tests {
+    use super::*;
+
+    // Build a payload with a known setup_id + category + code (via the same
+    // X-HM encoder used in the setup_payload/payload_match tests).
+    fn payload(setup_id: &str, category: u16) -> SetupPayload {
+        // setup_code value is irrelevant to matching; use 11122333.
+        let value: u64 = ((u64::from(category)) << 31) | (0x2u64 << 27) | 11122333u64;
+        const D: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let mut buf = [b'0'; 9];
+        let mut v = value;
+        for i in (0..9).rev() {
+            buf[i] = D[(v % 36) as usize];
+            v /= 36;
+        }
+        let uri = format!(
+            "X-HM://{}{setup_id}",
+            String::from_utf8(buf.to_vec()).unwrap()
+        );
+        SetupPayload::parse(&uri).unwrap()
+    }
+
+    fn ble(device_id: &str, category: u16, setup_hash: Option<[u8; 4]>) -> Discovered {
+        Discovered::Ble(hap_ble::DiscoveredBleAccessory {
+            peripheral_id: "p".into(),
+            device_id: device_id.into(),
+            category,
+            global_state_number: 0,
+            config_number: 0,
+            paired: false,
+            setup_hash,
+        })
+    }
+
+    #[test]
+    fn select_prefers_exact_then_unique_category() {
+        let hash = hap_crypto::setup_hash("7OSX", "AA:BB:CC:DD:EE:FF");
+        let exact = ble("aa:bb:cc:dd:ee:ff", 10, Some(hash));
+        let other = ble("11:22:33:44:55:66", 10, None); // same category, no hash
+        let p = payload("7OSX", 10);
+
+        // Exact wins even though `other` is a category match.
+        match select_match(&[exact.clone(), other.clone()], &p) {
+            Selection::One(d) => assert_eq!(d.id(), "aa:bb:cc:dd:ee:ff"),
+            s => panic!("expected One, got {s:?}"),
+        }
+        // No exact, two category matches → Ambiguous.
+        let other2 = ble("77:88:99:aa:bb:cc", 10, None);
+        match select_match(&[other, other2], &p) {
+            Selection::Ambiguous(ids) => assert_eq!(ids.len(), 2),
+            s => panic!("expected Ambiguous, got {s:?}"),
+        }
+        // Nothing matches (wrong category) → None.
+        assert!(matches!(
+            select_match(&[ble("aa:bb:cc:dd:ee:ff", 99, None)], &p),
+            Selection::None
+        ));
+    }
+
+    #[test]
+    fn select_ignores_paired_accessories() {
+        let mut d = ble("aa:bb:cc:dd:ee:ff", 10, None);
+        if let Discovered::Ble(b) = &mut d {
+            b.paired = true;
+        }
+        assert!(matches!(
+            select_match(&[d], &payload("7OSX", 10)),
+            Selection::None
+        ));
     }
 }

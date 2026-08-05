@@ -161,6 +161,11 @@ while let Some(ev) = events.next().await {
 See [`crates/hap-controller/examples/unified_pair_and_read.rs`](crates/hap-controller/examples/unified_pair_and_read.rs)
 for the full example.
 
+To pair the exact accessory a scanned HomeKit setup QR points at, parse the
+`X-HM://` URI with `SetupPayload::parse` and call
+`HapController::pair_with_payload` — see
+[`crates/hap-controller/examples/pair_from_qr.rs`](crates/hap-controller/examples/pair_from_qr.rs).
+
 ## Pairing a real accessory
 
 As of **M5**, the first pure-Rust HomeKit controller pairs a real accessory end

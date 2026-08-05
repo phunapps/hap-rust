@@ -80,6 +80,18 @@ pub enum HapError {
     #[cfg(feature = "ble")]
     #[error("BLE error: {0}")]
     Ble(#[from] hap_ble::BleError),
+
+    /// No discovered accessory matched the scanned setup payload within the
+    /// discovery window.
+    #[error("no accessory matching the setup payload was found")]
+    NoMatchingAccessory,
+    /// Several category-plausible accessories matched and no setup hash could
+    /// disambiguate them; choose one and use [`pair`](crate::HapController::pair).
+    #[error("multiple accessories plausibly match the setup payload: {candidates:?}")]
+    AmbiguousMatch {
+        /// Ids of the plausible candidates.
+        candidates: Vec<String>,
+    },
 }
 
 /// `Result<T, HapError>` — the public result alias for the whole library.
