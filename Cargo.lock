@@ -734,7 +734,7 @@ dependencies = [
 
 [[package]]
 name = "hap-controller"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "async-trait",
  "hap-ble",

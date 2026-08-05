@@ -59,3 +59,40 @@ fn rejects_invalid_base36() {
         hap_controller::HapError::InvalidSetupPayload
     ));
 }
+
+#[test]
+fn decodes_ble_and_nfc_flags() {
+    // Encode a payload with a chosen flag nibble, then assert the decode.
+    // Layout: [category:8][flags:4][setup_code:27] within the 9-char base-36.
+    // Reuse the existing decode by constructing the X-HM string via the same
+    // encoder the oracle uses. Flag bits: ip=0x2, ble=0x4, nfc=0x8.
+    fn encode(setup_code: u32, category: u16, flags: u8, setup_id: &str) -> String {
+        let value: u64 = ((u64::from(category)) << 31)
+            | ((u64::from(flags) & 0xF) << 27)
+            | u64::from(setup_code & 0x7FF_FFFF);
+        let base36 = to_base36_9(value);
+        format!("X-HM://{base36}{setup_id}")
+    }
+    fn to_base36_9(mut v: u64) -> String {
+        const D: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let mut buf = [b'0'; 9];
+        for i in (0..9).rev() {
+            buf[i] = D[(v % 36) as usize];
+            v /= 36;
+        }
+        String::from_utf8(buf.to_vec()).unwrap()
+    }
+
+    // ip only (0x2)
+    let p = SetupPayload::parse(&encode(11_122_333, 5, 0x2, "ABCD")).unwrap();
+    assert!(p.flags.ip && !p.flags.ble && !p.flags.nfc);
+    // ip + ble (0x6)
+    let p = SetupPayload::parse(&encode(11_122_333, 5, 0x6, "ABCD")).unwrap();
+    assert!(p.flags.ip && p.flags.ble && !p.flags.nfc);
+    // ip + ble + nfc (0xE)
+    let p = SetupPayload::parse(&encode(11_122_333, 5, 0xE, "ABCD")).unwrap();
+    assert!(p.flags.ip && p.flags.ble && p.flags.nfc);
+    // code + category still decode correctly alongside the flags
+    assert_eq!(p.setup_code, "11122333");
+    assert_eq!(p.category, 5);
+}

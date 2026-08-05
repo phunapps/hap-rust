@@ -7,11 +7,9 @@ use crate::error::{HapError, Result};
 pub struct SetupFlags {
     /// Supports IP (Wi-Fi/Ethernet) pairing.
     pub ip: bool,
-    /// Supports BLE pairing. Not derivable from the standard `X-HM://` IP
-    /// payload; always `false` here.
+    /// Supports BLE pairing. Decoded from the setup payload flag nibble.
     pub ble: bool,
-    /// Supports NFC pairing. Not derivable from the standard `X-HM://` IP
-    /// payload; always `false` here.
+    /// Supports NFC pairing. Decoded from the setup payload flag nibble.
     pub nfc: bool,
 }
 
@@ -48,7 +46,10 @@ impl SetupPayload {
         let value_low = full & 0xFFFF_FFFF;
         let value_high = full >> 32;
         let setup_code_num = value_low & 0x7FF_FFFF;
-        let ip = (value_low >> 28) & 1 == 1;
+        let flags_nibble = (value_low >> 27) & 0xF;
+        let ip = flags_nibble & 0b0010 != 0;
+        let ble = flags_nibble & 0b0100 != 0;
+        let nfc = flags_nibble & 0b1000 != 0;
         let category = u16::try_from((value_high << 1) | ((value_low >> 31) & 1))
             .map_err(|_| HapError::InvalidSetupPayload)?;
         let setup_code = format!("{setup_code_num:08}");
@@ -61,11 +62,7 @@ impl SetupPayload {
             setup_code,
             category,
             setup_id,
-            flags: SetupFlags {
-                ip,
-                ble: false,
-                nfc: false,
-            },
+            flags: SetupFlags { ip, ble, nfc },
         })
     }
 }
