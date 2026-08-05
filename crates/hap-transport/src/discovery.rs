@@ -34,6 +34,10 @@ pub struct DiscoveredAccessory {
     /// The configuration number from the `c#` TXT key; increments when the
     /// accessory's attribute database changes.
     pub config_number: u32,
+    /// The setup hash from the `sh` mDNS TXT record (base64 of 4 bytes), if the
+    /// accessory advertises one (present only for accessories with a setup id).
+    /// Used to precisely match a scanned QR to this accessory.
+    pub setup_hash: Option<[u8; 4]>,
 }
 
 /// Discover HAP accessories on the local network for up to `timeout`.
@@ -145,6 +149,12 @@ pub fn parse_txt<S: ::std::hash::BuildHasher>(
     let sf = parse_num("sf")?;
     let paired = (sf & 0x1) == 0;
 
+    let setup_hash = txt.get("sh").and_then(|s| {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(s).ok()?;
+        <[u8; 4]>::try_from(bytes.as_slice()).ok()
+    });
+
     Ok(DiscoveredAccessory {
         id,
         name: instance_name(fullname),
@@ -152,7 +162,67 @@ pub fn parse_txt<S: ::std::hash::BuildHasher>(
         paired,
         category,
         config_number,
+        setup_hash,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn parse_txt_decodes_setup_hash() {
+        // "sh" is standard base64 of the 4-byte hash 0x5c8a2740.
+        let sh_b64 = base64::engine::general_purpose::STANDARD.encode([0x5c, 0x8a, 0x27, 0x40]);
+        let mut txt = std::collections::HashMap::new();
+        txt.insert("id".to_string(), "AA:BB:CC:DD:EE:FF".to_string());
+        txt.insert("sh".to_string(), sh_b64);
+        let d = parse_txt(
+            "Acc._hap._tcp.local.",
+            "127.0.0.1:80".parse().unwrap(),
+            &txt,
+        )
+        .unwrap();
+        assert_eq!(d.setup_hash, Some([0x5c, 0x8a, 0x27, 0x40]));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn parse_txt_setup_hash_absent_or_malformed_is_none() {
+        let mut txt = std::collections::HashMap::new();
+        txt.insert("id".to_string(), "AA:BB:CC:DD:EE:FF".to_string());
+        // absent
+        let d = parse_txt(
+            "Acc._hap._tcp.local.",
+            "127.0.0.1:80".parse().unwrap(),
+            &txt,
+        )
+        .unwrap();
+        assert_eq!(d.setup_hash, None);
+        // present but not 4 bytes when decoded
+        txt.insert(
+            "sh".to_string(),
+            base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3]),
+        );
+        let d = parse_txt(
+            "Acc._hap._tcp.local.",
+            "127.0.0.1:80".parse().unwrap(),
+            &txt,
+        )
+        .unwrap();
+        assert_eq!(d.setup_hash, None);
+        // present but not valid base64
+        txt.insert("sh".to_string(), "!!!not-base64!!!".to_string());
+        let d = parse_txt(
+            "Acc._hap._tcp.local.",
+            "127.0.0.1:80".parse().unwrap(),
+            &txt,
+        )
+        .unwrap();
+        assert_eq!(d.setup_hash, None);
+    }
 }
 
 /// Test-only re-export so integration tests can exercise [`parse_txt`] without
