@@ -88,6 +88,7 @@ mod tests {
             global_state_number: 1,
             config_number: 1,
             paired: true,
+            setup_hash: None,
         });
         assert_eq!(d.id(), "59:fa:bc:61:09:d2");
         assert_eq!(d.name(), "59:fa:bc:61:09:d2");
