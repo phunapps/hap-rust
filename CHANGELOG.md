@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## 2.1.0 — 2026-08-06 — QR setup-payload pairing
+
+Pair the exact accessory a scanned HomeKit QR points at, precisely and
+symmetrically over IP and BLE.
+
+### `hap-controller` 2.1.0
+- `SetupPayload::match_kind` + `HapController::pair_with_payload(payload, timeout)`:
+  discover-with-retry, identify the scanned accessory (precise setup-hash match
+  when available, else category), and pair — with new `HapError::NoMatchingAccessory`
+  / `AmbiguousMatch` errors and no auto-trying the code against multiple devices.
+- **Behavior change:** `SetupFlags.ble` / `.nfc` now decode from the payload
+  (previously hardcoded `false`).
+
+### `hap-crypto` 1.2.0
+- New `setup_hash(setup_id, device_id)` — the HAP setup hash.
+
+### `hap-transport` 1.2.0
+- `DiscoveredAccessory.setup_hash` decoded from the `sh` mDNS TXT.
+
+### `hap-ble` 0.4.0
+- `DiscoveredBleAccessory.setup_hash` from the advertisement; base advert floor
+  lowered 17→15 so hashless short adverts still discover.
+
 ## 2.0.0 — 2026-08-04 — Milestone B (unified controller)
 
 One controller API across IP and Bluetooth LE. `hap-pairing` bumps to `2.0.0`

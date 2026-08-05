@@ -144,7 +144,7 @@ mod tests {
     // [0]=0x06 (HomeKit type), [1]=STL (subtype<<5 | length=17), [2]=status flags,
     // [3..9]=device id (6 bytes), [9..11]=ACID category (u16 LE),
     // [11..13]=GSN (u16 LE), [13]=config number, [14]=compatible version,
-    // [15..17]=setup hash.
+    // [15..19]=setup hash (4 bytes).
     fn sample_mfg() -> Vec<u8> {
         let mut v = vec![0x06, (1 << 5) | 0x11, 0x01];
         v.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]); // device id

@@ -61,6 +61,68 @@
 //! | `list_pairings` / `add_pairing` | ✓ | ✗ | Not in HAP-BLE spec |
 //! | `remove_pairing` | ✓ | ✓ | removes this controller's own pairing |
 //!
+//! ## QR / setup-payload pairing
+//!
+//! A HomeKit setup QR encodes an `X-HM://` URI: a setup code, category, flags,
+//! and (usually) a 4-character setup id — but never an address or a BLE
+//! identifier. **Discovery is always required; there is no QR-only path.**
+//! [`SetupPayload::parse`] decodes the URI, and matching against what
+//! discovery finds is precise (a setup-hash identity check) when the payload
+//! has a setup id and the accessory advertises a hash, and falls back to a
+//! category-plausible match otherwise.
+//!
+//! The one-call flow:
+//!
+//! ```no_run
+//! use std::time::Duration;
+//! use hap_controller::{HapController, JsonFileStore, SetupPayload};
+//!
+//! # async fn run() -> hap_controller::Result<()> {
+//! let payload = SetupPayload::parse("X-HM://0032T2N7OSX")?;
+//! let store = JsonFileStore::new("./homekit-pairings.json");
+//! let mut controller = HapController::new(store).await?;
+//! let mut handle = controller
+//!     .pair_with_payload(&payload, Duration::from_secs(30))
+//!     .await?;
+//! # let _ = handle.accessories().await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! [`pair_with_payload`](HapController::pair_with_payload) re-scans on a
+//! retry window until exactly one accessory matches, then pairs it with the
+//! payload's setup code. If discovery keeps finding several
+//! category-plausible candidates and no hash can disambiguate them, it
+//! returns [`HapError::AmbiguousMatch`]; if the window elapses with no match
+//! at all, [`HapError::NoMatchingAccessory`]. It never tries the setup code
+//! against more than one accessory.
+//!
+//! To drive discovery and matching yourself — for example, to show the user
+//! candidates before pairing — run your own loop with `discover`,
+//! [`SetupPayload::match_kind`], and [`pair`](HapController::pair):
+//!
+//! ```no_run
+//! use std::time::Duration;
+//! use hap_controller::{HapController, JsonFileStore, SetupPayload};
+//!
+//! # async fn run() -> hap_controller::Result<()> {
+//! let payload = SetupPayload::parse("X-HM://0032T2N7OSX")?;
+//! let store = JsonFileStore::new("./homekit-pairings.json");
+//! let mut controller = HapController::new(store).await?;
+//!
+//! let found = controller.discover(Duration::from_secs(8)).await?;
+//! if let Some(target) = found.iter().find(|d| payload.match_kind(d).is_some()) {
+//!     let mut handle = controller.pair(target, &payload.setup_code).await?;
+//!     # let _ = handle.accessories().await?;
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! `match_kind` (and `pair_with_payload`'s matching) is symmetric across
+//! transports — the same precise-vs-category logic applies whether the
+//! discovered accessory is IP or, with the `ble` feature enabled, `Discovered::Ble`.
+//!
 //! ## BLE Lifecycle
 //!
 //! For BLE accessories, after pairing you will want to:

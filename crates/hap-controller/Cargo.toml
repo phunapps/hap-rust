@@ -44,6 +44,10 @@ required-features = ["ble"]
 name = "unified_pair_and_read"
 required-features = ["ble"]
 
+[[example]]
+name = "pair_from_qr"
+required-features = ["ble"]
+
 [dev-dependencies]
 hap-ble = { path = "../hap-ble", version = "0.4.0", features = ["test-support"] }
 # Integration tests are a separate crate: they only see hap-controller's public
