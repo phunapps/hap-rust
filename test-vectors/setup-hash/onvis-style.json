@@ -1,0 +1,6 @@
+{
+  "setup_id": "7OSX",
+  "device_id": "AA:BB:CC:DD:EE:FF",
+  "setup_hash_hex": "5c8a2740",
+  "source": "SHA-512(setup_id||device_id)[..4]; HAP setup hash; cross-ref aiohomekit"
+}
