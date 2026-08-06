@@ -97,3 +97,69 @@ pub async fn ble_accessory_with_db() -> (BleAccessory, Arc<MockGatt>) {
     let h = BleAccessory::new(gatt.clone(), ctx, 512, &services, accessories);
     (h, gatt)
 }
+
+/// A [`SleepyConnector`](crate::sleepy::SleepyConnector) that returns a
+/// preloaded accessory — for hardware-free cold-arm tests. Testing seam,
+/// semver-exempt.
+pub struct MockSleepyConnector {
+    inner: tokio::sync::Mutex<Option<BleAccessory>>,
+    advert: Arc<MockGatt>,
+}
+
+impl MockSleepyConnector {
+    /// Wrap `accessory`, first setting its advert source to `advert` — the
+    /// same [`MockGatt`] the caller will push adverts through.
+    #[must_use]
+    pub fn new(mut accessory: BleAccessory, advert: Arc<MockGatt>) -> Self {
+        accessory.set_advert_source(advert.clone() as Arc<dyn crate::gatt::AdvertSource>);
+        Self {
+            inner: tokio::sync::Mutex::new(Some(accessory)),
+            advert,
+        }
+    }
+
+    /// The mock advert channel (inject 0x06/0x11 adverts) for the returned accessory.
+    #[must_use]
+    pub fn advert_sender(&self) -> tokio::sync::mpsc::Sender<crate::gatt::RawAdvert> {
+        self.advert.advert_sender()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::sleepy::SleepyConnector for MockSleepyConnector {
+    async fn connect(
+        &self,
+        _device_id: [u8; 6],
+        _pairing: &hap_crypto::AccessoryPairing,
+        _broadcast: Option<crate::broadcast_state::BleBroadcastState>,
+    ) -> crate::error::Result<BleAccessory> {
+        self.inner
+            .lock()
+            .await
+            .take()
+            .ok_or(crate::error::BleError::AccessoryNotFound)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod sleepy_tests {
+    use super::*;
+    use crate::sleepy::SleepyConnector;
+
+    #[tokio::test]
+    async fn mock_connector_returns_ready_accessory_with_source() {
+        let (acc, gatt) = ble_accessory_with_db().await;
+        let conn = MockSleepyConnector::new(acc, gatt.clone());
+        let pairing = hap_crypto::AccessoryPairing {
+            pairing_id: "AE:EC:86:C0:BF:D7".into(),
+            ltpk: [0u8; 32],
+        };
+        let mut ble = conn
+            .connect([0xAE, 0xEC, 0x86, 0xC0, 0xBF, 0xD7], &pairing, None)
+            .await
+            .unwrap();
+        // The returned accessory self-sources (advert source already set):
+        ble.watch_sleepy_events(vec![(1, 11)]).await.unwrap();
+    }
+}

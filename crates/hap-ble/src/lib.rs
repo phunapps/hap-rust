@@ -21,6 +21,7 @@ mod pairing;
 mod pdu;
 mod scan_gate;
 mod session;
+mod sleepy;
 
 /// Test-support seam: the in-memory GATT mock and a ready-made accessory
 /// fixture. Compiled for this crate's own tests and for consumers that enable
@@ -36,6 +37,7 @@ pub use controller::{BleController, Paired};
 pub use discovery::{connect_gatt, scan, DiscoveredBleAccessory};
 pub use error::{BleError, Result};
 pub use gatt::{AdvertSource, GattCharacteristic, GattConnection, GattService, RawAdvert};
+pub use sleepy::{BluestSleepyConnector, SleepyConnector};
 
 // Lower-crate types that appear in this crate's public API.
 pub use hap_crypto::{AccessoryPairing, BroadcastKey, ControllerKeypair};
