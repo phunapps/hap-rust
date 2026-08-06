@@ -1,0 +1,16 @@
+{
+  "description": "HAP-over-Thread (CoAP) cross-verification vectors, derived from aiohomekit with a synthetic non-secret X25519 shared secret. Regenerate with gen_thread_vectors.py.",
+  "shared_secret": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "keys": {
+    "read_key":  "c09403ef8aa6c5045cbd8cf9bf3e665b2caed623af2be0e87c8f80f519914d3d",
+    "write_key": "c3ca130c7033dbe5e7ff7f91d117ead869bac476994c7a48ca170c111136ed96",
+    "event_key": "37c286d4ae336aeead7048a00b7762b642653d0e8aa691d4d3b7f0cf621db796"
+  },
+  "aead": {
+    "note": "ChaCha20-Poly1305, empty AAD, nonce = 4 zero bytes ++ u64 LE counter.",
+    "write_ct0": {"counter": 0, "plaintext": "00030001000000", "ciphertext": "298d1fa5de3bc3fb47f4a26cc72b9b6412d67bcf8a1519"},
+    "write_ct1": {"counter": 1, "plaintext": "00030001000000", "ciphertext": "8132559d2380c8dc87414b6323c329017ea836f9ee77c6"},
+    "read_ct0":  {"counter": 0, "plaintext": "02000001002a",  "ciphertext": "464a405687be9e43bcdccf9e74e0e0d9e4bf22498ee7"},
+    "event_ct0": {"counter": 0, "plaintext": "000a00010001",   "ciphertext": "354e1ad199fa7d58c5b267bdee6603c48e38e7d523ce"}
+  }
+}

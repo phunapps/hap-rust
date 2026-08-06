@@ -836,8 +836,6 @@ dependencies = [
  "async-trait",
  "coap-lite",
  "hap-crypto",
- "hap-model",
- "hap-pairing",
  "hap-tlv8",
  "hex",
  "mdns-sd",

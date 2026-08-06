@@ -42,3 +42,11 @@ pairing(setup+verify over CoAP), discovery(_hap._udp), accessory(read/write),
 controller(identify/pair/connect), hap-crypto::event_key. README + spec.
 Deferred (documented): 0x09 tree decode, event server(MT-2), Block2, persistence
 (StoredTransport::Thread breaking), commissioning, hardware validation.
+
+## Final review (SOUND-WITH-CHANGES) — zero protocol/crypto defects
+Applied now: F3 (dropped unused hap-model/hap-pairing deps; corrected design MT-1
+list), F4 (committed test-vectors/thread-coap/ capture script+vectors+README),
+F5 (decode_all validates tid==index +test), F6 (debug_assert on encoder overflow).
+Deferred to bring-up (documented in crates/hap-thread/BRINGUP.md): F1 CoAP
+separate-response/empty-ACK + token correlation, F2 Block2 reassembly, F7 CON
+retransmit hardening. 29 tests.

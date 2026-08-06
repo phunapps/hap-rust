@@ -70,6 +70,12 @@ pub(crate) fn encode_request(op: OpCode, tid: u8, iid: u16, body: &[u8]) -> Vec<
     out.push(tid);
     out.extend_from_slice(&iid.to_le_bytes());
     // The wire length field is u16; HAP PDU bodies are always well within that.
+    // A body that overflowed would corrupt the PDU, so assert the invariant in
+    // debug builds (unreachable for real characteristic values).
+    debug_assert!(
+        u16::try_from(body.len()).is_ok(),
+        "HAP PDU body exceeds the u16 length field"
+    );
     let len = u16::try_from(body.len()).unwrap_or(u16::MAX);
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(body);
@@ -81,8 +87,12 @@ pub(crate) fn encode_request(op: OpCode, tid: u8, iid: u16, body: &[u8]) -> Vec<
 /// aiohomekit's `encode_all_pdus`), so [`decode_all`] can be started at tid `0`.
 pub(crate) fn encode_all(op: OpCode, entries: &[(u16, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
+    debug_assert!(
+        entries.len() <= 256,
+        "batched request exceeds the u8 transaction-id space (256)"
+    );
     for (idx, (iid, body)) in entries.iter().enumerate() {
-        // A batch never exceeds 255 entries in practice; index is the tid.
+        // A batch never exceeds 256 entries in practice; index is the tid.
         let tid = u8::try_from(idx).unwrap_or(u8::MAX);
         out.extend_from_slice(&encode_request(op, tid, *iid, body));
     }
@@ -178,12 +188,22 @@ pub(crate) fn decode_response(pdu: &[u8]) -> Result<Response> {
 /// Decode a batched response payload into its constituent PDUs, in order.
 ///
 /// # Errors
-/// Returns [`ThreadError::MalformedPdu`] if any PDU in the batch is malformed.
+/// Returns [`ThreadError::MalformedPdu`] if any PDU in the batch is malformed or
+/// its transaction id does not match its position (the batch is tagged
+/// `tid = index`, as [`encode_all`] emits and aiohomekit's `decode_all_pdus`
+/// checks) — results are position-aligned with the request, so a misordered
+/// batch must not be accepted silently.
 pub(crate) fn decode_all(pdu: &[u8]) -> Result<Vec<Response>> {
     let mut out = Vec::new();
     let mut offset = 0;
     while offset < pdu.len() {
         let (resp, consumed) = decode_one(&pdu[offset..])?;
+        let expected_tid = u8::try_from(out.len()).unwrap_or(u8::MAX);
+        if resp.tid != expected_tid {
+            return Err(ThreadError::MalformedPdu(
+                "batched response transaction id does not match its position",
+            ));
+        }
         out.push(resp);
         offset += consumed;
     }
@@ -265,6 +285,19 @@ mod tests {
         assert_eq!(all[0].body, vec![0x01]);
         assert_eq!(all[1].tid, 0x01);
         assert!(all[1].body.is_empty());
+    }
+
+    #[test]
+    fn decode_all_rejects_misordered_tids() {
+        // Two responses tagged tid 0 then tid 5 — the second's tid ≠ its index 1.
+        let buf = vec![
+            0x02, 0x00, 0x00, 0x00, 0x00, // tid0, len0
+            0x02, 0x05, 0x00, 0x00, 0x00, // tid5 at position 1 → mismatch
+        ];
+        assert!(matches!(
+            decode_all(&buf),
+            Err(ThreadError::MalformedPdu(_))
+        ));
     }
 
     #[test]
