@@ -152,14 +152,14 @@ impl BleController {
         // broadcast key. A rejected/absent key means no 0x11 broadcasts will
         // ever flow regardless of per-characteristic enable — the first thing to
         // check when broadcast notifications don't appear.
-        if let Some(sig_iid) = protocol_info_signature_iid(&services) {
+        if let Some(service_iid) = protocol_info_service_iid(&services) {
             match crate::pdu::request_secure(
                 gatt.as_ref(),
                 &mut session,
                 SERVICE_SIGNATURE_CHAR,
                 crate::pdu::OpCode::ProtocolConfig,
                 1,
-                sig_iid,
+                service_iid,
                 &GENERATE_BROADCAST_KEY_BODY,
                 frag,
             )
@@ -167,19 +167,19 @@ impl BleController {
             {
                 Ok(r) if r.status == 0 => {
                     tracing::debug!(
-                        iid = sig_iid,
+                        iid = service_iid,
                         "generate-broadcast-key accepted by accessory"
                     );
                 }
                 Ok(r) => {
                     tracing::debug!(
-                        iid = sig_iid,
+                        iid = service_iid,
                         status = r.status,
                         "generate-broadcast-key rejected by accessory (non-zero HAP status)"
                     );
                 }
                 Err(e) => {
-                    tracing::debug!(iid = sig_iid, error = %e, "generate-broadcast-key write failed");
+                    tracing::debug!(iid = service_iid, error = %e, "generate-broadcast-key write failed");
                 }
             }
         } else {
@@ -212,14 +212,22 @@ impl BleController {
 /// The Service-Signature characteristic's iid within the Protocol Information
 /// service — the correct target for the generate-broadcast-key request (every
 /// service has a Service-Signature char, so we must scope to this service).
-fn protocol_info_signature_iid(services: &[crate::gatt::GattService]) -> Option<u16> {
+fn protocol_info_service_iid(services: &[crate::gatt::GattService]) -> Option<u16> {
     let svc = services
         .iter()
         .find(|s| s.uuid.eq_ignore_ascii_case(PROTOCOL_INFO_SERVICE))?;
-    svc.characteristics
+    // The generate-broadcast-key request is written to the Service-Signature
+    // characteristic's GATT handle, but the PDU carries the Protocol-Information
+    // *service's* instance id — not the characteristic's own iid (aiohomekit
+    // uses `hap_char.service.iid`; an accessory rejects the characteristic iid
+    // with HAP status 4, "invalid instance id"). We still require the
+    // Service-Signature characteristic to be present, since its absence means
+    // the accessory does not implement encrypted broadcasts at all.
+    let has_signature = svc
+        .characteristics
         .iter()
-        .find(|c| c.uuid.eq_ignore_ascii_case(SERVICE_SIGNATURE_CHAR))
-        .map(|c| c.iid)
+        .any(|c| c.uuid.eq_ignore_ascii_case(SERVICE_SIGNATURE_CHAR));
+    has_signature.then_some(svc.iid)
 }
 
 /// Find a characteristic's HAP instance id by UUID in an enumerated GATT tree.
@@ -243,16 +251,16 @@ mod tests {
     }
 
     #[test]
-    fn finds_protocol_info_service_signature_iid() {
+    fn returns_protocol_info_service_iid_when_signature_present() {
         use crate::gatt::{GattCharacteristic, GattService};
         let services = vec![
             // A decoy service that also carries a Service-Signature char (they
-            // share one UUID) is listed FIRST, so a non-scoped flat search would
-            // wrongly return its iid (99). The lookup must scope to the
-            // Protocol-Information service and return 42.
+            // share one UUID) is listed FIRST; the lookup must scope to the
+            // Protocol-Information service and return ITS service iid (16), not
+            // the decoy's (and not any characteristic iid).
             GattService {
                 uuid: "00000055-0000-1000-8000-0026bb765291".into(),
-                iid: 0,
+                iid: 80,
                 characteristics: vec![GattCharacteristic {
                     uuid: SERVICE_SIGNATURE_CHAR.into(),
                     iid: 99,
@@ -260,34 +268,33 @@ mod tests {
             },
             GattService {
                 uuid: PROTOCOL_INFO_SERVICE.into(),
-                iid: 0,
+                iid: 16, // the service instance id — the request target
                 characteristics: vec![
                     GattCharacteristic {
                         uuid: SERVICE_SIGNATURE_CHAR.into(),
-                        iid: 42,
+                        iid: 17, // the characteristic iid — NOT what we send
                     },
                     GattCharacteristic {
                         uuid: "00000037-0000-1000-8000-0026bb765291".into(),
-                        iid: 43,
+                        iid: 18,
                     },
                 ],
             },
         ];
-        assert_eq!(protocol_info_signature_iid(&services), Some(42));
+        assert_eq!(protocol_info_service_iid(&services), Some(16));
     }
 
     #[test]
     fn missing_protocol_info_signature_is_none() {
         use crate::gatt::GattService;
-        // The Protocol-Information service is present but its Service-Signature
-        // char was dropped from the enumerated tree — the pre-fix bug that
-        // aborted the generate-broadcast-key request. Documents the contract:
-        // no char in scope ⇒ None (a best-effort skip, not a hard error).
+        // Protocol-Information service present but with no Service-Signature char
+        // ⇒ the accessory does not implement encrypted broadcasts ⇒ None (a
+        // best-effort skip, not a hard error).
         let services = vec![GattService {
             uuid: PROTOCOL_INFO_SERVICE.into(),
-            iid: 0,
+            iid: 16,
             characteristics: vec![],
         }];
-        assert_eq!(protocol_info_signature_iid(&services), None);
+        assert_eq!(protocol_info_service_iid(&services), None);
     }
 }

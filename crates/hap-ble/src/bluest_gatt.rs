@@ -90,6 +90,11 @@ fn is_disconnect(e: &BleError) -> bool {
 struct ServiceShape {
     uuid: String,
     char_uuids: Vec<String>,
+    /// The HAP service instance id (read from the service's Service-Instance-ID
+    /// characteristic). `0` unless captured — currently read only for the
+    /// Protocol-Information service, whose iid is the generate-broadcast-key
+    /// request target.
+    service_iid: u16,
 }
 
 /// A `GattConnection` over a connected `bluest` [`Device`] that reconnects and
@@ -137,9 +142,19 @@ impl BluestConnection {
             let svc_uuid = svc.uuid().to_string().to_ascii_lowercase();
             let is_protocol_info = svc_uuid == PROTOCOL_INFO_SERVICE;
             let mut char_uuids = Vec::new();
+            let mut service_iid = 0u16;
             for ch in svc.discover_characteristics().await.map_err(be)? {
                 let uuid = ch.uuid().to_string().to_ascii_lowercase();
                 char_uuids.push(uuid.clone());
+                // The generate-broadcast-key PDU carries the Protocol-Information
+                // SERVICE's instance id (aiohomekit's `hap_char.service.iid`),
+                // not the Service-Signature characteristic's own iid. Read it from
+                // this service's Service-Instance-ID characteristic value now,
+                // while we hold the exact per-service handle — its UUID is shared
+                // across every service, so the UUID-keyed map can't recover it.
+                if is_protocol_info && uuid == HAP_SERVICE_ID_CHAR {
+                    service_iid = u16_le(&ch.read().await.map_err(be)?).unwrap_or(0);
+                }
                 // The Service-Signature char exists in every service and they all
                 // share one UUID; keep only the Protocol Information service's so
                 // the UUID-keyed handle map resolves the generate-broadcast-key
@@ -153,6 +168,7 @@ impl BluestConnection {
             shape.push(ServiceShape {
                 uuid: svc.uuid().to_string(),
                 char_uuids,
+                service_iid,
             });
         }
         Ok((chars, shape))
@@ -336,7 +352,7 @@ impl GattConnection for BluestConnection {
             }
             services.push(GattService {
                 uuid: svc.uuid.clone(),
-                iid: 0,
+                iid: svc.service_iid,
                 characteristics,
             });
         }
