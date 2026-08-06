@@ -50,17 +50,26 @@ const PROTOCOL_INFO_SERVICE: &str = "000000a2-0000-1000-8000-0026bb765291";
 const MAX_OP_RECONNECTS: u32 = 8;
 
 /// Map a bluest error to a [`BleError`], classifying link-loss conditions as
-/// [`BleError::Disconnected`] (so the supervisor reconnects) from bluest's typed
-/// [`ErrorKind`] rather than by string-matching. A [`Timeout`](ErrorKind::Timeout)
-/// is treated as a disconnect: on some platforms a dropped link surfaces as a
-/// read/write timeout, and a reconnect+retry against a merely-slow accessory is
-/// cheap and self-correcting. A [`NotFound`](ErrorKind::NotFound) is too: on
-/// macOS an operation against a slept accessory's stale characteristic handle
-/// reports it, and the reconnect re-discovers the handles.
+/// [`BleError::Disconnected`] (so the supervisor reconnects). Primarily from
+/// bluest's typed [`ErrorKind`]: a [`Timeout`](ErrorKind::Timeout) is treated as
+/// a disconnect (on some platforms a dropped link surfaces as a read/write
+/// timeout, and a reconnect+retry against a merely-slow accessory is cheap and
+/// self-correcting); a [`NotFound`](ErrorKind::NotFound) too (on macOS an
+/// operation against a slept accessory's stale characteristic handle reports it,
+/// and the reconnect re-discovers the handles). Linux/BlueZ, however, collapses a
+/// "device not connected" GATT error into an untyped [`Other`](ErrorKind::Other),
+/// so a message fallback recovers that one case — see [`classify`].
 // By value for ergonomic `.map_err(be)`.
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn be(e: bluest::Error) -> BleError {
-    match e.kind() {
+    classify(e.kind(), &e.to_string())
+}
+
+/// Classify a bluest error's kind + message into a [`BleError`]. Split out so
+/// the Linux message-recovery path (below) is unit-testable without
+/// constructing a backend error with a specific message.
+fn classify(kind: ErrorKind, msg: &str) -> BleError {
+    match kind {
         ErrorKind::NotConnected
         | ErrorKind::AdapterUnavailable
         | ErrorKind::ConnectionFailed
@@ -68,7 +77,14 @@ pub(crate) fn be(e: bluest::Error) -> BleError {
         | ErrorKind::NotReady
         | ErrorKind::NotFound
         | ErrorKind::Timeout => BleError::Disconnected,
-        _ => BleError::Backend(e.to_string()),
+        // Linux/BlueZ collapses "device not connected" into a generic error
+        // (bluer `Failed` → bluest `ErrorKind::Other`), losing the typed signal
+        // CoreBluetooth surfaces as `NotConnected`. Recover it from the message
+        // so the reconnect-and-retry supervisor fires on Linux exactly as it
+        // does on macOS — otherwise a sleepy catch-up poll reads on a link that
+        // was never re-established and every read returns "Not connected".
+        _ if msg.to_ascii_lowercase().contains("not connected") => BleError::Disconnected,
+        _ => BleError::Backend(msg.to_string()),
     }
 }
 
@@ -450,5 +466,38 @@ mod tests {
     fn not_found_maps_to_disconnected() {
         let e = bluest::Error::from(ErrorKind::NotFound);
         assert!(matches!(be(e), BleError::Disconnected));
+    }
+
+    /// Linux/BlueZ collapses "device not connected" into `ErrorKind::Other`
+    /// (bluer `Failed`), so the typed match misses it. The message-recovery
+    /// path must still classify it as a disconnect so the catch-up poll's
+    /// reconnect fires (the macOS `NotConnected` kind maps directly). This is
+    /// the root cause of the sleepy poll failing on the Pi with "Not connected".
+    #[test]
+    fn bluez_not_connected_message_maps_to_disconnected() {
+        assert!(matches!(
+            classify(
+                ErrorKind::Other,
+                "Bluetooth operation failed: Not connected"
+            ),
+            BleError::Disconnected
+        ));
+        // A genuine unrelated error stays a Backend error (no spurious reconnect).
+        assert!(matches!(
+            classify(
+                ErrorKind::Other,
+                "characteristic write failed: invalid value"
+            ),
+            BleError::Backend(_)
+        ));
+        // The typed disconnect kinds still classify (regression guard).
+        assert!(matches!(
+            classify(ErrorKind::NotConnected, ""),
+            BleError::Disconnected
+        ));
+        assert!(matches!(
+            classify(ErrorKind::NotFound, ""),
+            BleError::Disconnected
+        ));
     }
 }
