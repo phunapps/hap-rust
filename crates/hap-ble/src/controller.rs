@@ -152,10 +152,14 @@ impl BleController {
         // so it emits encrypted broadcast notifications while disconnected. An
         // accessory that doesn't support broadcasts (or whose Service-Signature
         // characteristic we can't address) just won't broadcast — the
-        // disconnected-event poll still delivers durable events. Failure here must
-        // not abort pairing, so it is ignored.
+        // disconnected-event poll still delivers durable events.
+        // The outcome is logged (not propagated) so pairing stays unaffected;
+        // enable `hap_ble=debug` to see whether the accessory generated its
+        // broadcast key. A rejected/absent key means no 0x11 broadcasts will
+        // ever flow regardless of per-characteristic enable — the first thing to
+        // check when broadcast notifications don't appear.
         if let Some(sig_iid) = protocol_info_signature_iid(&services) {
-            let _ = crate::pdu::request_secure(
+            match crate::pdu::request_secure(
                 gatt.as_ref(),
                 &mut session,
                 SERVICE_SIGNATURE_CHAR,
@@ -165,7 +169,30 @@ impl BleController {
                 &GENERATE_BROADCAST_KEY_BODY,
                 frag,
             )
-            .await;
+            .await
+            {
+                Ok(r) if r.status == 0 => {
+                    tracing::debug!(
+                        iid = sig_iid,
+                        "generate-broadcast-key accepted by accessory"
+                    );
+                }
+                Ok(r) => {
+                    tracing::debug!(
+                        iid = sig_iid,
+                        status = r.status,
+                        "generate-broadcast-key rejected by accessory (non-zero HAP status)"
+                    );
+                }
+                Err(e) => {
+                    tracing::debug!(iid = sig_iid, error = %e, "generate-broadcast-key write failed");
+                }
+            }
+        } else {
+            tracing::debug!(
+                "no Protocol-Information Service-Signature characteristic — cannot request a \
+                 broadcast key; this accessory will not emit 0x11 broadcasts"
+            );
         }
         // The generation the session was minted at — a later reconnect past this
         // means the accessory dropped the session and the BleAccessory must

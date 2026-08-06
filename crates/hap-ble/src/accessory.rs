@@ -543,15 +543,25 @@ impl BleAccessory {
         let mut s = self.secure.lock().await;
         for &iid in iids {
             let Some((uuid, _)) = self.chars.get(&(1, iid)).cloned() else {
+                tracing::debug!(
+                    iid,
+                    "enable_broadcasts: characteristic not on this accessory — skipped"
+                );
                 continue;
             };
             let Ok(iid16) = u16::try_from(iid) else {
+                tracing::debug!(iid, "enable_broadcasts: iid exceeds u16 — skipped");
                 continue;
             };
             revive_if_stale(self.gatt.as_ref(), &mut s, &self.reviver).await?;
             s.tid = s.tid.wrapping_add(1);
             let tid = s.tid;
-            let _ = pdu::request_secure(
+            // Best-effort: an accessory that doesn't support broadcast on this
+            // characteristic rejects the write with a non-zero status, and a dead
+            // link surfaces as an error — neither aborts. The result is logged
+            // (not returned) so callers stay unchanged; enable `hap_ble=debug` to
+            // see, per iid, whether the accessory accepted the broadcast config.
+            match pdu::request_secure(
                 self.gatt.as_ref(),
                 &mut s.session,
                 &uuid,
@@ -561,7 +571,22 @@ impl BleAccessory {
                 &ENABLE_BROADCAST_BODY,
                 self.frag_size,
             )
-            .await;
+            .await
+            {
+                Ok(r) if r.status == 0 => {
+                    tracing::debug!(iid, "enable_broadcasts: accepted by accessory");
+                }
+                Ok(r) => {
+                    tracing::debug!(
+                        iid,
+                        status = r.status,
+                        "enable_broadcasts: rejected by accessory (non-zero HAP status)"
+                    );
+                }
+                Err(e) => {
+                    tracing::debug!(iid, error = %e, "enable_broadcasts: write failed");
+                }
+            }
         }
         Ok(())
     }
