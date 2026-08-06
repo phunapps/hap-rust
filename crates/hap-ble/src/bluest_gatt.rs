@@ -380,8 +380,10 @@ impl AdvertSource for BluestConnection {
                     }
                 }
                 let Ok(mut scan) = adapter.scan(&[]).await else {
+                    tracing::warn!("hap-ble advert scan failed to start");
                     return;
                 };
+                tracing::debug!("hap-ble advert scan started");
                 gate.set_scanning(true);
                 let stopped_for_pause = loop {
                     tokio::select! {
@@ -400,6 +402,15 @@ impl AdvertSource for BluestConnection {
                             if md.company_id != APPLE_COMPANY_ID {
                                 continue;
                             }
+                            // Every Apple (0x004C) frame the backend delivers. On
+                            // BlueZ this is the key diagnostic: if HAP 0x06 adverts
+                            // (first byte 0x06) don't appear here on each wave, the
+                            // backend is coalescing repeated adverts.
+                            tracing::trace!(
+                                len = md.data.len(),
+                                first = ?md.data.first(),
+                                "apple manufacturer advert from scan"
+                            );
                             // Non-blocking send: a stalled consumer must not
                             // wedge this task inside an await where it cannot
                             // see a pause request. Adverts are a lossy,

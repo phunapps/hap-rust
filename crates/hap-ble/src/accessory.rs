@@ -667,18 +667,36 @@ impl BleAccessory {
             let poll_task = tokio::spawn(async move {
                 while poll_rx.changed().await.is_ok() {
                     let gsn = *poll_rx.borrow_and_update();
+                    tracing::debug!(
+                        gsn,
+                        targets = targets.len(),
+                        "catch-up poll firing — reconnecting to read"
+                    );
                     for (aid, iid, uuid, format) in &targets {
-                        if let Ok(raw_val) =
-                            read_char_raw(gatt.as_ref(), &secure, &reviver, uuid, *iid, frag).await
+                        match read_char_raw(gatt.as_ref(), &secure, &reviver, uuid, *iid, frag)
+                            .await
                         {
-                            if let Ok(value) = db::decode_value(*format, &raw_val) {
-                                if dedup_should_emit(&poll_emitted, *iid, gsn).await {
-                                    let _ = poll_events.send(CharacteristicEvent {
-                                        aid: *aid,
-                                        iid: *iid,
-                                        value,
-                                    });
+                            Ok(raw_val) => {
+                                if let Ok(value) = db::decode_value(*format, &raw_val) {
+                                    if dedup_should_emit(&poll_emitted, *iid, gsn).await {
+                                        tracing::debug!(
+                                            aid = *aid,
+                                            iid = *iid,
+                                            gsn,
+                                            "catch-up poll emitting event"
+                                        );
+                                        let _ = poll_events.send(CharacteristicEvent {
+                                            aid: *aid,
+                                            iid: *iid,
+                                            value,
+                                        });
+                                    } else {
+                                        tracing::debug!(iid = *iid, gsn, "catch-up poll read ok but (iid,gsn) already emitted — deduped");
+                                    }
                                 }
+                            }
+                            Err(e) => {
+                                tracing::debug!(iid = *iid, error = %e, "catch-up poll read failed");
                             }
                         }
                     }
@@ -691,19 +709,36 @@ impl BleAccessory {
         let last_gsn = self.last_gsn.clone();
         let emitted = self.emitted.clone();
         let advert_task = tokio::spawn(async move {
+            tracing::debug!(target = ?device_id, "sleepy advert watch armed");
             while let Some(raw) = adverts.recv().await {
+                tracing::trace!(
+                    len = raw.manufacturer_data.len(),
+                    first = ?raw.manufacturer_data.first(),
+                    "advert frame reached the sleepy loop"
+                );
                 match crate::advert::HapAdvert::parse(&raw.manufacturer_data) {
                     Some(crate::advert::HapAdvert::Regular {
                         device_id: d, gsn, ..
                     }) => {
                         if d != device_id {
+                            tracing::trace!(saw = ?d, target = ?device_id, "0x06 advert: device-id mismatch, ignoring");
                             continue;
                         }
                         {
                             let mut lg = last_gsn.lock().await;
                             if !gsn_is_newer(gsn, *lg) {
+                                tracing::debug!(
+                                    gsn,
+                                    last_gsn = *lg,
+                                    "0x06 advert for our device: gsn NOT newer — poll suppressed"
+                                );
                                 continue;
                             }
+                            tracing::debug!(
+                                gsn,
+                                prev = *lg,
+                                "0x06 advert for our device: gsn bump — triggering poll"
+                            );
                             *lg = gsn;
                         }
                         // Hand the bump to the poll task. A dropped receiver
@@ -715,8 +750,13 @@ impl BleAccessory {
                         payload,
                     }) => {
                         if advertising_id != device_id {
+                            tracing::trace!(saw = ?advertising_id, target = ?device_id, "0x11 broadcast: advertising-id mismatch, ignoring");
                             continue;
                         }
+                        tracing::debug!(
+                            ?advertising_id,
+                            "0x11 encrypted broadcast for our device — attempting decrypt"
+                        );
                         let start = *last_gsn.lock().await;
                         // GSN candidates per aiohomekit: next, current, then a
                         // forward window up to +100.
