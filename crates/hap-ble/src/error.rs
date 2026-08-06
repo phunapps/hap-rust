@@ -39,6 +39,9 @@ pub enum BleError {
     /// An error from the BLE backend (transport-library specific).
     #[error("BLE backend error: {0}")]
     Backend(String),
+    /// A self-sourcing sleepy watch was requested but no advert source was set.
+    #[error("no advert source set for sleepy events")]
+    NoAdvertSource,
 }
 
 /// The crate result alias.

@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     accessory
-        .watch_sleepy_events(advert_source, device_id, poll_iids)
+        .watch_sleepy_events_with_source(advert_source, device_id, poll_iids)
         .await?;
     println!(">>> Watching sleepy events for 180s. TRIGGER MOTION (wave, wait ~30s, repeat).");
 

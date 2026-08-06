@@ -25,6 +25,24 @@ fn gsn_is_newer(new: u16, last: u16) -> bool {
     diff != 0 && diff < 0x8000
 }
 
+/// Parse a colon-separated hex device id (`"59:fa:bc:61:09:d2"`), matching
+/// the HAP pairing-id format. `hap-ble` has no dependency on `hap-pairing`
+/// (dependencies flow strictly downward and no new ones are added here), so
+/// this mirrors `hap_pairing::parse_device_id`'s logic locally rather than
+/// pulling in the crate.
+fn parse_device_id(s: &str) -> Option<[u8; 6]> {
+    let mut out = [0u8; 6];
+    let mut parts = s.split(':');
+    for slot in &mut out {
+        let p = parts.next()?;
+        if p.len() != 2 {
+            return None;
+        }
+        *slot = u8::from_str_radix(p, 16).ok()?;
+    }
+    parts.next().is_none().then_some(out)
+}
+
 /// The maximum number of mid-operation re-verify retries before giving up — a
 /// backstop against a link that reconnects on every attempt.
 const MAX_REVIVE_RETRIES: u32 = 3;
@@ -293,6 +311,10 @@ pub struct BleAccessory {
     emitted: Arc<Mutex<HashMap<u64, u16>>>,
     /// The broadcast decryption key derived during the most recent Pair Verify.
     broadcast_key: hap_crypto::BroadcastKey,
+    /// The advert source (the connection itself), set by the controller after
+    /// connect so `watch_sleepy_events` can self-source it. `None` on handles
+    /// built without one.
+    advert_source: Option<Arc<dyn crate::gatt::AdvertSource>>,
 }
 
 impl Drop for BleAccessory {
@@ -360,6 +382,7 @@ impl BleAccessory {
             last_gsn: Arc::new(Mutex::new(ctx.initial_gsn)),
             emitted: Arc::new(Mutex::new(HashMap::new())),
             broadcast_key: ctx.broadcast_key,
+            advert_source: None,
         }
     }
 
@@ -605,7 +628,7 @@ impl BleAccessory {
     /// # Errors
     /// [`BleError`] if the advert source cannot start.
     #[allow(clippy::too_many_lines)]
-    pub async fn watch_sleepy_events(
+    pub async fn watch_sleepy_events_with_source(
         &mut self,
         advert_source: Arc<dyn crate::gatt::AdvertSource>,
         device_id: [u8; 6],
@@ -739,6 +762,27 @@ impl BleAccessory {
         });
         self.tasks.push(advert_task);
         Ok(())
+    }
+
+    /// Provide the advert source (the connection) so the self-sourcing
+    /// [`watch_sleepy_events`](Self::watch_sleepy_events) can use it.
+    pub fn set_advert_source(&mut self, src: Arc<dyn crate::gatt::AdvertSource>) {
+        self.advert_source = Some(src);
+    }
+
+    /// Watch for sleepy-device events, self-sourcing the advert source (set via
+    /// [`set_advert_source`](Self::set_advert_source)) and the device id (from
+    /// the pairing id). Arms the same machinery as
+    /// [`watch_sleepy_events_with_source`](Self::watch_sleepy_events_with_source).
+    ///
+    /// # Errors
+    /// [`BleError::NoAdvertSource`] if no source was set; otherwise advert/GATT errors.
+    pub async fn watch_sleepy_events(&mut self, poll_iids: Vec<(u64, u64)>) -> Result<()> {
+        let src = self.advert_source.clone().ok_or(BleError::NoAdvertSource)?;
+        let device_id = parse_device_id(self.reviver.pairing.pairing_id.as_str())
+            .ok_or(BleError::NoAdvertSource)?;
+        self.watch_sleepy_events_with_source(src, device_id, poll_iids)
+            .await
     }
 
     /// An async stream of characteristic events. Each call returns a fresh
@@ -890,7 +934,7 @@ mod tests {
         gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
 
         let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
-        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
+        h.watch_sleepy_events_with_source(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
             .await
             .unwrap();
         let mut events = h.events();
@@ -934,7 +978,7 @@ mod tests {
 
         let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
         // poll_iids is empty — broadcast path needs no poll targets.
-        h.watch_sleepy_events(advert_source, aid_bytes, vec![])
+        h.watch_sleepy_events_with_source(advert_source, aid_bytes, vec![])
             .await
             .unwrap();
         let mut events = h.events();
@@ -978,7 +1022,7 @@ mod tests {
         gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
 
         let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
-        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
+        h.watch_sleepy_events_with_source(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
             .await
             .unwrap();
         let mut events = h.events();
@@ -1049,7 +1093,7 @@ mod tests {
         gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
 
         let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
-        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
+        h.watch_sleepy_events_with_source(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
             .await
             .unwrap();
         let mut events = h.events();
@@ -1115,7 +1159,7 @@ mod tests {
 
         let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
         // watch_sleepy_events expects device_id [1,2,3,4,5,6]
-        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
+        h.watch_sleepy_events_with_source(advert_source, [1, 2, 3, 4, 5, 6], vec![(1, 11)])
             .await
             .unwrap();
         let mut events = h.events();
@@ -1162,7 +1206,7 @@ mod tests {
         mfg.extend_from_slice(&sealed);
 
         let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
-        h.watch_sleepy_events(advert_source, aid_bytes, vec![])
+        h.watch_sleepy_events_with_source(advert_source, aid_bytes, vec![])
             .await
             .unwrap();
         let mut events = h.events();
@@ -1219,7 +1263,7 @@ mod tests {
         mfg.extend_from_slice(&sealed);
 
         let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
-        h.watch_sleepy_events(advert_source, aid_bytes, vec![])
+        h.watch_sleepy_events_with_source(advert_source, aid_bytes, vec![])
             .await
             .unwrap();
         let mut events = h.events();
@@ -1249,7 +1293,7 @@ mod tests {
         let (mut h, gatt) = ble_accessory_with_db().await;
 
         let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
-        h.watch_sleepy_events(advert_source, [1, 2, 3, 4, 5, 6], vec![])
+        h.watch_sleepy_events_with_source(advert_source, [1, 2, 3, 4, 5, 6], vec![])
             .await
             .unwrap();
         let mut events = h.events();
@@ -1295,7 +1339,7 @@ mod tests {
         mfg.extend_from_slice(&sealed);
 
         let advert_source: std::sync::Arc<dyn crate::gatt::AdvertSource> = gatt.clone();
-        h.watch_sleepy_events(advert_source, aid_bytes, vec![])
+        h.watch_sleepy_events_with_source(advert_source, aid_bytes, vec![])
             .await
             .unwrap();
         let mut events = h.events();
@@ -1403,5 +1447,45 @@ mod tests {
     async fn disconnect_is_callable_on_the_accessory() {
         let (h, _g) = ble_accessory_with_db().await;
         h.disconnect().await; // MockGatt uses the default no-op; must compile + run
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn self_sourcing_watch_errors_without_source() {
+        let (mut h, _g) = ble_accessory_with_db().await;
+        // No advert source set → must error, never silently no-op.
+        let err = h.watch_sleepy_events(vec![(1, 11)]).await.unwrap_err();
+        assert!(matches!(err, BleError::NoAdvertSource));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn self_sourcing_watch_emits_via_set_source() {
+        use tokio_stream::StreamExt as _;
+        let (mut h, gatt) = ble_accessory_with_db().await;
+        // fixture pairing id is "AE:EC:86:C0:BF:D7" → device_id AE:EC:86:C0:BF:D7
+        h.set_advert_source(gatt.clone() as std::sync::Arc<dyn crate::gatt::AdvertSource>);
+        // queue the sealed read the poll will issue for iid 11 (Bool true)
+        let mut plain = vec![0x02, 0x01, 0x00];
+        let vbody = crate::pdu::encode_value_param(&[0x01]);
+        plain.extend_from_slice(&u16::try_from(vbody.len()).unwrap().to_le_bytes());
+        plain.extend_from_slice(&vbody);
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", sealed);
+        h.watch_sleepy_events(vec![(1, 11)]).await.unwrap();
+        let mut events = h.events();
+        // 0x06 advert for device AE:EC:86:C0:BF:D7 (0xAE,0xEC,0x86,0xC0,0xBF,0xD7), GSN 9
+        gatt.advert_sender()
+            .send(crate::gatt::RawAdvert {
+                manufacturer_data: vec![
+                    0x06, 0x21, 0x01, 0xAE, 0xEC, 0x86, 0xC0, 0xBF, 0xD7, 0x01, 0x00, 0x09, 0x00,
+                    0x01, 0x00,
+                ],
+            })
+            .await
+            .unwrap();
+        let ev = events.next().await.unwrap();
+        assert_eq!((ev.aid, ev.iid), (1, 11));
     }
 }

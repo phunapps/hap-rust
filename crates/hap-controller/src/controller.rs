@@ -284,14 +284,16 @@ impl HapController {
         let device_id = hap_pairing::parse_device_id(&accessory.device_id)
             .ok_or_else(|| HapError::UnknownAccessory(accessory.device_id.clone()))?;
         let gatt = hap_ble::connect_gatt(accessory).await?;
+        let advert: Arc<dyn hap_ble::AdvertSource> = gatt.clone();
         let ble = hap_ble::BleController::new(self.keypair.clone());
-        let paired = ble
+        let mut paired = ble
             .pair(
                 gatt as Arc<dyn hap_ble::GattConnection>,
                 accessory,
                 setup_code,
             )
             .await?;
+        paired.accessory.set_advert_source(advert);
         let stored = StoredAccessory {
             pairing: paired.pairing,
             transport: StoredTransport::Ble {
@@ -415,18 +417,20 @@ impl HapController {
             .find(|d| d.device_id.eq_ignore_ascii_case(&wanted))
             .ok_or(HapError::Ble(hap_ble::BleError::AccessoryNotFound))?;
         let gatt = hap_ble::connect_gatt(&found).await?;
+        let advert: Arc<dyn hap_ble::AdvertSource> = gatt.clone();
         let ble = hap_ble::BleController::new(self.keypair.clone());
         let state = broadcast.map(|b| hap_ble::BleBroadcastState {
             key: b.key,
             gsn: b.gsn,
         });
-        let accessory = ble
+        let mut accessory = ble
             .connect(
                 gatt as Arc<dyn hap_ble::GattConnection>,
                 &stored.pairing,
                 state,
             )
             .await?;
+        accessory.set_advert_source(advert);
         Ok(AccessoryHandle::from_ble(accessory))
     }
 
