@@ -69,6 +69,12 @@ tokio-stream = { version = "0.1", default-features = false }
 # Structured, zero-cost-when-disabled diagnostics (hap-ble advert/sleepy path).
 # No-op unless the consumer installs a `tracing` subscriber.
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+# Dev-only: a subscriber so example binaries can print the `tracing` diagnostics
+# (e.g. `hap_ble=debug`). Not a library dependency — examples/tests only.
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "fmt",
+    "env-filter",
+] }
 # Crypto primitives for hap-crypto (M2). SRP-6a modular exponentiation uses
 # num-bigint's dynamic-width integers; sha2 provides SHA-512; subtle gives
 # constant-time comparison of secret proofs. Primitives are never reimplemented.

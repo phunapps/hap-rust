@@ -16,6 +16,17 @@ pub(crate) const HAP_INSTANCE_ID_DESC: &str = "dc46f0fe-81d2-4616-b5d9-6abdd7969
 /// appears in every HAP service; its value is the service's 16-bit instance id.
 pub(crate) const HAP_SERVICE_ID_CHAR: &str = "e604e95d-a759-4817-87d3-aa005083a0d1";
 
+/// The HAP Service-Signature characteristic. One appears in *every* HAP service
+/// (they all share this UUID); it is a service-level signature, not a model
+/// characteristic. It is skipped when building the accessory model, and kept in
+/// the enumerated tree only under the Protocol-Information service, where its
+/// instance id is the generate-broadcast-key request target.
+pub(crate) const SERVICE_SIGNATURE_CHAR: &str = "000000a5-0000-1000-8000-0026bb765291";
+
+/// The HAP Protocol-Information service. Its Service-Signature characteristic is
+/// the target of the Protocol-Configuration generate-broadcast-key request.
+pub(crate) const PROTOCOL_INFO_SERVICE: &str = "000000a2-0000-1000-8000-0026bb765291";
+
 /// Read a 16-bit little-endian value from the first two bytes, if present.
 pub(crate) fn u16_le(v: &[u8]) -> Option<u16> {
     match v {

@@ -42,6 +42,17 @@ pub(crate) async fn build_db<G: GattConnection + ?Sized>(
         let svc_type = service_type_of(&gs.uuid)?;
         let mut chars = Vec::new();
         for gc in &gs.characteristics {
+            // The Service-Signature char is a service-level signature, not a
+            // model characteristic (aiohomekit ignores it too). It is retained
+            // in the enumerated tree only so the Protocol-Information service's
+            // instance id can address the generate-broadcast-key request; it
+            // must not be signature-read into the accessory model.
+            if gc
+                .uuid
+                .eq_ignore_ascii_case(crate::gatt::SERVICE_SIGNATURE_CHAR)
+            {
+                continue;
+            }
             tid = tid.wrapping_add(1);
             let resp = pdu::request(
                 gatt,
@@ -280,6 +291,47 @@ mod tests {
         assert_eq!(ch.iid, 11);
         assert_eq!(ch.format, CharFormat::Bool);
         assert!(ch.perms.read && ch.perms.write);
+    }
+
+    #[allow(clippy::unwrap_used)]
+    #[tokio::test]
+    async fn build_db_skips_service_signature_char() {
+        // The Protocol-Information service carries a Service-Signature char
+        // (retained in the enumerated tree so its iid can target the
+        // generate-broadcast-key request) plus a normal characteristic.
+        // `build_db` must skip the Service-Signature char — it is a service-level
+        // signature, not a model characteristic. No signature read is queued for
+        // it, so if `build_db` tried to read it the call would error; a clean
+        // build with exactly the one modelled char proves the skip.
+        // Hand `build_db` the services slice directly (as the fixed bluest
+        // `enumerate` now produces it) so the test isolates build_db's own skip,
+        // independent of any transport's enumerate behaviour.
+        let services = vec![GattService {
+            uuid: crate::gatt::PROTOCOL_INFO_SERVICE.into(),
+            iid: 20,
+            characteristics: vec![
+                GattCharacteristic {
+                    uuid: crate::gatt::SERVICE_SIGNATURE_CHAR.into(),
+                    iid: 21,
+                },
+                GattCharacteristic {
+                    uuid: "00000025-0000-1000-8000-0026bb765291".into(),
+                    iid: 22,
+                },
+            ],
+        }];
+        let gatt = MockGatt::new();
+        let body = sig_body();
+        let mut resp = vec![0x02, 0x01, 0x00];
+        resp.extend_from_slice(&u16::try_from(body.len()).unwrap().to_le_bytes());
+        resp.extend_from_slice(&body);
+        gatt.queue_read("00000025-0000-1000-8000-0026bb765291", resp);
+
+        let accs = build_db(&gatt, &services, 512).await.unwrap();
+        assert_eq!(accs.len(), 1);
+        let chars = &accs[0].services[0].characteristics;
+        assert_eq!(chars.len(), 1, "the Service-Signature char must be skipped");
+        assert_eq!(chars[0].iid, 22);
     }
 
     #[test]

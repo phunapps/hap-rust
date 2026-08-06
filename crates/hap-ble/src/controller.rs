@@ -14,13 +14,7 @@ use std::sync::Arc;
 const PAIR_SETUP_CHAR: &str = "0000004c-0000-1000-8000-0026bb765291";
 const PAIR_VERIFY_CHAR: &str = "0000004e-0000-1000-8000-0026bb765291";
 const PAIRINGS_CHAR: &str = "00000050-0000-1000-8000-0026bb765291";
-/// The HAP Service-Signature characteristic (one appears in *every* service).
-/// The generate-broadcast-key request must target the one in the Protocol
-/// Information service specifically (see `protocol_info_signature_iid`).
-const SERVICE_SIGNATURE_CHAR: &str = "000000a5-0000-1000-8000-0026bb765291";
-/// The HAP Protocol Information service — its Service-Signature characteristic is
-/// where the Protocol-Configuration "generate broadcast key" request is written.
-const PROTOCOL_INFO_SERVICE: &str = "000000a2-0000-1000-8000-0026bb765291";
+use crate::gatt::{PROTOCOL_INFO_SERVICE, SERVICE_SIGNATURE_CHAR};
 /// Protocol-Configuration TLV body that asks the accessory to generate a
 /// broadcast encryption key (type `GenerateBroadcastEncryptionKey` = 0x01, len 0).
 const GENERATE_BROADCAST_KEY_BODY: [u8; 2] = [0x01, 0x00];
@@ -246,5 +240,53 @@ mod tests {
     fn generate_sets_identity() {
         let c = BleController::generate("11:22:33:44:55:66".into());
         assert_eq!(c.keypair().id, "11:22:33:44:55:66");
+    }
+
+    #[test]
+    fn finds_protocol_info_service_signature_iid() {
+        use crate::gatt::{GattCharacteristic, GattService};
+        let services = vec![
+            GattService {
+                uuid: PROTOCOL_INFO_SERVICE.into(),
+                iid: 0,
+                characteristics: vec![
+                    GattCharacteristic {
+                        uuid: SERVICE_SIGNATURE_CHAR.into(),
+                        iid: 42,
+                    },
+                    GattCharacteristic {
+                        uuid: "00000037-0000-1000-8000-0026bb765291".into(),
+                        iid: 43,
+                    },
+                ],
+            },
+            // Another service also carries a Service-Signature char (they share
+            // one UUID) — it must not be mistaken for the Protocol-Information
+            // one, so the service scope in the lookup matters.
+            GattService {
+                uuid: "00000055-0000-1000-8000-0026bb765291".into(),
+                iid: 0,
+                characteristics: vec![GattCharacteristic {
+                    uuid: SERVICE_SIGNATURE_CHAR.into(),
+                    iid: 99,
+                }],
+            },
+        ];
+        assert_eq!(protocol_info_signature_iid(&services), Some(42));
+    }
+
+    #[test]
+    fn missing_protocol_info_signature_is_none() {
+        use crate::gatt::GattService;
+        // The Protocol-Information service is present but its Service-Signature
+        // char was dropped from the enumerated tree — the pre-fix bug that
+        // aborted the generate-broadcast-key request. Documents the contract:
+        // no char in scope ⇒ None (a best-effort skip, not a hard error).
+        let services = vec![GattService {
+            uuid: PROTOCOL_INFO_SERVICE.into(),
+            iid: 0,
+            characteristics: vec![],
+        }];
+        assert_eq!(protocol_info_signature_iid(&services), None);
     }
 }

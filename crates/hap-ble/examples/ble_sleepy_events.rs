@@ -24,6 +24,17 @@ fn parse_device_id(s: &str) -> Option<[u8; 6]> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Print hap-ble's structured diagnostics (advert path, broadcast-enable,
+    // per-characteristic broadcast capability). Override with e.g.
+    // `RUST_LOG=hap_ble=trace`.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "hap_ble=debug".into()),
+        )
+        .with_target(true)
+        .init();
+
     let setup_code = std::env::args()
         .nth(1)
         .expect("usage: ble_sleepy_events <setup-code>");
@@ -64,19 +75,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } = controller.pair(conn.clone(), &target, &setup_code).await?;
     println!(">>> Paired; broadcast-key generation requested.");
 
-    // The Onvis SMS2 does NOT emit 0x11 encrypted broadcasts (confirmed: even
-    // aiohomekit observes none), so use the disconnected-event POLL: on a GSN
-    // bump in a 0x06 advert, reconnect and read the value.
+    // Watch MotionDetected two ways: the disconnected-event POLL (on a GSN bump
+    // in a 0x06 advert, reconnect and read) AND — if the accessory advertises
+    // broadcast-notify support and accepts the enable — encrypted 0x11
+    // broadcasts, which arrive without a reconnect and so catch fast transitions
+    // the poll misses. Watch the `hap_ble=debug` trace for the broadcast
+    // outcome: `supports_broadcast=true`, `generate-broadcast-key accepted`, and
+    // `enable_broadcasts: accepted`.
     let poll_iids = if let Ok((aid, iid)) = accessory.find(
         hap_ble::ServiceType::MotionSensor,
         hap_ble::CharacteristicType::MotionDetected,
     ) {
-        println!(">>> will poll MotionDetected aid={aid} iid={iid} on a GSN bump.");
+        println!(">>> will watch MotionDetected aid={aid} iid={iid} (poll + broadcast).");
         vec![(aid, iid)]
     } else {
         println!(">>> no MotionDetected char found.");
         vec![]
     };
+
+    // Ask the accessory to broadcast these characteristics while disconnected.
+    // Best-effort: an accessory that does not support broadcast for a
+    // characteristic simply keeps delivering it via the 0x06 poll.
+    let broadcast_iids: Vec<u64> = poll_iids.iter().map(|(_, iid)| *iid).collect();
+    accessory.enable_broadcasts(&broadcast_iids).await?;
+    println!(">>> enable_broadcasts requested for {broadcast_iids:?}.");
 
     // Release the GATT link so the accessory advertises (and macOS CoreBluetooth
     // surfaces its adverts to a scan). The poll read reconnects on demand — now

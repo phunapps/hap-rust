@@ -7,7 +7,7 @@
 use crate::error::{BleError, Result};
 use crate::gatt::{
     u16_le, AdvertSource, GattCharacteristic, GattConnection, GattService, RawAdvert,
-    HAP_INSTANCE_ID_DESC, HAP_SERVICE_ID_CHAR,
+    HAP_INSTANCE_ID_DESC, HAP_SERVICE_ID_CHAR, PROTOCOL_INFO_SERVICE, SERVICE_SIGNATURE_CHAR,
 };
 use crate::scan_gate::ScanGate;
 use async_trait::async_trait;
@@ -31,15 +31,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// that into a failed attempt the backstop retries instead of a wedge that
 /// blocks every later operation behind the scan gate's lock.
 const TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// The HAP Service-Signature characteristic — appears in *every* service. Only
-/// the one in the Protocol Information service is addressable/used; the rest are
-/// dropped during discovery so the (UUID-keyed) handle map doesn't collide and
-/// the generate-broadcast-key write reaches the correct characteristic.
-const SERVICE_SIGNATURE_CHAR: &str = "000000a5-0000-1000-8000-0026bb765291";
-/// The HAP Protocol Information service — the one whose Service-Signature char is
-/// the generate-broadcast-key target (matches aiohomekit's service-scoped lookup).
-const PROTOCOL_INFO_SERVICE: &str = "000000a2-0000-1000-8000-0026bb765291";
 
 /// Consecutive reconnects allowed *within a single operation* before it gives up
 /// (a runaway backstop). This bounds one stuck read/write, not the connection's
@@ -317,6 +308,7 @@ impl GattConnection for BluestConnection {
     async fn enumerate(&self) -> Result<Vec<GattService>> {
         let mut services = Vec::new();
         for svc in &self.shape {
+            let is_protocol_info = svc.uuid.eq_ignore_ascii_case(PROTOCOL_INFO_SERVICE);
             let mut characteristics = Vec::new();
             for char_uuid in &svc.char_uuids {
                 // The Service-Instance-ID characteristic is not a HAP
@@ -324,10 +316,13 @@ impl GattConnection for BluestConnection {
                 if char_uuid.eq_ignore_ascii_case(HAP_SERVICE_ID_CHAR) {
                     continue;
                 }
-                // The Service-Signature char is a service-level signature, not a
-                // model characteristic — skip it (it also shares a UUID across
-                // services, so reading it here would yield duplicate iids).
-                if char_uuid.eq_ignore_ascii_case(SERVICE_SIGNATURE_CHAR) {
+                // The Service-Signature char is a service-level signature that
+                // shares one UUID across every service. Keep only the
+                // Protocol-Information service's so its instance id is
+                // discoverable (the generate-broadcast-key request target);
+                // dropping it everywhere else avoids duplicate iids. `build_db`
+                // then skips it so it never becomes a model characteristic.
+                if char_uuid.eq_ignore_ascii_case(SERVICE_SIGNATURE_CHAR) && !is_protocol_info {
                     continue;
                 }
                 // Per-characteristic resilient instance-id read: resumes the
