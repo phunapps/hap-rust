@@ -85,9 +85,12 @@ impl SleepyWatch {
         Ok(())
     }
 
-    /// Whether the background cold-arm task has finished (the device was
-    /// connected and the watch armed, or the task ended/errored). A watch that
-    /// is still waiting for the sleepy device to advertise is NOT finished.
+    /// Whether the background cold-arm task has stopped. `true` means the watch
+    /// is no longer running — the cold connect or the arming failed (the event
+    /// pump never ends on its own while the accessory is alive), so `true` is a
+    /// "this watch is dead" signal, not "armed and ready". A watch still waiting
+    /// for the sleepy device to advertise, or armed and streaming events, is
+    /// NOT finished.
     #[must_use]
     pub fn is_finished(&self) -> bool {
         self.task.is_finished()
