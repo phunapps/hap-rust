@@ -26,6 +26,7 @@
 //! is already reachable and discoverable via `_hap._udp`.
 #![forbid(unsafe_code)]
 
+pub mod coap;
 pub mod error;
 pub mod pdu;
 
