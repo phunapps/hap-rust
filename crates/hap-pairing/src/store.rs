@@ -62,7 +62,9 @@ pub struct StoredAccessory {
 ///
 /// Implement this (or reuse [`JsonFileStore`]) so a controller's long-term
 /// [`ControllerKeypair`] and its [`StoredAccessory`] records survive a process
-/// restart.
+/// restart. Implementations must be safe under concurrent calls from multiple
+/// tasks (the sleepy-event auto-persist watcher and the foreground controller
+/// run concurrently).
 #[async_trait]
 pub trait PairingStore {
     /// Load the persisted controller identity, if one has been saved.
@@ -106,6 +108,26 @@ pub trait PairingStore {
     /// Returns [`PairingError::Store`] if the backing store cannot be read or
     /// written.
     async fn delete_pairing(&self, id: &str) -> Result<()>;
+
+    /// Update only the broadcast material (key + GSN) of one stored BLE
+    /// accessory, atomically with respect to other store writers. A no-op if
+    /// `id` is absent or is not a BLE record.
+    ///
+    /// # Errors
+    /// Returns [`PairingError::Store`] if the backing store cannot be read or
+    /// written.
+    async fn save_broadcast_state(&self, id: &str, broadcast: StoredBroadcast) -> Result<()> {
+        // Default: load → mutate → save. Fine for single-writer stores; storage
+        // backends shared by concurrent tasks should override this to be atomic.
+        let mut pairings = self.load_pairings().await?;
+        if let Some(acc) = pairings.iter_mut().find(|a| a.pairing.pairing_id == id) {
+            if let StoredTransport::Ble { broadcast: b, .. } = &mut acc.transport {
+                *b = Some(broadcast);
+                self.save_pairing(acc).await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A [`PairingStore`] that serializes to a single JSON file.
@@ -116,6 +138,8 @@ pub trait PairingStore {
 #[derive(Debug, Clone)]
 pub struct JsonFileStore {
     path: PathBuf,
+    // Serializes read-modify-write across cloned handles and concurrent tasks.
+    write_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -177,6 +201,7 @@ impl JsonFileStore {
     pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
+            write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -197,12 +222,17 @@ impl JsonFileStore {
         }
     }
 
-    /// Serialize and write the document, overwriting the file.
+    /// Serialize and write the document, overwriting the file atomically via a
+    /// temp file in the same directory followed by a rename.
     async fn write_doc(&self, mut doc: Document) -> Result<()> {
         doc.version = Some(2);
         let bytes =
             serde_json::to_vec_pretty(&doc).map_err(|e| PairingError::Store(e.to_string()))?;
-        tokio::fs::write(&self.path, bytes)
+        let tmp = self.path.with_extension("json.tmp");
+        tokio::fs::write(&tmp, &bytes)
+            .await
+            .map_err(|e| PairingError::Store(e.to_string()))?;
+        tokio::fs::rename(&tmp, &self.path)
             .await
             .map_err(|e| PairingError::Store(e.to_string()))
     }
@@ -353,6 +383,7 @@ impl PairingStore for JsonFileStore {
     }
 
     async fn save_controller(&self, k: &ControllerKeypair) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut doc = self.read_doc().await?;
         doc.controller = Some(controller_to_record(k));
         self.write_doc(doc).await
@@ -367,6 +398,7 @@ impl PairingStore for JsonFileStore {
     }
 
     async fn save_pairing(&self, a: &StoredAccessory) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut doc = self.read_doc().await?;
         let record = accessory_to_record(a);
         if let Some(existing) = doc.accessories.iter_mut().find(|r| r.id == record.id) {
@@ -378,9 +410,28 @@ impl PairingStore for JsonFileStore {
     }
 
     async fn delete_pairing(&self, id: &str) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut doc = self.read_doc().await?;
         doc.accessories.retain(|r| r.id != id);
         self.write_doc(doc).await
+    }
+
+    async fn save_broadcast_state(&self, id: &str, broadcast: StoredBroadcast) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        let mut doc = self.read_doc().await?;
+        // Find the matching BLE record and rewrite only its broadcast; skip
+        // absent/IP records (Ok no-op). AccessoryRecord/BroadcastRecord are the
+        // on-disk types — mirror accessory_to_record's broadcast encoding.
+        if let Some(rec) = doc.accessories.iter_mut().find(|r| r.id == id) {
+            if let Some(TransportRecord::Ble { broadcast: b, .. }) = &mut rec.transport {
+                *b = Some(BroadcastRecord {
+                    key_hex: encode_hex(broadcast.key.as_bytes()),
+                    gsn: broadcast.gsn,
+                });
+                return self.write_doc(doc).await;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -555,5 +606,137 @@ mod tests {
         assert_eq!(parse_device_id("59:fa:bc:61:09:d2"), Some(id));
         assert_eq!(parse_device_id("59:fa:bc:61:09"), None); // five groups
         assert_eq!(parse_device_id("zz:fa:bc:61:09:d2"), None); // non-hex
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn save_broadcast_state_updates_only_broadcast() {
+        let (_d, store) = tmp_store();
+        let acc = StoredAccessory {
+            pairing: AccessoryPairing {
+                pairing_id: "b1".into(),
+                ltpk: [7u8; 32],
+            },
+            transport: StoredTransport::Ble {
+                device_id: [1, 2, 3, 4, 5, 6],
+                broadcast: Some(StoredBroadcast {
+                    key: hap_crypto::BroadcastKey::from_bytes([0u8; 32]),
+                    gsn: 1,
+                }),
+            },
+        };
+        store.save_pairing(&acc).await.unwrap();
+        store
+            .save_broadcast_state(
+                "b1",
+                StoredBroadcast {
+                    key: hap_crypto::BroadcastKey::from_bytes([9u8; 32]),
+                    gsn: 42,
+                },
+            )
+            .await
+            .unwrap();
+        let loaded = store.load_pairings().await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].pairing.ltpk, [7u8; 32]); // pairing untouched
+        match &loaded[0].transport {
+            StoredTransport::Ble {
+                device_id,
+                broadcast,
+            } => {
+                assert_eq!(*device_id, [1, 2, 3, 4, 5, 6]);
+                let b = broadcast.as_ref().unwrap();
+                assert_eq!(b.gsn, 42);
+                assert_eq!(b.key.as_bytes(), &[9u8; 32]);
+            }
+            StoredTransport::Ip { .. } => panic!("expected BLE"),
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn save_broadcast_state_absent_or_ip_is_ok_noop() {
+        let (_d, store) = tmp_store();
+        // absent id
+        store
+            .save_broadcast_state(
+                "nope",
+                StoredBroadcast {
+                    key: hap_crypto::BroadcastKey::from_bytes([0u8; 32]),
+                    gsn: 5,
+                },
+            )
+            .await
+            .unwrap();
+        // IP record
+        let ip = StoredAccessory {
+            pairing: AccessoryPairing {
+                pairing_id: "ip1".into(),
+                ltpk: [0u8; 32],
+            },
+            transport: StoredTransport::Ip {
+                addr: "127.0.0.1:80".parse().unwrap(),
+            },
+        };
+        store.save_pairing(&ip).await.unwrap();
+        store
+            .save_broadcast_state(
+                "ip1",
+                StoredBroadcast {
+                    key: hap_crypto::BroadcastKey::from_bytes([0u8; 32]),
+                    gsn: 5,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.load_pairings().await.unwrap().len(), 1); // unchanged
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn concurrent_broadcast_and_delete_do_not_lose_data() {
+        let (_d, store) = tmp_store();
+        for id in ["keep", "drop"] {
+            store
+                .save_pairing(&StoredAccessory {
+                    pairing: AccessoryPairing {
+                        pairing_id: id.into(),
+                        ltpk: [1u8; 32],
+                    },
+                    transport: StoredTransport::Ble {
+                        device_id: [0; 6],
+                        broadcast: Some(StoredBroadcast {
+                            key: hap_crypto::BroadcastKey::from_bytes([0u8; 32]),
+                            gsn: 0,
+                        }),
+                    },
+                })
+                .await
+                .unwrap();
+        }
+        // Race a broadcast update on "keep" against a delete of "drop".
+        let s1 = store.clone();
+        let s2 = store.clone();
+        let a = tokio::spawn(async move {
+            s1.save_broadcast_state(
+                "keep",
+                StoredBroadcast {
+                    key: hap_crypto::BroadcastKey::from_bytes([0u8; 32]),
+                    gsn: 7,
+                },
+            )
+            .await
+        });
+        let b = tokio::spawn(async move { s2.delete_pairing("drop").await });
+        a.await.unwrap().unwrap();
+        b.await.unwrap().unwrap();
+        let ids: Vec<String> = store
+            .load_pairings()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|a| a.pairing.pairing_id)
+            .collect();
+        assert_eq!(ids, vec!["keep".to_string()]); // delete not lost, keep survives
     }
 }
