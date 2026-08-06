@@ -8,6 +8,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## 3.0.1 / hap-ble 0.6.0 — 2026-08-07 — Linux sleepy-poll fix + broadcast diagnostics
+
+Unblocks sleepy BLE sensors on Linux/BlueZ (the cold-arm catch-up poll now
+reconnects instead of dying on the first read) and makes HAP encrypted-broadcast
+(`0x11`) setup observable end-to-end. `hap-ble` bumps to `0.6.0`; `hap-controller`
+bumps to `3.0.1` solely to depend on it (no `hap-controller` API change). No
+consumer code change is required.
+
+### `hap-ble` 0.6.0
+- **Fix (Linux/BlueZ):** a GATT operation against a disconnected device surfaces
+  on BlueZ as `org.bluez.Error.Failed` "Not connected", which `bluest` collapses
+  to `ErrorKind::Other`. `be()` classified that as a non-recoverable `Backend`
+  error, so the reconnect-and-retry supervisor never fired and the sleepy
+  cold-arm catch-up poll read on a deliberately-dropped link — every read failed
+  with "Not connected". `be()` now recovers this case from the error message and
+  classifies it as `Disconnected`, matching how macOS/CoreBluetooth already
+  surfaced it (the typed `NotConnected` kind). A genuine unrelated `Other` error
+  still maps to `Backend` (no spurious reconnects).
+- **Diagnostics:** `tracing` instrumentation across the sleepy advert path
+  (advert reception, device-id match, GSN-bump vs suppression, poll firing and
+  event emission) and the broadcast-enable path. Enable with a `hap_ble=debug`
+  (or `=trace`) subscriber; zero-cost when no subscriber is installed.
+- **Diagnostics:** the two writes that arm encrypted broadcasts now log their
+  outcome (`hap_ble=debug`) instead of silently dropping it — the
+  `GenerateBroadcastEncryptionKey` Protocol-Config write at connect and each
+  per-characteristic `enable_broadcasts` write (accepted / rejected-with-status /
+  write-failed / characteristic-absent). Each characteristic's raw HAP
+  properties word is logged at discovery, including the `0x0200`
+  supports-broadcast-notify bit — the definitive check for whether a given
+  characteristic can emit `0x11` broadcasts at all. Behavior is unchanged; both
+  broadcast-arming paths remain best-effort and non-fatal, and no public API
+  changed.
+
+### `hap-controller` 3.0.1
+- Depends on `hap-ble` `0.6.0` (for the Linux sleepy-poll fix and broadcast
+  diagnostics above). No API change.
+
 ## 3.0.0 — 2026-08-06 — Seamless sleepy BLE sensors
 
 Cold-arm a sleepy BLE sensor straight from a stored pairing after a reboot —
