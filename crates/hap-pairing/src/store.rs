@@ -748,5 +748,14 @@ mod tests {
             .map(|a| a.pairing.pairing_id)
             .collect();
         assert_eq!(ids, vec!["keep".to_string()]); // delete not lost, keep survives
+                                                   // The racing save_broadcast_state write must also have survived — not
+                                                   // just "keep" existing, but its value actually landed.
+        let pairings = store.load_pairings().await.unwrap();
+        match &pairings[0].transport {
+            StoredTransport::Ble { broadcast, .. } => {
+                assert_eq!(broadcast.as_ref().unwrap().gsn, 7);
+            }
+            StoredTransport::Ip { .. } => panic!("expected BLE"),
+        }
     }
 }

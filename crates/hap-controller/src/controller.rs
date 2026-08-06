@@ -621,6 +621,11 @@ impl HapController {
     /// `poll_iids` are the `(aid, iid)` characteristics to read back off a
     /// GSN-bump advertisement.
     ///
+    /// An unreachable or permanently-absent device holds the shared radio lock
+    /// for the entire wait until it advertises, so it can block other pending
+    /// `watch_sleepy` cold connects from proceeding; at most one watch per
+    /// accessory is expected.
+    ///
     /// # Errors
     /// [`HapError::UnknownAccessory`] if `accessory_id` is not in the store;
     /// [`HapError::UnsupportedByTransport`] if the stored pairing is not BLE.

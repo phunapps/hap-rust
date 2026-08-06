@@ -81,16 +81,23 @@ async fn cold_arm_emits_and_autopersists() {
         .unwrap()
         .unwrap();
     assert_eq!((ev.aid, ev.iid), (1, 11));
+    assert_eq!(ev.value, hap_model::format::CharValue::Bool(true));
 
-    // Auto-persist should have written gsn 9 to the store.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let reloaded = JsonFileStore::new(&path).load_pairings().await.unwrap();
-    match &reloaded[0].transport {
-        StoredTransport::Ble { broadcast, .. } => {
-            assert_eq!(broadcast.as_ref().unwrap().gsn, 9);
+    // Auto-persist should (eventually) write gsn 9 to the store — poll instead
+    // of a fixed sleep so this isn't flaky under load.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let gsn = loop {
+        let reloaded = JsonFileStore::new(&path).load_pairings().await.unwrap();
+        let gsn = match &reloaded[0].transport {
+            StoredTransport::Ble { broadcast, .. } => broadcast.as_ref().unwrap().gsn,
+            StoredTransport::Ip { .. } => panic!(),
+        };
+        if gsn == 9 || tokio::time::Instant::now() >= deadline {
+            break gsn;
         }
-        StoredTransport::Ip { .. } => panic!(),
-    }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(gsn, 9);
 }
 
 #[tokio::test]
@@ -100,4 +107,33 @@ async fn watch_sleepy_on_ip_or_absent_errors() {
     let controller = HapController::new(store).await.unwrap();
     let err = controller.watch_sleepy("nope", vec![]).await.unwrap_err();
     assert!(matches!(err, hap_controller::HapError::UnknownAccessory(_)));
+}
+
+#[tokio::test]
+async fn watch_sleepy_on_ip_accessory_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p.json");
+    let store = JsonFileStore::new(&path);
+    store
+        .save_pairing(&StoredAccessory {
+            pairing: hap_crypto::AccessoryPairing {
+                pairing_id: "ip-accessory".into(),
+                ltpk: [0u8; 32],
+            },
+            transport: StoredTransport::Ip {
+                addr: "192.0.2.1:51826".parse().unwrap(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let controller = HapController::new(store).await.unwrap();
+    let err = controller
+        .watch_sleepy("ip-accessory", vec![])
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        hap_controller::HapError::UnsupportedByTransport(_)
+    ));
 }
