@@ -32,3 +32,13 @@ pub(crate) helpers transiently dead_code until consumed). Tests pass per module.
   recv=read_key/recv_ctr; char type=0x04, char iid=0x05 in DB.
 - Finding 6: coap-lite has no Block2 reassembly / no CON retransmit beyond basic;
   real UdpCoapTransport needs both at device bring-up (documented risk).
+
+## MT-1 COMPLETE (overnight)
+Branch thread-support @ 2325960 (pushed). 27 hap-thread tests + hap-crypto
+event_key vector; clippy-clean lib+all-targets; fmt-clean; full workspace green.
+Spec reviewed (SOUND-WITH-CHANGES, all applied). Final whole-crate review running.
+Delivered: pdu, coap(trait+udp+mock), session(3-key, aiohomekit vectors),
+pairing(setup+verify over CoAP), discovery(_hap._udp), accessory(read/write),
+controller(identify/pair/connect), hap-crypto::event_key. README + spec.
+Deferred (documented): 0x09 tree decode, event server(MT-2), Block2, persistence
+(StoredTransport::Thread breaking), commissioning, hardware validation.
