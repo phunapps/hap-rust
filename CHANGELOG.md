@@ -8,6 +8,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## 2.2.0 — 2026-08-06 — Seamless sleepy BLE sensors
+
+Cold-arm a sleepy BLE sensor straight from a stored pairing after a reboot —
+no blocking connect, no re-pairing — and durably persist broadcast/GSN state
+through concurrent writers.
+
+### `hap-controller` 2.2.0
+- `HapController::watch_sleepy(accessory_id, poll_iids)` cold-arms an
+  advert-driven watch from a stored BLE pairing and returns a `SleepyWatch`
+  immediately, without blocking on the connect: a background task waits for
+  the device's next advertisement, connects once (serialized by an internal
+  radio mutex), enables broadcasts, disconnects so the sleepy device
+  advertises again, arms the self-sourcing sleepy watch, and pumps events into
+  `SleepyWatch::events`, auto-persisting GSN/broadcast state via
+  `PairingStore::save_broadcast_state` after every event. `SleepyWatch::save_state`
+  force-flushes the latest state (an `Ok` no-op before the background task has
+  connected).
+- **Note:** the unified `AccessoryHandle::watch_sleepy_events` signature is
+  corrected from the previous, unusable 3-argument form to
+  `watch_sleepy_events(poll_iids)` — 1-arg, self-sourcing the advert source
+  and device id from the live connection, matching `hap-ble`'s new primitive
+  below. Shipped as a minor bump because the 3-arg form could not be called
+  correctly by any caller.
+
+### `hap-pairing` 2.1.0
+- Store writes are now atomic with respect to concurrent writers: the JSON
+  file store serializes and overwrites via a temp-file-then-rename, and the
+  new `PairingStore::save_broadcast_state(id, broadcast)` updates only a
+  stored accessory's broadcast key/GSN — a targeted, race-safe alternative to
+  read-modify-write on the full pairing record for sleepy-watch background
+  tasks that persist after every event.
+
+### `hap-ble` 0.5.0
+- `GattConnection::disconnect` on the connection seam, so a sleepy watch can
+  drop the link after enabling broadcasts and let the device advertise again.
+- New self-sourcing `BleAccessory::watch_sleepy_events(poll_iids)`, which
+  reuses the accessory's own advert source and device id.
+- **Breaking:** the previous explicit-source primitive is renamed
+  `watch_sleepy_events_with_source` (unchanged 3-arg signature) to free up
+  the `watch_sleepy_events` name for the new self-sourcing method. Direct
+  `hap-ble` callers of the old 3-arg `watch_sleepy_events` must switch to
+  `watch_sleepy_events_with_source`.
+- New `SleepyConnector` trait (and `BluestSleepyConnector`), the seam
+  `hap-controller`'s cold-arm orchestration connects through — testable
+  without a real radio.
+
 ## 2.1.0 — 2026-08-06 — QR setup-payload pairing
 
 Pair the exact accessory a scanned HomeKit QR points at, precisely and
