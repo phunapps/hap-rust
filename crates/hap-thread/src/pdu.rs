@@ -121,7 +121,10 @@ impl Response {
             return Ok(Vec::new());
         }
         let map = hap_tlv8::Tlv8Map::parse(&self.body)?;
-        Ok(map.get(param::VALUE).map(<[u8]>::to_vec).unwrap_or_default())
+        Ok(map
+            .get(param::VALUE)
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default())
     }
 }
 
@@ -161,10 +164,12 @@ fn decode_one(pdu: &[u8]) -> Result<(Response, usize)> {
     Ok((Response { tid, status, body }, end))
 }
 
-/// Decode a single response PDU, requiring it to consume the whole slice.
+/// Decode a single response PDU, requiring it to consume the whole slice. Used
+/// by tests; the transport path always uses the batched [`decode_all`].
 ///
 /// # Errors
 /// Returns [`ThreadError::MalformedPdu`] as [`decode_one`] does.
+#[cfg(test)]
 pub(crate) fn decode_response(pdu: &[u8]) -> Result<Response> {
     let (resp, _consumed) = decode_one(pdu)?;
     Ok(resp)
@@ -187,6 +192,7 @@ pub(crate) fn decode_all(pdu: &[u8]) -> Result<Vec<Response>> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

@@ -30,9 +30,13 @@ fn counter_nonce(counter: u64) -> [u8; 12] {
 pub(crate) struct CoapSession {
     read_key: [u8; 32],
     write_key: [u8; 32],
+    // The event channel is derived and ready now; it is consumed by the inbound
+    // event server (MT-2) and exercised by tests here.
+    #[cfg_attr(not(test), allow(dead_code))]
     event_key: [u8; 32],
     send_ctr: u64,
     recv_ctr: u64,
+    #[cfg_attr(not(test), allow(dead_code))]
     event_ctr: u64,
 }
 
@@ -90,6 +94,7 @@ impl CoapSession {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn hex32(s: &str) -> [u8; 32] {
@@ -161,6 +166,18 @@ mod tests {
     }
 
     #[test]
+    fn open_event_decrypts_aiohomekit_ciphertext() {
+        // Event key aiohomekit derives from shared secret 00..1f, and a one-record
+        // event payload [reserved=0][iid=0x000A][len=1][body=0x01] it encrypts at
+        // event counter 0.
+        let event_key = hex32("37c286d4ae336aeead7048a00b7762b642653d0e8aa691d4d3b7f0cf621db796");
+        let mut s = CoapSession::new(&keys(), event_key);
+        let ct = hex::decode("354e1ad199fa7d58c5b267bdee6603c48e38e7d523ce").unwrap();
+        let pt = s.open_event(&ct).unwrap();
+        assert_eq!(pt, hex::decode("000a00010001").unwrap());
+    }
+
+    #[test]
     fn wrong_counter_fails_to_open() {
         let mut ctrl = CoapSession::new(&keys(), [0u8; 32]);
         let acc_keys = SessionKeys {
@@ -170,7 +187,7 @@ mod tests {
         let mut acc = CoapSession::new(&acc_keys, [0u8; 32]);
         let _ = ctrl.seal_request(b"first").unwrap(); // advances ctrl.send_ctr to 1
         let ct = ctrl.seal_request(b"second").unwrap(); // sealed at counter 1
-        // acc.recv_ctr is still 0 → nonce mismatch → auth failure.
+                                                        // acc.recv_ctr is still 0 → nonce mismatch → auth failure.
         assert!(acc.open_response(&ct).is_err());
     }
 }

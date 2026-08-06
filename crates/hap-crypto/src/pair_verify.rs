@@ -483,13 +483,19 @@ mod tests {
     #[allow(clippy::unwrap_used)] // test code: derivation success is the assertion
     fn coap_session_keys_match_aiohomekit() {
         let shared: [u8; 32] = std::array::from_fn(|i| u8::try_from(i).unwrap_or(0)); // 00..1f
-        // Expected values produced by aiohomekit's hkdf_derive over the same
-        // synthetic shared secret (see xtask capture notes).
+                                                                                      // Expected values produced by aiohomekit's hkdf_derive over the same
+                                                                                      // synthetic shared secret (see xtask capture notes).
         let event = hex32("37c286d4ae336aeead7048a00b7762b642653d0e8aa691d4d3b7f0cf621db796");
         let read = hex32("c09403ef8aa6c5045cbd8cf9bf3e665b2caed623af2be0e87c8f80f519914d3d");
         let write = hex32("c3ca130c7033dbe5e7ff7f91d117ead869bac476994c7a48ca170c111136ed96");
-        assert_eq!(derive_key(&shared, EVENT_SALT, EVENT_READ_INFO).unwrap(), event);
-        assert_eq!(derive_key(&shared, CONTROL_SALT, CONTROL_READ_INFO).unwrap(), read);
+        assert_eq!(
+            derive_key(&shared, EVENT_SALT, EVENT_READ_INFO).unwrap(),
+            event
+        );
+        assert_eq!(
+            derive_key(&shared, CONTROL_SALT, CONTROL_READ_INFO).unwrap(),
+            read
+        );
         assert_eq!(
             derive_key(&shared, CONTROL_SALT, CONTROL_WRITE_INFO).unwrap(),
             write

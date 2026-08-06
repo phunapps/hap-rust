@@ -164,7 +164,7 @@ impl CoapTransport for UdpCoapTransport {
                     });
                 }
                 Ok(Err(e)) => return Err(ThreadError::Io(e)),
-                Err(_) => continue, // ack timeout — retransmit
+                Err(_elapsed) => {} // ack timeout — fall through to retransmit
             }
         }
         Err(ThreadError::Coap(
@@ -209,10 +209,7 @@ impl MockCoapTransport {
 
     /// The `(path, payload)` of every request posted so far, in order.
     pub(crate) fn requests(&self) -> Vec<(String, Vec<u8>)> {
-        self.requests
-            .lock()
-            .map(|r| r.clone())
-            .unwrap_or_default()
+        self.requests.lock().map(|r| r.clone()).unwrap_or_default()
     }
 }
 
@@ -233,6 +230,7 @@ impl CoapTransport for MockCoapTransport {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -283,7 +281,7 @@ mod tests {
         let reqs = mock.requests();
         assert_eq!(reqs.len(), 2);
         assert_eq!(reqs[0], ("1".to_string(), vec![0x01]));
-        assert_eq!(reqs[1], ("".to_string(), vec![0x02, 0x03]));
+        assert_eq!(reqs[1], (String::new(), vec![0x02, 0x03]));
 
         // Queue drained → next post errors rather than blocking.
         assert!(mock.post(PATH_SECURE, &[]).await.is_err());

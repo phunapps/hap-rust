@@ -37,7 +37,10 @@ pub(crate) async fn pair_setup<T: CoapTransport + ?Sized>(
     let mut client = PairSetupClient::new(setup_code, controller)?;
     let mut out = client.start();
     loop {
-        let reply = transport.post(PATH_PAIR_SETUP, &out).await?.changed_payload()?;
+        let reply = transport
+            .post(PATH_PAIR_SETUP, &out)
+            .await?
+            .changed_payload()?;
         match client.handle(&reply)? {
             PairSetupStep::Send(next) => out = next,
             PairSetupStep::Done(pairing) => return Ok(pairing),
@@ -85,6 +88,7 @@ pub(crate) async fn pair_verify_with_client<T: CoapTransport + ?Sized>(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::coap::{CoapResponse, MockCoapTransport};
     use crate::error::ThreadError;
@@ -108,7 +112,10 @@ mod tests {
         let reqs = mock.requests();
         assert_eq!(reqs.len(), 1);
         assert_eq!(reqs[0].0, "1"); // posted to /1
-        assert!(!reqs[0].1.is_empty(), "M1 payload should be a non-empty TLV8");
+        assert!(
+            !reqs[0].1.is_empty(),
+            "M1 payload should be a non-empty TLV8"
+        );
     }
 
     #[tokio::test]

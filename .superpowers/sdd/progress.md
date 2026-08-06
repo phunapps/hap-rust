@@ -12,10 +12,10 @@ pub(crate) helpers transiently dead_code until consumed). Tests pass per module.
 - [x] Task 4: session.rs — three-key record layer, aiohomekit vectors (5 tests)
 - [x] Task 5: discovery.rs — _hap._udp browse + TXT parse (4 tests)
 - [x] Task 6: pairing.rs — pair setup + verify over CoAP + _with_client seam (2 tests)
-- [ ] Task 7: db.rs — 0x09 database decode
-- [ ] Task 8: accessory.rs/controller.rs — connect, read/write, persistence
-- [ ] Task 9 (stretch): subscribe + event record parser
-- [ ] Task 10: README, rustdoc, example, final clippy/fmt gate
+- [~] Task 7: db.rs 0x09 tree decode — DEFERRED to bring-up (needs real body); read_database_raw lands the bytes
+- [x] Task 8: accessory.rs + controller.rs — secure read/write, identify/pair/connect (4 tests)
+- [~] Task 9: events — open_event parser + vector done; subscribe encoders + CoAP server = MT-2
+- [x] Task 10: README + rustdoc + clippy/fmt gate (crate clippy-clean, 27 tests)
 
 ## Spec review outcomes (SOUND-WITH-CHANGES) applied to build
 - Finding 1 (pdu must follow aiohomekit not hap-ble): ALREADY correct in pdu.rs

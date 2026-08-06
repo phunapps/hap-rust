@@ -143,6 +143,7 @@ fn instance_name(fullname: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn txt(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -158,7 +159,12 @@ mod tests {
         let d = parse_txt(
             "Onvis Sensor._hap._udp.local.",
             addr,
-            &txt(&[("id", "AA:BB:CC:DD:EE:FF"), ("c#", "3"), ("ci", "10"), ("sf", "1")]),
+            &txt(&[
+                ("id", "AA:BB:CC:DD:EE:FF"),
+                ("c#", "3"),
+                ("ci", "10"),
+                ("sf", "1"),
+            ]),
         )
         .unwrap();
         assert_eq!(d.id, "AA:BB:CC:DD:EE:FF");

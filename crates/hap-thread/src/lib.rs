@@ -26,12 +26,16 @@
 //! is already reachable and discoverable via `_hap._udp`.
 #![forbid(unsafe_code)]
 
+pub mod accessory;
 pub mod coap;
+pub mod controller;
 pub mod discovery;
 pub mod error;
 pub mod pairing;
 pub mod pdu;
 pub mod session;
 
+pub use accessory::ThreadAccessory;
+pub use controller::ThreadController;
 pub use discovery::{discover, DiscoveredThreadAccessory};
 pub use error::{Result, ThreadError};
