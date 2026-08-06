@@ -729,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "hap-ble"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "bluest",
@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "hap-controller"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
  "async-trait",
  "base64",

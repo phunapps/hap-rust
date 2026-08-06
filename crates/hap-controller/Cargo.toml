@@ -1,6 +1,6 @@
 [package]
 name = "hap-controller"
-version = "3.0.1"
+version = "3.0.2"
 description = "High-level HomeKit (HAP) controller API: discover, pair, connect, read/write/subscribe characteristics."
 edition.workspace = true
 rust-version.workspace = true
@@ -21,7 +21,7 @@ hap-crypto = { path = "../hap-crypto", version = "1.2.0" }
 hap-transport = { path = "../hap-transport", version = "1.2.0" }
 hap-pairing = { path = "../hap-pairing", version = "2.1.0" }
 hap-model = { path = "../hap-model", version = "1.2.0" }
-hap-ble = { path = "../hap-ble", version = "0.6.0", optional = true }
+hap-ble = { path = "../hap-ble", version = "0.6.1", optional = true }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 async-trait = { workspace = true }
@@ -58,7 +58,7 @@ name = "sleepy_cold_arm"
 required-features = ["ble"]
 
 [dev-dependencies]
-hap-ble = { path = "../hap-ble", version = "0.6.0", features = ["test-support"] }
+hap-ble = { path = "../hap-ble", version = "0.6.1", features = ["test-support"] }
 # Integration tests are a separate crate: they only see hap-controller's public
 # API plus these dev-deps, so the lower types the test doubles name (the
 # AccessoryPairing inside StoredAccessory, the PairingStore Result alias) must be

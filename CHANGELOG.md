@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## 3.0.2 / hap-ble 0.6.1 — 2026-08-07 — Encrypted broadcast (0x11) motion, end-to-end
+
+Completes HAP-BLE encrypted broadcast notifications: a sleepy sensor's
+characteristic change now arrives as an instant encrypted `0x11` broadcast
+instead of only the ~2 s reconnect poll. Two fixes, both hardware-validated
+against an Onvis SMS2 (motion delivered as `0x11` → decrypted → `MotionDetected =
+true`). `hap-ble` bumps to `0.6.1`; `hap-controller` to `3.0.2` (dep bump only,
+no API change).
+
+### `hap-ble` 0.6.1
+- **Fix:** the generate-broadcast-key request was aborted because the
+  Protocol-Information Service-Signature characteristic was dropped from the
+  enumerated attribute tree (`enumerate` skipped the Service-Signature char for
+  *every* service, so its service could not be found). It is now retained for the
+  Protocol-Information service — where its instance id is the request target —
+  and skipped from the model elsewhere, mirroring the existing handle-map
+  asymmetry. This was a latent bug from 0.5 that 0.6.0 only made visible.
+- **Fix:** the generate-broadcast-key Protocol-Configuration PDU now carries the
+  Protocol-Information **service's** instance id (aiohomekit's
+  `hap_char.service.iid`), read from the service's Service-Instance-ID
+  characteristic during discovery and carried on `GattService::iid`. It
+  previously sent the Service-Signature *characteristic's* iid, which a real
+  accessory rejects with HAP status 4 ("invalid instance id"), leaving no
+  broadcast key and therefore no `0x11` broadcasts. With both fixes the accessory
+  generates its broadcast key, accepts the per-characteristic enable, and emits
+  encrypted broadcasts that decode to characteristic events.
+
+### `hap-controller` 3.0.2
+- Depends on `hap-ble` `0.6.1`. No API change.
+
 ## 3.0.1 / hap-ble 0.6.0 — 2026-08-07 — Linux sleepy-poll fix + broadcast diagnostics
 
 Unblocks sleepy BLE sensors on Linux/BlueZ (the cold-arm catch-up poll now
