@@ -5,6 +5,7 @@ use crate::accessory::BleAccessory;
 use crate::broadcast_state::BleBroadcastState;
 use crate::discovery::DiscoveredBleAccessory;
 use crate::error::Result;
+use crate::gatt::{PROTOCOL_INFO_SERVICE, SERVICE_SIGNATURE_CHAR};
 use crate::pairing;
 use hap_crypto::AccessoryPairing;
 use hap_crypto::ControllerKeypair;
@@ -14,7 +15,6 @@ use std::sync::Arc;
 const PAIR_SETUP_CHAR: &str = "0000004c-0000-1000-8000-0026bb765291";
 const PAIR_VERIFY_CHAR: &str = "0000004e-0000-1000-8000-0026bb765291";
 const PAIRINGS_CHAR: &str = "00000050-0000-1000-8000-0026bb765291";
-use crate::gatt::{PROTOCOL_INFO_SERVICE, SERVICE_SIGNATURE_CHAR};
 /// Protocol-Configuration TLV body that asks the accessory to generate a
 /// broadcast encryption key (type `GenerateBroadcastEncryptionKey` = 0x01, len 0).
 const GENERATE_BROADCAST_KEY_BODY: [u8; 2] = [0x01, 0x00];
@@ -246,6 +246,18 @@ mod tests {
     fn finds_protocol_info_service_signature_iid() {
         use crate::gatt::{GattCharacteristic, GattService};
         let services = vec![
+            // A decoy service that also carries a Service-Signature char (they
+            // share one UUID) is listed FIRST, so a non-scoped flat search would
+            // wrongly return its iid (99). The lookup must scope to the
+            // Protocol-Information service and return 42.
+            GattService {
+                uuid: "00000055-0000-1000-8000-0026bb765291".into(),
+                iid: 0,
+                characteristics: vec![GattCharacteristic {
+                    uuid: SERVICE_SIGNATURE_CHAR.into(),
+                    iid: 99,
+                }],
+            },
             GattService {
                 uuid: PROTOCOL_INFO_SERVICE.into(),
                 iid: 0,
@@ -259,17 +271,6 @@ mod tests {
                         iid: 43,
                     },
                 ],
-            },
-            // Another service also carries a Service-Signature char (they share
-            // one UUID) — it must not be mistaken for the Protocol-Information
-            // one, so the service scope in the lookup matters.
-            GattService {
-                uuid: "00000055-0000-1000-8000-0026bb765291".into(),
-                iid: 0,
-                characteristics: vec![GattCharacteristic {
-                    uuid: SERVICE_SIGNATURE_CHAR.into(),
-                    iid: 99,
-                }],
             },
         ];
         assert_eq!(protocol_info_signature_iid(&services), Some(42));
