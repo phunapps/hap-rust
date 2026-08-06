@@ -28,6 +28,7 @@
 
 pub mod coap;
 pub mod error;
+pub mod pairing;
 pub mod pdu;
 pub mod session;
 

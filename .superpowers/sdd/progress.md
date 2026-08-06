@@ -11,7 +11,7 @@ pub(crate) helpers transiently dead_code until consumed). Tests pass per module.
 - [x] Task 3: coap.rs — CoapTransport trait + UDP + mock (2 tests)
 - [x] Task 4: session.rs — three-key record layer, aiohomekit vectors (5 tests)
 - [ ] Task 5: discovery.rs — _hap._udp
-- [ ] Task 6: pairing.rs — pair setup + verify over CoAP
+- [x] Task 6: pairing.rs — pair setup + verify over CoAP + _with_client seam (2 tests)
 - [ ] Task 7: db.rs — 0x09 database decode
 - [ ] Task 8: accessory.rs/controller.rs — connect, read/write, persistence
 - [ ] Task 9 (stretch): subscribe + event record parser
