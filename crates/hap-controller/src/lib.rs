@@ -146,6 +146,8 @@ mod handle;
 mod payload_match;
 mod reconnect;
 mod setup_payload;
+#[cfg(feature = "ble")]
+mod sleepy;
 mod unified;
 
 pub use controller::HapController;
@@ -155,6 +157,8 @@ pub use event::CharacteristicEvent;
 pub use payload_match::PayloadMatch;
 pub use reconnect::ConnectionState;
 pub use setup_payload::{SetupFlags, SetupPayload};
+#[cfg(feature = "ble")]
+pub use sleepy::SleepyWatch;
 pub use unified::AccessoryHandle;
 
 // The reconnection seam: a [`Reconnector`] mints fresh sessions on demand.
