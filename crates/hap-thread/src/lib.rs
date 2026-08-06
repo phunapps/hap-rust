@@ -29,5 +29,6 @@
 pub mod coap;
 pub mod error;
 pub mod pdu;
+pub mod session;
 
 pub use error::{Result, ThreadError};

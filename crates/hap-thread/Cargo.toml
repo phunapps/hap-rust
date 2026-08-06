@@ -34,3 +34,4 @@ hap-pairing = { path = "../hap-pairing", version = "2.1.0" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "sync", "macros", "time", "test-util"] }
+hex = { workspace = true }

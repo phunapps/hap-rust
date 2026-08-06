@@ -8,8 +8,8 @@ pub(crate) helpers transiently dead_code until consumed). Tests pass per module.
 
 - [x] Task 1: crate scaffold (Cargo.toml, lib.rs, error.rs) + workspace wiring + coap-lite dep
 - [x] Task 2: pdu.rs — encode_request/encode_all/decode_response/decode_all + 9 tests
-- [ ] Task 3: coap.rs — CoapTransport trait + MockCoapTransport + UdpCoapTransport
-- [ ] Task 4: session.rs — three-key record layer (ChaCha/HKDF vectors)
+- [x] Task 3: coap.rs — CoapTransport trait + UDP + mock (2 tests)
+- [x] Task 4: session.rs — three-key record layer, aiohomekit vectors (5 tests)
 - [ ] Task 5: discovery.rs — _hap._udp
 - [ ] Task 6: pairing.rs — pair setup + verify over CoAP
 - [ ] Task 7: db.rs — 0x09 database decode

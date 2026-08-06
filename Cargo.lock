@@ -839,6 +839,7 @@ dependencies = [
  "hap-model",
  "hap-pairing",
  "hap-tlv8",
+ "hex",
  "mdns-sd",
  "thiserror",
  "tokio",
