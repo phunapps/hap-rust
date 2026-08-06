@@ -8,13 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
-## 2.2.0 — 2026-08-06 — Seamless sleepy BLE sensors
+## 3.0.0 — 2026-08-06 — Seamless sleepy BLE sensors
 
 Cold-arm a sleepy BLE sensor straight from a stored pairing after a reboot —
 no blocking connect, no re-pairing — and durably persist broadcast/GSN state
-through concurrent writers.
+through concurrent writers. `hap-controller` majors to `3.0.0` for one breaking
+signature change (below); `hap-pairing` (`2.1.0`) and `hap-ble` (`0.5.0`) are
+additive.
 
-### `hap-controller` 2.2.0
+### `hap-controller` 3.0.0
 - `HapController::watch_sleepy(accessory_id, poll_iids)` cold-arms an
   advert-driven watch from a stored BLE pairing and returns a `SleepyWatch`
   immediately, without blocking on the connect: a background task waits for
@@ -25,12 +27,14 @@ through concurrent writers.
   `PairingStore::save_broadcast_state` after every event. `SleepyWatch::save_state`
   force-flushes the latest state (an `Ok` no-op before the background task has
   connected).
-- **Note:** the unified `AccessoryHandle::watch_sleepy_events` signature is
-  corrected from the previous, unusable 3-argument form to
-  `watch_sleepy_events(poll_iids)` — 1-arg, self-sourcing the advert source
-  and device id from the live connection, matching `hap-ble`'s new primitive
-  below. Shipped as a minor bump because the 3-arg form could not be called
-  correctly by any caller.
+- **Breaking (the reason for the major bump):** the unified
+  `AccessoryHandle::watch_sleepy_events` signature changes from the previous,
+  unusable 3-argument form to `watch_sleepy_events(poll_iids)` — 1-arg,
+  self-sourcing the advert source and device id from the live connection,
+  matching `hap-ble`'s new primitive below. The 3-arg form was effectively
+  uncallable (the caller could not obtain the `AdvertSource`), but a
+  signature change is breaking, so `hap-controller` majors to `3.0.0` per
+  strict semver.
 
 ### `hap-pairing` 2.1.0
 - Store writes are now atomic with respect to concurrent writers: the JSON

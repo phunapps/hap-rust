@@ -1,6 +1,6 @@
 [package]
 name = "hap-controller"
-version = "2.2.0"
+version = "3.0.0"
 description = "High-level HomeKit (HAP) controller API: discover, pair, connect, read/write/subscribe characteristics."
 edition.workspace = true
 rust-version.workspace = true
