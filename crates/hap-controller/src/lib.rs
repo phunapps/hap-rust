@@ -135,6 +135,31 @@
 //!    material (signing key + latest GSN counter) to the pairing store.
 //!    Recommended before shutdown so a later `connect` resumes broadcast
 //!    dedup at the latest GSN; without it, already-seen events may re-emit.
+//!
+//! ## Sleepy BLE sensors
+//!
+//! A "sleepy" accessory drops its BLE link between events and communicates
+//! change through advertisements instead — there are two ways to arm a
+//! watch, depending on whether you already have a connected handle:
+//!
+//! - **Already connected:** after [`pair`](HapController::pair) or
+//!   [`connect`](HapController::connect), call
+//!   `handle.watch_sleepy_events(poll_iids)` to arm live events on that
+//!   connected handle, self-sourcing the advert source and device id from
+//!   the connection.
+//! - **Cold, after a reboot:** with only a stored pairing (no live
+//!   connection), call `controller.watch_sleepy(id, poll_iids)`. It returns
+//!   immediately — there is no blocking connect on the calling task. A
+//!   background task waits for the device's next advertisement, connects
+//!   once, enables broadcasts, disconnects so the device keeps advertising,
+//!   and arms the watch; events then stream on the returned watch's
+//!   `events()`. Each event auto-persists the latest GSN/broadcast state, so
+//!   a later reboot does not re-emit already-seen events. Call
+//!   `SleepyWatch::save_state` to force-flush that state early (for example,
+//!   before an orderly shutdown); it is a no-op before the background task
+//!   has connected.
+//!
+//! Both paths are feature-gated behind `ble`.
 
 #![forbid(unsafe_code)]
 
@@ -146,6 +171,8 @@ mod handle;
 mod payload_match;
 mod reconnect;
 mod setup_payload;
+#[cfg(feature = "ble")]
+mod sleepy;
 mod unified;
 
 pub use controller::HapController;
@@ -155,6 +182,8 @@ pub use event::CharacteristicEvent;
 pub use payload_match::PayloadMatch;
 pub use reconnect::ConnectionState;
 pub use setup_payload::{SetupFlags, SetupPayload};
+#[cfg(feature = "ble")]
+pub use sleepy::SleepyWatch;
 pub use unified::AccessoryHandle;
 
 // The reconnection seam: a [`Reconnector`] mints fresh sessions on demand.

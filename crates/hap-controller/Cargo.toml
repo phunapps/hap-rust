@@ -1,6 +1,6 @@
 [package]
 name = "hap-controller"
-version = "2.1.0"
+version = "3.0.0"
 description = "High-level HomeKit (HAP) controller API: discover, pair, connect, read/write/subscribe characteristics."
 edition.workspace = true
 rust-version.workspace = true
@@ -19,9 +19,9 @@ workspace = true
 hap-tlv8 = { path = "../hap-tlv8", version = "1.0.0" }
 hap-crypto = { path = "../hap-crypto", version = "1.2.0" }
 hap-transport = { path = "../hap-transport", version = "1.2.0" }
-hap-pairing = { path = "../hap-pairing", version = "2.0.0" }
+hap-pairing = { path = "../hap-pairing", version = "2.1.0" }
 hap-model = { path = "../hap-model", version = "1.2.0" }
-hap-ble = { path = "../hap-ble", version = "0.4.0", optional = true }
+hap-ble = { path = "../hap-ble", version = "0.5.0", optional = true }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 async-trait = { workspace = true }
@@ -40,6 +40,11 @@ name = "ble_store"
 path = "tests/ble_store.rs"
 required-features = ["ble"]
 
+[[test]]
+name = "sleepy_cold_arm"
+path = "tests/sleepy_cold_arm.rs"
+required-features = ["ble"]
+
 [[example]]
 name = "unified_pair_and_read"
 required-features = ["ble"]
@@ -48,14 +53,18 @@ required-features = ["ble"]
 name = "pair_from_qr"
 required-features = ["ble"]
 
+[[example]]
+name = "sleepy_cold_arm"
+required-features = ["ble"]
+
 [dev-dependencies]
-hap-ble = { path = "../hap-ble", version = "0.4.0", features = ["test-support"] }
+hap-ble = { path = "../hap-ble", version = "0.5.0", features = ["test-support"] }
 # Integration tests are a separate crate: they only see hap-controller's public
 # API plus these dev-deps, so the lower types the test doubles name (the
 # AccessoryPairing inside StoredAccessory, the PairingStore Result alias) must be
 # listed here even though the library already depends on them.
 hap-crypto = { path = "../hap-crypto", version = "1.2.0" }
-hap-pairing = { path = "../hap-pairing", version = "2.0.0" }
+hap-pairing = { path = "../hap-pairing", version = "2.1.0" }
 hap-transport = { path = "../hap-transport", version = "1.2.0" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 tokio-stream = { workspace = true }

@@ -363,28 +363,19 @@ impl AccessoryHandle {
         }
     }
 
-    /// Watch disconnected-device (sleepy) events: regular-advertisement GSN
-    /// bumps trigger a catch-up poll, and encrypted broadcast advertisements
-    /// are decrypted directly. BLE only.
+    /// Watch for sleepy-device events (BLE only), self-sourcing the advert
+    /// source and device id from the connection.
     ///
     /// # Errors
-    ///
-    /// BLE: [`HapError::Ble`](crate::HapError::Ble) if the advertisement source cannot start. IP:
-    /// always [`HapError::UnsupportedByTransport`](crate::HapError::UnsupportedByTransport).
+    /// `HapError::UnsupportedByTransport` on IP; otherwise BLE errors
+    /// (including `HapError::Ble(BleError::NoAdvertSource)` if unset).
     #[cfg(feature = "ble")]
-    pub async fn watch_sleepy_events(
-        &mut self,
-        advert_source: std::sync::Arc<dyn hap_ble::AdvertSource>,
-        device_id: [u8; 6],
-        poll_iids: Vec<(u64, u64)>,
-    ) -> Result<()> {
+    pub async fn watch_sleepy_events(&mut self, poll_iids: Vec<(u64, u64)>) -> Result<()> {
         match &mut self.inner {
             Inner::Ip(_) => Err(crate::error::HapError::UnsupportedByTransport(
                 "watch_sleepy_events",
             )),
-            Inner::Ble(b) => Ok(b
-                .watch_sleepy_events(advert_source, device_id, poll_iids)
-                .await?),
+            Inner::Ble(b) => Ok(b.watch_sleepy_events(poll_iids).await?),
         }
     }
 

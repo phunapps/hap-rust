@@ -60,7 +60,7 @@ const DEFAULT_CONTROLLER_ID: &str = "hap-rust-controller";
 /// existing controller identity from the store, or creates and persists a fresh
 /// one on first run.
 pub struct HapController {
-    store: Box<dyn PairingStore + Send + Sync>,
+    store: Arc<dyn PairingStore + Send + Sync>,
     keypair: ControllerKeypair,
     /// Snapshot of the stored accessory ids, kept in sync by `pair`/
     /// `remove_pairing` so the synchronous [`paired`](Self::paired) accessor
@@ -68,6 +68,15 @@ pub struct HapController {
     /// of the store (the v1.0 single-controller model).
     cached_ids: Vec<String>,
     request_timeout: std::time::Duration,
+    /// Serializes exclusive use of the (single) BLE radio across background
+    /// sleepy watches so their cold connects do not overlap. Held only for the
+    /// duration of a connect + arm, not for the lifetime of a watch.
+    #[cfg(feature = "ble")]
+    radio_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The cold-arm connect seam. Defaults to the real bluest-backed connector;
+    /// overridable via [`set_sleepy_connector_for_tests`](Self::set_sleepy_connector_for_tests).
+    #[cfg(feature = "ble")]
+    sleepy_connector: Arc<dyn hap_ble::SleepyConnector>,
 }
 
 /// The outcome of matching a scanned payload against discovered accessories.
@@ -111,7 +120,7 @@ impl HapController {
     /// Returns [`HapError::Pairing`] if the store cannot be read or the new
     /// identity cannot be persisted.
     pub async fn new(store: impl PairingStore + Send + Sync + 'static) -> Result<Self> {
-        let store: Box<dyn PairingStore + Send + Sync> = Box::new(store);
+        let store: Arc<dyn PairingStore + Send + Sync> = Arc::new(store);
         let keypair = if let Some(kp) = store.load_controller().await? {
             kp
         } else {
@@ -126,11 +135,23 @@ impl HapController {
             .map(|s| s.pairing.pairing_id)
             .collect();
         Ok(Self {
+            #[cfg(feature = "ble")]
+            sleepy_connector: Arc::new(hap_ble::BluestSleepyConnector::new(keypair.clone())),
             store,
             keypair,
             cached_ids,
             request_timeout: crate::handle::DEFAULT_REQUEST_TIMEOUT,
+            #[cfg(feature = "ble")]
+            radio_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
+    }
+
+    /// Inject a custom sleepy connect seam (test double). Mirrors
+    /// `from_ble_for_tests`; not part of the supported public API.
+    #[doc(hidden)]
+    #[cfg(feature = "ble")]
+    pub fn set_sleepy_connector_for_tests(&mut self, c: Arc<dyn hap_ble::SleepyConnector>) {
+        self.sleepy_connector = c;
     }
 
     /// Set the per-request timeout for handles created after this call
@@ -284,14 +305,16 @@ impl HapController {
         let device_id = hap_pairing::parse_device_id(&accessory.device_id)
             .ok_or_else(|| HapError::UnknownAccessory(accessory.device_id.clone()))?;
         let gatt = hap_ble::connect_gatt(accessory).await?;
+        let advert: Arc<dyn hap_ble::AdvertSource> = gatt.clone();
         let ble = hap_ble::BleController::new(self.keypair.clone());
-        let paired = ble
+        let mut paired = ble
             .pair(
                 gatt as Arc<dyn hap_ble::GattConnection>,
                 accessory,
                 setup_code,
             )
             .await?;
+        paired.accessory.set_advert_source(advert);
         let stored = StoredAccessory {
             pairing: paired.pairing,
             transport: StoredTransport::Ble {
@@ -415,18 +438,20 @@ impl HapController {
             .find(|d| d.device_id.eq_ignore_ascii_case(&wanted))
             .ok_or(HapError::Ble(hap_ble::BleError::AccessoryNotFound))?;
         let gatt = hap_ble::connect_gatt(&found).await?;
+        let advert: Arc<dyn hap_ble::AdvertSource> = gatt.clone();
         let ble = hap_ble::BleController::new(self.keypair.clone());
         let state = broadcast.map(|b| hap_ble::BleBroadcastState {
             key: b.key,
             gsn: b.gsn,
         });
-        let accessory = ble
+        let mut accessory = ble
             .connect(
                 gatt as Arc<dyn hap_ble::GattConnection>,
                 &stored.pairing,
                 state,
             )
             .await?;
+        accessory.set_advert_source(advert);
         Ok(AccessoryHandle::from_ble(accessory))
     }
 
@@ -578,6 +603,58 @@ impl HapController {
         #[cfg(not(feature = "ble"))]
         let _ = handle;
         Ok(())
+    }
+
+    /// Cold-arm an advert-driven sleepy watch from a stored BLE pairing,
+    /// returning immediately without blocking on the connect.
+    ///
+    /// The returned [`SleepyWatch`](crate::SleepyWatch) is armed by a background
+    /// task that waits for the device's next advertisement, connects once
+    /// (serialized against other sleepy watches by an internal radio mutex),
+    /// enables broadcasts for `poll_iids`, disconnects so the sleepy device
+    /// advertises again, arms the self-sourcing advert watch, and pumps its
+    /// events into [`SleepyWatch::events`](crate::SleepyWatch::events) —
+    /// auto-persisting each event's GSN to the store. Because the cold connect
+    /// blocks until the device advertises (possibly minutes), it runs inside the
+    /// background task; this method itself never blocks on the radio.
+    ///
+    /// `poll_iids` are the `(aid, iid)` characteristics to read back off a
+    /// GSN-bump advertisement.
+    ///
+    /// An unreachable or permanently-absent device holds the shared radio lock
+    /// for the entire wait until it advertises, so it can block other pending
+    /// `watch_sleepy` cold connects from proceeding; at most one watch per
+    /// accessory is expected.
+    ///
+    /// # Errors
+    /// [`HapError::UnknownAccessory`] if `accessory_id` is not in the store;
+    /// [`HapError::UnsupportedByTransport`] if the stored pairing is not BLE.
+    #[cfg(feature = "ble")]
+    pub async fn watch_sleepy(
+        &self,
+        accessory_id: &str,
+        poll_iids: Vec<(u64, u64)>,
+    ) -> Result<crate::sleepy::SleepyWatch> {
+        let stored = self.load_stored(accessory_id).await?;
+        let (device_id, broadcast) = match &stored.transport {
+            StoredTransport::Ble {
+                device_id,
+                broadcast,
+            } => (*device_id, broadcast.clone()),
+            StoredTransport::Ip { .. } => {
+                return Err(HapError::UnsupportedByTransport("watch_sleepy"));
+            }
+        };
+        Ok(crate::sleepy::spawn_watch(
+            self.sleepy_connector.clone(),
+            self.store.clone(),
+            self.radio_lock.clone(),
+            stored.pairing.pairing_id.clone(),
+            stored.pairing.clone(),
+            device_id,
+            broadcast,
+            poll_iids,
+        ))
     }
 
     /// Load the stored pairing matching `accessory_id`, or

@@ -166,6 +166,11 @@ To pair the exact accessory a scanned HomeKit setup QR points at, parse the
 `HapController::pair_with_payload` — see
 [`crates/hap-controller/examples/pair_from_qr.rs`](crates/hap-controller/examples/pair_from_qr.rs).
 
+For a sleepy BLE sensor with only a stored pairing (no live connection, e.g.
+after a reboot), `HapController::watch_sleepy` cold-arms it without a blocking
+connect — see
+[`crates/hap-controller/examples/sleepy_cold_arm.rs`](crates/hap-controller/examples/sleepy_cold_arm.rs).
+
 ## Pairing a real accessory
 
 As of **M5**, the first pure-Rust HomeKit controller pairs a real accessory end
