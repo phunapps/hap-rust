@@ -27,9 +27,11 @@
 #![forbid(unsafe_code)]
 
 pub mod coap;
+pub mod discovery;
 pub mod error;
 pub mod pairing;
 pub mod pdu;
 pub mod session;
 
+pub use discovery::{discover, DiscoveredThreadAccessory};
 pub use error::{Result, ThreadError};
