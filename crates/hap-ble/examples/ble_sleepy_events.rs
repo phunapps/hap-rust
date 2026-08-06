@@ -5,6 +5,7 @@
 //!
 //! Run: `cargo run --release -p hap-ble --example ble_sleepy_events -- <setup-code>`
 #![allow(clippy::expect_used, clippy::unwrap_used)] // example binary
+use hap_ble::GattConnection;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_stream::StreamExt as _;

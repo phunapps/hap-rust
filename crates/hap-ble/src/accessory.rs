@@ -543,6 +543,12 @@ impl BleAccessory {
         Ok(())
     }
 
+    /// Release the underlying link (so the sleepy accessory advertises again).
+    /// A no-op on backends without a live link.
+    pub async fn disconnect(&self) {
+        self.gatt.disconnect().await;
+    }
+
     /// Subscribe to value-change events for a characteristic. HAP-BLE connected
     /// events use the GATT notification only as a **trigger**: when it fires we
     /// issue an encrypted Characteristic-Read for the new value and publish it
@@ -1390,5 +1396,12 @@ mod tests {
     async fn pairing_id_exposes_the_stored_pairing() {
         let (h, _g) = ble_accessory_with_db().await;
         assert_eq!(h.pairing_id(), "AE:EC:86:C0:BF:D7");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn disconnect_is_callable_on_the_accessory() {
+        let (h, _g) = ble_accessory_with_db().await;
+        h.disconnect().await; // MockGatt uses the default no-op; must compile + run
     }
 }

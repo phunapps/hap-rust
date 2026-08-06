@@ -75,6 +75,11 @@ pub trait GattConnection: Send + Sync {
     async fn generation(&self) -> u64 {
         0
     }
+    /// Release the active link. A sleepy HAP accessory only advertises and
+    /// emits encrypted broadcasts while disconnected, so a caller watching for
+    /// sleepy events must disconnect after setup. Default no-op for backends and
+    /// mocks with no live link.
+    async fn disconnect(&self) {}
 }
 
 /// A raw advertisement observed by a backend scanner: the Apple (0x004C)

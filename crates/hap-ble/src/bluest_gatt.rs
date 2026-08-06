@@ -121,23 +121,6 @@ impl BluestConnection {
         })
     }
 
-    /// Release the active GATT link. A sleepy HAP accessory only advertises and
-    /// emits encrypted broadcasts while disconnected, and on macOS CoreBluetooth
-    /// filters a connected peripheral out of scan results — so a caller watching
-    /// for sleepy events must disconnect after setup. A subsequent encrypted
-    /// operation (e.g. a disconnected-event poll read) transparently reconnects
-    /// via the supervisor.
-    pub async fn disconnect(&self) {
-        // Pause the scan for the teardown: on macOS a disconnect cannot
-        // complete while a scan is running.
-        let _scan_pause = self.scan_gate.pause().await;
-        let _ = tokio::time::timeout(
-            TEARDOWN_TIMEOUT,
-            self.adapter.disconnect_device(&self.device),
-        )
-        .await;
-    }
-
     async fn discover(
         device: &Device,
     ) -> Result<(HashMap<String, Characteristic>, Vec<ServiceShape>)> {
@@ -347,6 +330,17 @@ impl GattConnection for BluestConnection {
             });
         }
         Ok(services)
+    }
+
+    async fn disconnect(&self) {
+        // Pause the scan for the teardown: on macOS a disconnect cannot
+        // complete while a scan is running.
+        let _scan_pause = self.scan_gate.pause().await;
+        let _ = tokio::time::timeout(
+            TEARDOWN_TIMEOUT,
+            self.adapter.disconnect_device(&self.device),
+        )
+        .await;
     }
 }
 
