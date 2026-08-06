@@ -54,6 +54,20 @@ pub(crate) async fn build_db<G: GattConnection + ?Sized>(
             )
             .await?;
             let sig = pdu::parse_signature(&resp.body)?;
+            // Surface each characteristic's broadcast capability at discovery
+            // time (enable `hap_ble=debug`). `supports_broadcast` is the HAP
+            // `0x0200` bit — a characteristic without it will not emit encrypted
+            // `0x11` broadcasts however `enable_broadcasts` configures it, so
+            // this is the definitive check when broadcast notifications for a
+            // specific characteristic (e.g. a motion sensor) never appear.
+            tracing::debug!(
+                iid = gc.iid,
+                properties = format!("{:#06x}", sig.properties),
+                supports_broadcast = pdu::supports_broadcast_notify(sig.properties),
+                connected_events = sig.properties & pdu::PROP_CONNECTED_EVENTS != 0,
+                disconnected_events = sig.properties & pdu::PROP_DISCONNECTED_EVENTS != 0,
+                "characteristic signature parsed"
+            );
             chars.push(Characteristic {
                 iid: u64::from(gc.iid),
                 char_type: sig.char_type,

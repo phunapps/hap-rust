@@ -277,6 +277,31 @@ pub(crate) struct Signature {
     pub format: CharFormat,
     /// The permission set.
     pub perms: Perms,
+    /// The raw 16-bit HAP characteristic-properties bitmask (retained beyond the
+    /// [`Perms`] projection so the broadcast-capability bits stay observable —
+    /// see [`supports_broadcast_notify`]).
+    pub properties: u16,
+}
+
+/// HAP characteristic-properties bit: the characteristic supports **broadcast
+/// notifications** (encrypted `0x11` disconnected adverts).
+///
+/// Bit values cross-referenced against aiohomekit
+/// (`aiohomekit/controller/ble/structs.py`): `0x0080` connected events,
+/// `0x0100` disconnected events, `0x0200` broadcast notify. aiohomekit only
+/// sends the Characteristic-Configuration broadcast-enable write to
+/// characteristics with this bit set; a characteristic without it will not emit
+/// encrypted broadcasts however it is configured.
+pub(crate) const PROP_BROADCAST_NOTIFY: u16 = 0x0200;
+/// HAP characteristic-properties bit: notifies events in the connected state.
+pub(crate) const PROP_CONNECTED_EVENTS: u16 = 0x0080;
+/// HAP characteristic-properties bit: notifies events in the disconnected state.
+pub(crate) const PROP_DISCONNECTED_EVENTS: u16 = 0x0100;
+
+/// Whether a raw HAP characteristic-properties word advertises broadcast-notify
+/// support (the [`PROP_BROADCAST_NOTIFY`] bit).
+pub(crate) fn supports_broadcast_notify(properties: u16) -> bool {
+    properties & PROP_BROADCAST_NOTIFY != 0
 }
 
 /// Map a GATT presentation-format byte to a HAP [`CharFormat`].
@@ -350,7 +375,8 @@ pub(crate) fn parse_signature(body: &[u8]) -> Result<Signature> {
     if prop_bytes.len() < 2 {
         return Err(BleError::MalformedPdu("properties descriptor too short"));
     }
-    let perms = perms_from_properties(u16::from_le_bytes([prop_bytes[0], prop_bytes[1]]));
+    let properties = u16::from_le_bytes([prop_bytes[0], prop_bytes[1]]);
+    let perms = perms_from_properties(properties);
 
     let format = map
         .get(param::PRESENTATION_FORMAT)
@@ -363,6 +389,7 @@ pub(crate) fn parse_signature(body: &[u8]) -> Result<Signature> {
         char_type,
         format,
         perms,
+        properties,
     })
 }
 
@@ -408,6 +435,31 @@ mod tests {
         assert_eq!(sig.char_type, hap_model::CharacteristicType::On);
         assert_eq!(sig.format, CharFormat::Bool);
         assert!(sig.perms.read && sig.perms.write);
+        // Raw properties are retained verbatim (0x0003 here, no broadcast bit).
+        assert_eq!(sig.properties, 0x0003);
+        assert!(!supports_broadcast_notify(sig.properties));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // test code: parse success is the whole point
+    fn signature_retains_broadcast_notify_bit() {
+        // A characteristic advertising secure-read + connected + disconnected +
+        // broadcast notify: 0x0010 | 0x0080 | 0x0100 | 0x0200 = 0x0390.
+        let motion_uuid_le = uuid_to_le_bytes("00000022-0000-1000-8000-0026bb765291");
+        let mut body = Vec::new();
+        let mut w = hap_tlv8::Tlv8Writer::new(&mut body);
+        w.push(param::CHAR_TYPE, &motion_uuid_le);
+        w.push(param::PROPERTIES, &0x0390u16.to_le_bytes());
+        w.push(param::PRESENTATION_FORMAT, &[0x01, 0, 0, 0, 0, 0, 0]);
+
+        let sig = parse_signature(&body).unwrap();
+        assert_eq!(sig.properties, 0x0390);
+        assert!(supports_broadcast_notify(sig.properties));
+        assert!(sig.properties & PROP_CONNECTED_EVENTS != 0);
+        assert!(sig.properties & PROP_DISCONNECTED_EVENTS != 0);
+        // A characteristic without the 0x0200 bit is not broadcast-capable even
+        // when it notifies connected/disconnected events.
+        assert!(!supports_broadcast_notify(0x0180));
     }
 
     #[test]
