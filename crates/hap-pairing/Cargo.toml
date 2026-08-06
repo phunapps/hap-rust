@@ -19,7 +19,7 @@ workspace = true
 hap-tlv8 = { path = "../hap-tlv8", version = "1.0.0" }
 hap-crypto = { path = "../hap-crypto", version = "1.0.0" }
 hap-transport = { path = "../hap-transport", version = "1.0.0" }
-tokio = { workspace = true, features = ["rt", "macros", "fs"] }
+tokio = { workspace = true, features = ["rt", "macros", "fs", "io-util"] }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

@@ -43,6 +43,9 @@ pub trait SleepyConnector: Send + Sync {
 
 /// The real bluest-backed connector: retrying scan-by-device-id, then
 /// `connect_gatt` -> `BleController::connect` -> `set_advert_source`.
+///
+/// Retries until the device advertises: a transient scan error (e.g. an
+/// adapter hiccup) does not abort the connect, it backs off and rescans.
 pub struct BluestSleepyConnector {
     keypair: ControllerKeypair,
     /// How long each scan-for-the-device attempt runs before retrying.
@@ -73,8 +76,13 @@ impl SleepyConnector for BluestSleepyConnector {
         // at a time (each attempt drops its stream before the next); the scan is
         // the "wait for first advert".
         loop {
-            if let Some(found) = crate::scan(self.scan_window)
-                .await?
+            // A transient adapter hiccup must not kill the watch — back off
+            // briefly and rescan rather than propagating the error.
+            let Ok(scanned) = crate::scan(self.scan_window).await else {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            };
+            if let Some(found) = scanned
                 .into_iter()
                 .find(|d| d.device_id.eq_ignore_ascii_case(&wanted))
             {

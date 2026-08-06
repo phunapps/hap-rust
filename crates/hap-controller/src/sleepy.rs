@@ -84,6 +84,14 @@ impl SleepyWatch {
             .await?;
         Ok(())
     }
+
+    /// Whether the background cold-arm task has finished (the device was
+    /// connected and the watch armed, or the task ended/errored). A watch that
+    /// is still waiting for the sleepy device to advertise is NOT finished.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.task.is_finished()
+    }
 }
 
 /// Cold-arm orchestration: spawn the background connect+arm+pump task and return

@@ -776,11 +776,15 @@ impl BleAccessory {
     /// [`watch_sleepy_events_with_source`](Self::watch_sleepy_events_with_source).
     ///
     /// # Errors
-    /// [`BleError::NoAdvertSource`] if no source was set; otherwise advert/GATT errors.
+    /// [`BleError::NoAdvertSource`] if no source was set; [`BleError::Backend`]
+    /// if the stored pairing id cannot be parsed as a device id; otherwise
+    /// advert/GATT errors.
     pub async fn watch_sleepy_events(&mut self, poll_iids: Vec<(u64, u64)>) -> Result<()> {
         let src = self.advert_source.clone().ok_or(BleError::NoAdvertSource)?;
-        let device_id = parse_device_id(self.reviver.pairing.pairing_id.as_str())
-            .ok_or(BleError::NoAdvertSource)?;
+        let device_id =
+            parse_device_id(self.reviver.pairing.pairing_id.as_str()).ok_or_else(|| {
+                BleError::Backend("malformed pairing id; cannot derive device id".into())
+            })?;
         self.watch_sleepy_events_with_source(src, device_id, poll_iids)
             .await
     }

@@ -225,13 +225,23 @@ impl JsonFileStore {
     /// Serialize and write the document, overwriting the file atomically via a
     /// temp file in the same directory followed by a rename.
     async fn write_doc(&self, mut doc: Document) -> Result<()> {
+        use tokio::io::AsyncWriteExt as _;
+
         doc.version = Some(2);
         let bytes =
             serde_json::to_vec_pretty(&doc).map_err(|e| PairingError::Store(e.to_string()))?;
         let tmp = self.path.with_extension("json.tmp");
-        tokio::fs::write(&tmp, &bytes)
-            .await
-            .map_err(|e| PairingError::Store(e.to_string()))?;
+        {
+            let mut f = tokio::fs::File::create(&tmp)
+                .await
+                .map_err(|e| PairingError::Store(e.to_string()))?;
+            f.write_all(&bytes)
+                .await
+                .map_err(|e| PairingError::Store(e.to_string()))?;
+            f.sync_all()
+                .await
+                .map_err(|e| PairingError::Store(e.to_string()))?;
+        }
         tokio::fs::rename(&tmp, &self.path)
             .await
             .map_err(|e| PairingError::Store(e.to_string()))
