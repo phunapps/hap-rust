@@ -105,6 +105,9 @@ impl ReferenceAccessory {
     /// Route one request to its handler, returning the CoAP response code and
     /// payload. Synchronous today (identify and the crypto handlers do no
     /// awaiting); the server loop drives it between awaited socket operations.
+    // `self` is unused while only identify is implemented; the pairing, session,
+    // and characteristic handlers landing next all read accessory state.
+    #[allow(clippy::unused_self)]
     fn handle(&self, path: &str, payload: &[u8]) -> (ResponseType, Vec<u8>) {
         match path {
             PATH_IDENTIFY => {
