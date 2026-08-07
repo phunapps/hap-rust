@@ -24,7 +24,14 @@ xtask/scripts/capture-pair-setup/.venv/bin/python \
     counter nonce, counter advance), `open_response_decrypts_aiohomekit_ciphertext`
     (read key), `open_event_decrypts_aiohomekit_ciphertext` (event key).
 
+## Captured from real hardware (2026-08-07)
+`onvis-sms2-0x09.bin` — the **real `0x09` attribute-database body** (2737 bytes)
+read from a commissioned Onvis SMS2 over Thread (the decrypted `ReadDatabase`
+response body, PDU header stripped). The device returns the whole database as one
+~2.7 KB IPv6-fragmented datagram, not Block2. This is the vector for the pending
+`0x09`→`hap-model` tree decode; it is the accessory's public attribute structure
+(services/characteristics), no secrets.
+
 ## Not yet captured (needs hardware)
-A real `0x09` accessory-database body and a live event PUT can only be captured
-from a commissioned device; the `0x09`→tree decode and the event server are
-deferred until then (see the design doc and BRINGUP notes).
+A live event PUT (the accessory's encrypted `0x0B`-subscribed notification) — the
+event server is being added; capture a real event body here when it lands.
