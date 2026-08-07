@@ -11,6 +11,8 @@ use crate::error::{DutError, Result};
 /// HAP opcodes this accessory answers.
 pub(crate) const OP_CHAR_WRITE: u8 = 0x02;
 pub(crate) const OP_CHAR_READ: u8 = 0x03;
+/// `HAP-Protocol-Read-Database` — the whole `0x09` attribute database.
+pub(crate) const OP_READ_DATABASE: u8 = 0x09;
 
 /// HAP PDU status codes.
 pub(crate) const STATUS_SUCCESS: u8 = 0;

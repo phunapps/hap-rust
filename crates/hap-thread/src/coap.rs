@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use coap_lite::block_handler::BlockValue;
 use coap_lite::{CoapOption, MessageClass, MessageType, Packet, RequestType};
 use tokio::net::UdpSocket;
 
@@ -29,9 +30,16 @@ pub(crate) const PATH_SECURE: &str = "";
 
 /// Per-attempt wait for a Confirmable POST's acknowledgement before retrying.
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
+/// After an *empty* ACK, how long to wait for the accessory's separate response
+/// (RFC 7252 §5.2.2) before giving up. The CON is not retransmitted meanwhile.
+const SEPARATE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Maximum Confirmable transmissions before giving up (RFC 7252 default is 4).
 const MAX_TRANSMISSIONS: u32 = 4;
-/// Receive buffer for a single CoAP datagram.
+/// Safety cap on Block2 fragments reassembled for one response (RFC 7959), so a
+/// misbehaving accessory cannot drive an unbounded request loop.
+const MAX_BLOCKS: u32 = 1024;
+/// Receive buffer for a single CoAP datagram. Sized for one Block2 block plus
+/// CoAP framing; large responses arrive block-wise (RFC 7959), not in one datagram.
 const RECV_BUF: usize = 1500;
 
 /// A CoAP response: the two-part code (`class.detail`, e.g. `2.04`) and payload.
@@ -88,10 +96,11 @@ pub(crate) trait CoapTransport: Send + Sync {
 
 /// A real CoAP client over a connected UDP/IPv6 socket.
 ///
-/// This performs a basic Confirmable exchange (retransmit-until-ack, matching on
-/// message id). It does **not** yet implement CoAP block-wise transfer (RFC
-/// 7959); a large `0x09` database response that the accessory delivers in
-/// blocks will need Block2 reassembly added at hardware bring-up.
+/// Performs Confirmable exchanges correlated by **token** (RFC 7252), so it
+/// tolerates the two things a real accessory does that a fast one does not:
+/// *separate responses* — an empty ACK followed by a later CON carrying the
+/// payload (§5.2.2) — and *block-wise transfer* — a large response delivered as
+/// Block2 fragments (RFC 7959), reassembled here before it is handed up.
 pub(crate) struct UdpCoapTransport {
     socket: UdpSocket,
     message_id: AtomicU16,
@@ -124,52 +133,191 @@ impl UdpCoapTransport {
     fn next_message_id(&self) -> u16 {
         self.message_id.fetch_add(1, Ordering::Relaxed)
     }
-}
 
-#[async_trait]
-impl CoapTransport for UdpCoapTransport {
-    async fn post(&self, path: &str, payload: &[u8]) -> Result<CoapResponse> {
-        let mid = self.next_message_id();
+    /// Frame a Confirmable POST to `path` with a fresh message-id but the given
+    /// `token`. All block-wise requests of one transfer share a token so the
+    /// accessory can correlate them (RFC 7959 §2.4); the message-id still changes
+    /// per datagram.
+    fn frame(&self, path: &str, payload: &[u8], token: &[u8]) -> Packet {
         let mut packet = Packet::new();
         packet.header.set_type(MessageType::Confirmable);
         packet.header.code = MessageClass::Request(RequestType::Post);
-        packet.header.message_id = mid;
-        packet.set_token(mid.to_be_bytes().to_vec());
+        packet.header.message_id = self.next_message_id();
+        packet.set_token(token.to_vec());
         // HAP uses single-segment resource paths; the root ("") carries no
         // Uri-Path option.
         if !path.is_empty() {
             packet.add_option(CoapOption::UriPath, path.as_bytes().to_vec());
         }
         packet.payload = payload.to_vec();
-        let bytes = packet
+        packet
+    }
+
+    /// Build the first Confirmable POST to `path`, returning it and a fresh token
+    /// to correlate the whole (possibly block-wise) exchange.
+    fn build_post(&self, path: &str, payload: &[u8]) -> (Packet, Vec<u8>) {
+        let token = self.next_message_id().to_be_bytes().to_vec();
+        let packet = self.frame(path, payload, &token);
+        (packet, token)
+    }
+
+    /// Send an empty ACK (`0.00`) for a separately-delivered CON response.
+    async fn send_empty_ack(&self, message_id: u16) -> Result<()> {
+        let mut ack = Packet::new();
+        ack.header.set_type(MessageType::Acknowledgement);
+        ack.header.code = MessageClass::Empty;
+        ack.header.message_id = message_id;
+        let bytes = ack
+            .to_bytes()
+            .map_err(|e| ThreadError::Coap(format!("could not encode CoAP ACK: {e}")))?;
+        self.socket.send(&bytes).await?;
+        Ok(())
+    }
+
+    /// Perform one Confirmable request/response exchange, correlating strictly by
+    /// `token`.
+    ///
+    /// Retransmits the CON up to [`MAX_TRANSMISSIONS`] until it is answered. An
+    /// *empty* ACK (RFC 7252 §5.2.2) means the accessory will answer later with a
+    /// **separate** CON carrying the same token: retransmission stops and this
+    /// waits [`SEPARATE_RESPONSE_TIMEOUT`] for that CON, then ACKs it. Matching on
+    /// the token (not the message-id) also discards a stray/duplicate response
+    /// left over from an earlier exchange. Returns the decoded response packet.
+    async fn exchange(&self, request: &Packet, token: &[u8]) -> Result<Packet> {
+        let bytes = request
             .to_bytes()
             .map_err(|e| ThreadError::Coap(format!("could not encode CoAP request: {e}")))?;
-
         let mut buf = vec![0u8; RECV_BUF];
-        for _ in 0..MAX_TRANSMISSIONS {
+
+        let mut acknowledged = false;
+        'transmit: for _ in 0..MAX_TRANSMISSIONS {
             self.socket.send(&bytes).await?;
-            match tokio::time::timeout(ACK_TIMEOUT, self.socket.recv(&mut buf)).await {
-                Ok(Ok(n)) => {
-                    let resp = Packet::from_bytes(&buf[..n]).map_err(|e| {
-                        ThreadError::Coap(format!("could not decode CoAP response: {e}"))
-                    })?;
-                    // Piggy-backed ACK echoes the request message id.
-                    if resp.header.message_id != mid {
-                        continue;
+            loop {
+                match tokio::time::timeout(ACK_TIMEOUT, self.socket.recv(&mut buf)).await {
+                    Ok(Ok(n)) => {
+                        let resp = decode(&buf[..n])?;
+                        if resp.get_token() != token {
+                            continue; // not ours — a late/stray packet
+                        }
+                        if is_empty(&resp) {
+                            acknowledged = true; // a separate response is coming
+                            break 'transmit;
+                        }
+                        return self.accept(resp).await;
                     }
-                    let code_byte = u8::from(resp.header.code);
-                    return Ok(CoapResponse {
-                        code: (code_byte >> 5, code_byte & 0x1f),
-                        payload: resp.payload,
-                    });
+                    Ok(Err(e)) => return Err(ThreadError::Io(e)),
+                    Err(_elapsed) => break, // ack timeout — retransmit
                 }
-                Ok(Err(e)) => return Err(ThreadError::Io(e)),
-                Err(_elapsed) => {} // ack timeout — fall through to retransmit
             }
         }
-        Err(ThreadError::Coap(
-            "no CoAP response after maximum retransmissions".into(),
-        ))
+
+        if !acknowledged {
+            return Err(ThreadError::Coap(
+                "no CoAP response after maximum retransmissions".into(),
+            ));
+        }
+
+        // Empty-ACKed: await the separate response without retransmitting.
+        loop {
+            match tokio::time::timeout(SEPARATE_RESPONSE_TIMEOUT, self.socket.recv(&mut buf)).await
+            {
+                Ok(Ok(n)) => {
+                    let resp = decode(&buf[..n])?;
+                    if resp.get_token() != token || is_empty(&resp) {
+                        continue; // duplicate empty ACK or an unrelated packet
+                    }
+                    return self.accept(resp).await;
+                }
+                Ok(Err(e)) => return Err(ThreadError::Io(e)),
+                Err(_elapsed) => {
+                    return Err(ThreadError::Coap(
+                        "no separate CoAP response after the empty ACK".into(),
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Accept a token-matched response: ACK it if it arrived as its own CON
+    /// (a separate response), then hand the packet back.
+    async fn accept(&self, resp: Packet) -> Result<Packet> {
+        if resp.header.get_type() == MessageType::Confirmable {
+            self.send_empty_ack(resp.header.message_id).await?;
+        }
+        Ok(resp)
+    }
+}
+
+/// Decode a CoAP datagram, mapping a parse failure to [`ThreadError::Coap`].
+fn decode(bytes: &[u8]) -> Result<Packet> {
+    Packet::from_bytes(bytes)
+        .map_err(|e| ThreadError::Coap(format!("could not decode CoAP response: {e}")))
+}
+
+/// Whether a packet carries the empty code `0.00` (an ACK-only, no payload).
+fn is_empty(packet: &Packet) -> bool {
+    packet.header.code == MessageClass::Empty
+}
+
+/// Split `(class, detail)` out of a CoAP response code byte (`class<<5|detail`).
+fn split_code(packet: &Packet) -> (u8, u8) {
+    let code_byte = u8::from(packet.header.code);
+    (code_byte >> 5, code_byte & 0x1f)
+}
+
+/// The parsed Block2 option of a response, if present and well-formed.
+fn block2_of(packet: &Packet) -> Option<BlockValue> {
+    packet
+        .get_first_option_as::<BlockValue>(CoapOption::Block2)
+        .and_then(std::result::Result::ok)
+}
+
+#[async_trait]
+impl CoapTransport for UdpCoapTransport {
+    async fn post(&self, path: &str, payload: &[u8]) -> Result<CoapResponse> {
+        let (request, token) = self.build_post(path, payload);
+        let resp = self.exchange(&request, &token).await?;
+        let mut code = split_code(&resp);
+
+        // Fast path: the response is not block-wise.
+        let Some(mut block) = block2_of(&resp) else {
+            return Ok(CoapResponse {
+                code,
+                payload: resp.payload,
+            });
+        };
+
+        // Block-wise response (RFC 7959): re-POST the same request with a Block2
+        // option naming the next block until the accessory clears the more-bit,
+        // concatenating the fragment payloads in order.
+        let mut full = resp.payload;
+        let block_size = block.size();
+        let mut fetched = 1u32;
+        while block.more {
+            if fetched >= MAX_BLOCKS {
+                return Err(ThreadError::Coap(
+                    "too many Block2 fragments in one response".into(),
+                ));
+            }
+            let next_num = usize::from(block.num) + 1;
+            let request_block2 = BlockValue::new(next_num, false, block_size)
+                .map_err(|e| ThreadError::Coap(format!("invalid Block2 request: {e}")))?;
+            let mut req = self.frame(path, payload, &token);
+            req.add_option_as(CoapOption::Block2, request_block2);
+
+            let r = self.exchange(&req, &token).await?;
+            code = split_code(&r);
+            full.extend_from_slice(&r.payload);
+            fetched += 1;
+            match block2_of(&r) {
+                Some(next) => block = next,
+                None => break, // accessory stopped chunking — take what arrived
+            }
+        }
+        Ok(CoapResponse {
+            code,
+            payload: full,
+        })
     }
 }
 
@@ -232,6 +380,131 @@ impl CoapTransport for MockCoapTransport {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use coap_lite::ResponseType;
+    use tokio::net::UdpSocket;
+
+    /// Build an empty CoAP ACK (`0.00`) echoing `message_id`, carrying no token.
+    fn empty_ack(message_id: u16) -> Vec<u8> {
+        let mut ack = Packet::new();
+        ack.header.set_type(MessageType::Acknowledgement);
+        ack.header.code = MessageClass::Empty;
+        ack.header.message_id = message_id;
+        ack.to_bytes().unwrap()
+    }
+
+    #[tokio::test]
+    async fn post_handles_empty_ack_then_separate_response() {
+        // A slow accessory: empty-ACK the request, then deliver the real response
+        // as a *separate* CON with a fresh message-id but the SAME token.
+        let responder = UdpSocket::bind("[::1]:0").await.unwrap();
+        let responder_addr = responder.local_addr().unwrap();
+
+        let task = tokio::spawn(async move {
+            let mut buf = vec![0u8; 1500];
+            let (n, peer) = responder.recv_from(&mut buf).await.unwrap();
+            let req = Packet::from_bytes(&buf[..n]).unwrap();
+            let token = req.get_token().to_vec();
+
+            // 1) empty ACK (same message-id, no token).
+            responder
+                .send_to(&empty_ack(req.header.message_id), peer)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+
+            // 2) separate CON: new message-id, same token, 2.04 + payload.
+            let mut con = Packet::new();
+            con.header.set_type(MessageType::Confirmable);
+            con.header.code = MessageClass::Response(ResponseType::Changed);
+            con.header.message_id = req.header.message_id.wrapping_add(4242);
+            con.set_token(token);
+            con.payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
+            responder
+                .send_to(&con.to_bytes().unwrap(), peer)
+                .await
+                .unwrap();
+
+            // 3) the client must ACK that separate CON (empty ACK, its mid).
+            let (n2, _) = responder.recv_from(&mut buf).await.unwrap();
+            let cack = Packet::from_bytes(&buf[..n2]).unwrap();
+            (
+                cack.header.get_type(),
+                cack.header.message_id,
+                u8::from(cack.header.code),
+                con.header.message_id,
+            )
+        });
+
+        let transport = UdpCoapTransport::connect(responder_addr).await.unwrap();
+        let resp = transport.post(PATH_IDENTIFY, &[0x01]).await.unwrap();
+        assert_eq!(resp.code, (2, 4));
+        assert_eq!(resp.payload, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+
+        let (ack_type, ack_mid, ack_code, con_mid) = task.await.unwrap();
+        assert_eq!(ack_type, MessageType::Acknowledgement);
+        assert_eq!(ack_code, 0, "client must *empty*-ACK the separate CON");
+        assert_eq!(ack_mid, con_mid, "the ACK must echo the separate CON's mid");
+    }
+
+    #[tokio::test]
+    async fn post_reassembles_block2_response() {
+        use coap_lite::block_handler::BlockValue;
+
+        // A large response the accessory delivers as Block2 fragments (RFC 7959).
+        let total: Vec<u8> = (0..700u32)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        let block_size = 256usize;
+        let responder = UdpSocket::bind("[::1]:0").await.unwrap();
+        let responder_addr = responder.local_addr().unwrap();
+        let expected = total.clone();
+
+        let task = tokio::spawn(async move {
+            let mut buf = vec![0u8; 1500];
+            let mut blocks_served = 0u32;
+            loop {
+                let (n, peer) = responder.recv_from(&mut buf).await.unwrap();
+                let req = Packet::from_bytes(&buf[..n]).unwrap();
+                // Which block the client is asking for (0 when no Block2 option).
+                let num = req
+                    .get_first_option_as::<BlockValue>(CoapOption::Block2)
+                    .and_then(std::result::Result::ok)
+                    .map_or(0usize, |b| b.num as usize);
+                blocks_served += 1;
+                let start = num * block_size;
+                let end = (start + block_size).min(total.len());
+                let more = end < total.len();
+
+                let mut resp = Packet::new();
+                resp.header.set_type(MessageType::Acknowledgement);
+                resp.header.code = MessageClass::Response(ResponseType::Changed);
+                resp.header.message_id = req.header.message_id;
+                resp.set_token(req.get_token().to_vec());
+                resp.add_option_as(
+                    CoapOption::Block2,
+                    BlockValue::new(num, more, block_size).unwrap(),
+                );
+                resp.payload = total[start..end].to_vec();
+                responder
+                    .send_to(&resp.to_bytes().unwrap(), peer)
+                    .await
+                    .unwrap();
+                if !more {
+                    break blocks_served;
+                }
+            }
+        });
+
+        let transport = UdpCoapTransport::connect(responder_addr).await.unwrap();
+        let resp = transport.post(PATH_SECURE, &[0x09]).await.unwrap();
+        assert_eq!(resp.code, (2, 4));
+        assert_eq!(
+            resp.payload, expected,
+            "Block2 fragments must reassemble in order"
+        );
+        let blocks_served = task.await.unwrap();
+        assert_eq!(blocks_served, 3, "700 bytes / 256 = 3 blocks requested");
+    }
 
     #[test]
     fn code_classification() {

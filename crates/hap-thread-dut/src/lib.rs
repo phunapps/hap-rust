@@ -17,9 +17,10 @@
 #![forbid(unsafe_code)]
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 
+use coap_lite::block_handler::BlockValue;
 use coap_lite::{CoapOption, MessageClass, MessageType, Packet, ResponseType};
 use hap_crypto::ControllerKeypair;
 use hap_tlv8::Tlv8Map;
@@ -68,6 +69,28 @@ pub struct ReferenceAccessory {
     on: AtomicBool,
     /// Where a written `On` value is applied (LED, log, …).
     actuator: Box<dyn LightActuator>,
+    /// Message-id source for separately-delivered CON responses (slow mode).
+    next_mid: AtomicU16,
+    /// If set, answer with an empty ACK then a *separate* CON (RFC 7252 §5.2.2),
+    /// exercising the controller's token correlation (F1).
+    slow: bool,
+    /// If set, fragment any response larger than this into Block2 blocks
+    /// (RFC 7959), exercising the controller's reassembly (F2).
+    blockwise: Option<usize>,
+    /// The in-flight block-wise response, cached by request token so Block2
+    /// continuations are served without re-processing (and, for secure reads,
+    /// without re-decrypting under an advanced session nonce).
+    block_cache: Mutex<Option<BlockwiseResponse>>,
+}
+
+/// A cached block-wise response awaiting further Block2 requests (F2).
+struct BlockwiseResponse {
+    /// The request token every block of this transfer shares.
+    token: Vec<u8>,
+    /// The response code all its blocks carry.
+    code: ResponseType,
+    /// The full response payload, sliced per Block2 request.
+    payload: Vec<u8>,
 }
 
 impl ReferenceAccessory {
@@ -96,7 +119,42 @@ impl ReferenceAccessory {
             session: Mutex::new(None),
             on: AtomicBool::new(false),
             actuator,
+            next_mid: AtomicU16::new(1),
+            slow: false,
+            blockwise: None,
+            block_cache: Mutex::new(None),
         }
+    }
+
+    /// Behave like a *slow* accessory: empty-ACK each request, then deliver the
+    /// response as a separate CON (RFC 7252 §5.2.2). Exercises the controller's
+    /// token-correlation path (BRINGUP F1).
+    #[must_use]
+    pub fn with_slow_responses(mut self) -> Self {
+        self.slow = true;
+        self
+    }
+
+    /// Fragment any response larger than `block_size` into Block2 blocks
+    /// (RFC 7959). Exercises the controller's reassembly path (BRINGUP F2); the
+    /// synthetic attribute database (see [`Self::synthetic_database`]) is sized to
+    /// span several blocks.
+    #[must_use]
+    pub fn with_blockwise_responses(mut self, block_size: usize) -> Self {
+        self.blockwise = Some(block_size.max(16));
+        self
+    }
+
+    /// The synthetic attribute-database body the accessory returns for a
+    /// `ReadDatabase` (`0x09`) request — a deterministic pattern, deliberately
+    /// larger than a typical CoAP block so [`Self::with_blockwise_responses`] can
+    /// fragment it. (The real `0x09` tree decode is deferred to a later
+    /// milestone; this exists to exercise the transport.)
+    #[must_use]
+    pub fn synthetic_database() -> Vec<u8> {
+        (0..2000u32)
+            .map(|i| u8::try_from(i % 251).unwrap_or(0))
+            .collect()
     }
 
     /// Enable Pair Setup against `setup_code` (the 8-digit code a controller
@@ -161,26 +219,185 @@ impl ReferenceAccessory {
                     continue;
                 }
             };
+            // Drop empty ACKs — a controller acknowledging one of our separate
+            // (slow-mode) responses; there is nothing to answer.
+            if req.header.get_type() == MessageType::Acknowledgement
+                && req.header.code == MessageClass::Empty
+            {
+                continue;
+            }
+
+            // Block-wise continuation (Block2 num > 0): serve the next fragment
+            // of the cached response without re-running the request handler.
+            if self.blockwise.is_some() {
+                if let Some(num) = requested_block(&req) {
+                    if num > 0 {
+                        self.serve_cached_block(&socket, peer, &req, num).await;
+                        continue;
+                    }
+                }
+            }
+
             let path = req
                 .get_first_option(CoapOption::UriPath)
                 .map(|v| String::from_utf8_lossy(v).into_owned())
                 .unwrap_or_default();
             let (code, payload) = self.handle(&path, &req.payload);
+            self.send_response(&socket, peer, &req, code, payload).await;
+        }
+    }
 
-            let mut resp = Packet::new();
-            resp.header.set_type(MessageType::Acknowledgement);
-            resp.header.code = MessageClass::Response(code);
-            resp.header.message_id = req.header.message_id;
-            resp.set_token(req.get_token().to_vec());
-            resp.payload = payload;
-            match resp.to_bytes() {
-                Ok(bytes) => {
-                    if let Err(e) = socket.send_to(&bytes, peer).await {
-                        tracing::debug!(error = %e, "failed to send CoAP response");
-                    }
+    /// Send `payload` as the response to `req`, in the framing this accessory is
+    /// configured for: block-wise (F2), slow/separate (F1), or a plain
+    /// piggy-backed ACK.
+    async fn send_response(
+        &self,
+        socket: &UdpSocket,
+        peer: SocketAddr,
+        req: &Packet,
+        code: ResponseType,
+        payload: Vec<u8>,
+    ) {
+        let token = req.get_token().to_vec();
+
+        // Block-wise: cache the whole payload, answer block 0, let the controller
+        // pull the rest with Block2 continuations.
+        if let Some(bs) = self.blockwise {
+            if payload.len() > bs {
+                if let Ok(mut cache) = self.block_cache.lock() {
+                    *cache = Some(BlockwiseResponse {
+                        token: token.clone(),
+                        code,
+                        payload: payload.clone(),
+                    });
                 }
-                Err(e) => tracing::debug!(error = %e, "failed to encode CoAP response"),
+                self.send_block(
+                    socket,
+                    peer,
+                    req.header.message_id,
+                    &token,
+                    code,
+                    &payload,
+                    0,
+                    bs,
+                )
+                .await;
+                return;
             }
+        }
+
+        if self.slow {
+            // Empty ACK now; the real answer follows as a separate CON that
+            // reuses the request token (RFC 7252 §5.2.2).
+            self.send_empty_ack(socket, peer, req.header.message_id)
+                .await;
+            let mut con = Packet::new();
+            con.header.set_type(MessageType::Confirmable);
+            con.header.code = MessageClass::Response(code);
+            con.header.message_id = self.next_mid.fetch_add(1, Ordering::Relaxed);
+            con.set_token(token);
+            con.payload = payload;
+            self.send_packet(socket, peer, &con).await;
+            return;
+        }
+
+        // Default: a piggy-backed ACK.
+        let mut ack = Packet::new();
+        ack.header.set_type(MessageType::Acknowledgement);
+        ack.header.code = MessageClass::Response(code);
+        ack.header.message_id = req.header.message_id;
+        ack.set_token(token);
+        ack.payload = payload;
+        self.send_packet(socket, peer, &ack).await;
+    }
+
+    /// Serve Block2 fragment `num` of the cached block-wise response (if its token
+    /// matches the request).
+    async fn serve_cached_block(
+        &self,
+        socket: &UdpSocket,
+        peer: SocketAddr,
+        req: &Packet,
+        num: u16,
+    ) {
+        let Some(bs) = self.blockwise else { return };
+        let token = req.get_token().to_vec();
+        let cached = self.block_cache.lock().ok().and_then(|c| {
+            c.as_ref()
+                .filter(|b| b.token == token)
+                .map(|b| (b.code, b.payload.clone()))
+        });
+        let Some((code, payload)) = cached else {
+            tracing::debug!("Block2 continuation with no matching cached response");
+            return;
+        };
+        self.send_block(
+            socket,
+            peer,
+            req.header.message_id,
+            &token,
+            code,
+            &payload,
+            usize::from(num),
+            bs,
+        )
+        .await;
+    }
+
+    /// Send Block2 fragment `num` (block size `bs`) of `full` as a piggy-backed
+    /// ACK, setting the more-bit and clearing the cache after the last fragment.
+    #[allow(clippy::too_many_arguments)]
+    async fn send_block(
+        &self,
+        socket: &UdpSocket,
+        peer: SocketAddr,
+        message_id: u16,
+        token: &[u8],
+        code: ResponseType,
+        full: &[u8],
+        num: usize,
+        bs: usize,
+    ) {
+        let start = num.saturating_mul(bs).min(full.len());
+        let end = start.saturating_add(bs).min(full.len());
+        let more = end < full.len();
+
+        let mut resp = Packet::new();
+        resp.header.set_type(MessageType::Acknowledgement);
+        resp.header.code = MessageClass::Response(code);
+        resp.header.message_id = message_id;
+        resp.set_token(token.to_vec());
+        if let Ok(bv) = BlockValue::new(num, more, bs) {
+            resp.add_option_as(CoapOption::Block2, bv);
+        }
+        resp.payload = full[start..end].to_vec();
+        self.send_packet(socket, peer, &resp).await;
+
+        if !more {
+            if let Ok(mut cache) = self.block_cache.lock() {
+                *cache = None;
+            }
+        }
+    }
+
+    /// Send an empty ACK (`0.00`) echoing `message_id`.
+    async fn send_empty_ack(&self, socket: &UdpSocket, peer: SocketAddr, message_id: u16) {
+        let mut ack = Packet::new();
+        ack.header.set_type(MessageType::Acknowledgement);
+        ack.header.code = MessageClass::Empty;
+        ack.header.message_id = message_id;
+        self.send_packet(socket, peer, &ack).await;
+    }
+
+    /// Encode and send one CoAP packet, logging (not failing) on error.
+    async fn send_packet(&self, socket: &UdpSocket, peer: SocketAddr, packet: &Packet) {
+        match packet.to_bytes() {
+            Ok(bytes) => {
+                if let Err(e) = socket.send_to(&bytes, peer).await {
+                    tracing::debug!(error = %e, "failed to send CoAP response");
+                }
+            }
+            Err(e) => tracing::debug!(error = %e, "failed to encode CoAP response"),
         }
     }
 
@@ -358,6 +575,11 @@ impl ReferenceAccessory {
     /// Serve one characteristic request against the Lightbulb `On` characteristic,
     /// returning its response PDU.
     fn handle_char(&self, req: &pdu::Request) -> Vec<u8> {
+        // ReadDatabase (`0x09`) is a global op (iid 0): return the synthetic
+        // attribute database, which block-wise mode fragments over Block2.
+        if req.opcode == pdu::OP_READ_DATABASE {
+            return pdu::encode_response(req.tid, pdu::STATUS_SUCCESS, &Self::synthetic_database());
+        }
         if req.iid != Self::ON_IID {
             return pdu::encode_response(req.tid, pdu::STATUS_INVALID_INSTANCE_ID, &[]);
         }
@@ -379,4 +601,12 @@ impl ReferenceAccessory {
             _ => pdu::encode_response(req.tid, pdu::STATUS_UNSUPPORTED, &[]),
         }
     }
+}
+
+/// The Block2 block number a request is asking for, if it carries a Block2
+/// option (RFC 7959).
+fn requested_block(req: &Packet) -> Option<u16> {
+    req.get_first_option_as::<BlockValue>(CoapOption::Block2)
+        .and_then(std::result::Result::ok)
+        .map(|b| b.num)
 }
