@@ -861,6 +861,8 @@ dependencies = [
  "hap-crypto",
  "hap-thread",
  "hap-tlv8",
+ "hkdf",
+ "sha2",
  "thiserror",
  "tokio",
  "tracing",

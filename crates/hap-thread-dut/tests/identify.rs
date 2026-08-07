@@ -1,26 +1,30 @@
-//! End-to-end: the real `hap-thread` controller identifies the reference
-//! accessory over a UDP CoAP round-trip (no Thread hardware needed).
+//! End-to-end: the real `hap-thread` controller drives the reference accessory
+//! over UDP CoAP (no Thread hardware needed) — identify and Pair Verify.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test code
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use hap_crypto::AccessoryPairing;
 use hap_thread::ThreadController;
 use hap_thread_dut::ReferenceAccessory;
 use tokio::sync::oneshot;
 
-#[tokio::test]
-async fn controller_identifies_the_reference_accessory() {
-    // Start the accessory on an ephemeral loopback UDP port.
-    let accessory = Arc::new(ReferenceAccessory::new("11:22:33:44:55:66"));
+/// Spawn the accessory on an ephemeral loopback UDP port and return its address.
+async fn spawn(accessory: Arc<ReferenceAccessory>) -> SocketAddr {
     let (tx, rx) = oneshot::channel::<SocketAddr>();
     tokio::spawn(accessory.serve("[::1]:0".parse().unwrap(), move |addr| {
         let _ = tx.send(addr);
     }));
-    let addr = rx.await.unwrap();
+    rx.await.unwrap()
+}
 
-    // Drive the real controller's identify against it.
+#[tokio::test]
+async fn controller_identifies_the_reference_accessory() {
+    let accessory = Arc::new(ReferenceAccessory::new("11:22:33:44:55:66"));
+    let addr = spawn(accessory).await;
+
     let controller = ThreadController::generate("AA:BB:CC:DD:EE:FF".into());
     controller
         .identify(addr)
@@ -29,25 +33,46 @@ async fn controller_identifies_the_reference_accessory() {
 }
 
 #[tokio::test]
-async fn unknown_resource_is_not_found() {
-    // A connect (Pair Verify) against the not-yet-implemented `/2` must surface
-    // as a clean error, not a hang — proves the server answers every datagram.
+async fn controller_pair_verifies_with_the_reference_accessory() {
     let accessory = Arc::new(ReferenceAccessory::new("11:22:33:44:55:66"));
-    let (tx, rx) = oneshot::channel::<SocketAddr>();
-    tokio::spawn(accessory.serve("[::1]:0".parse().unwrap(), move |addr| {
-        let _ = tx.send(addr);
-    }));
-    let addr = rx.await.unwrap();
-
     let controller = ThreadController::generate("AA:BB:CC:DD:EE:FF".into());
-    let pairing = hap_crypto::AccessoryPairing {
-        pairing_id: "11:22:33:44:55:66".into(),
-        ltpk: controller.keypair().ltpk(),
+
+    // Provision the pairing both ways, as Pair Setup would establish it.
+    accessory.provision_controller(controller.keypair().id.clone(), controller.keypair().ltpk());
+    let pairing = AccessoryPairing {
+        pairing_id: accessory.pairing_id().into(),
+        ltpk: accessory.accessory_ltpk(),
     };
-    // `/2` returns 4.04 → the controller maps it to SessionExpired.
-    let err = controller.connect(addr, &pairing).await;
+
+    let addr = spawn(accessory).await;
+
+    // A full Pair Verify (M1–M4) over CoAP: the controller verifies the
+    // accessory's M2 signature and the accessory verifies the controller's M3
+    // signature; a session is established on both sides.
+    controller
+        .connect(addr, &pairing)
+        .await
+        .expect("Pair Verify should complete against the reference accessory");
+}
+
+#[tokio::test]
+async fn pair_verify_rejects_an_unknown_controller() {
+    let accessory = Arc::new(ReferenceAccessory::new("11:22:33:44:55:66"));
+    let controller = ThreadController::generate("AA:BB:CC:DD:EE:FF".into());
+
+    // Provision a DIFFERENT controller identity, so the real controller's M3
+    // signature will not verify.
+    let stranger = ThreadController::generate("99:99:99:99:99:99".into());
+    accessory.provision_controller(stranger.keypair().id.clone(), stranger.keypair().ltpk());
+    let pairing = AccessoryPairing {
+        pairing_id: accessory.pairing_id().into(),
+        ltpk: accessory.accessory_ltpk(),
+    };
+
+    let addr = spawn(accessory).await;
+
     assert!(
-        err.is_err(),
-        "connect against an unimplemented /2 must error"
+        controller.connect(addr, &pairing).await.is_err(),
+        "Pair Verify must fail for an unprovisioned controller"
     );
 }

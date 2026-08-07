@@ -8,21 +8,31 @@
 //! without Apple hardware. It is a test/reference tool, not a product.
 //!
 //! # Status
-//! Incremental. Implemented: the CoAP server transport and `identify`. Pair
-//! Setup / Pair Verify (accessory side), the secure session, the characteristic
-//! database, and event push are being added; until then those resources return
-//! `4.04 Not Found`.
+//! Incremental. Implemented: the CoAP server, `identify`, and **Pair Verify**
+//! (against a pre-provisioned pairing, via [`ReferenceAccessory::provision_controller`]).
+//! Pair Setup, the secure characteristic database (read/write), and event push
+//! are being added; until then `/1` returns `4.04` and `/` (post-verify) is a
+//! stub.
 #![forbid(unsafe_code)]
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use coap_lite::{CoapOption, MessageClass, MessageType, Packet, ResponseType};
+use hap_crypto::ControllerKeypair;
+use hap_tlv8::Tlv8Map;
 use tokio::net::UdpSocket;
+
+mod hap;
+mod pairing;
+mod session;
 
 pub mod error;
 
 pub use error::{DutError, Result};
+
+use pairing::VerifyInProgress;
+use session::AccessorySession;
 
 /// CoAP resource paths (single Uri-Path segment; the root is the empty string).
 const PATH_IDENTIFY: &str = "0";
@@ -33,18 +43,32 @@ const PATH_SECURE: &str = "";
 /// Receive buffer for a single CoAP datagram.
 const RECV_BUF: usize = 1500;
 
-/// The reference accessory: its identity and (forthcoming) attribute database.
+/// The reference accessory: its identity, the paired controller, and the live
+/// Pair Verify / session state.
 pub struct ReferenceAccessory {
-    /// The accessory's pairing identifier (`AccessoryPairingID`).
     pairing_id: String,
+    keypair: ControllerKeypair,
+    /// The paired controller `(id, ltpk)`, if provisioned.
+    controller: Mutex<Option<(String, [u8; 32])>>,
+    /// In-progress Pair Verify state (between M1 and M3).
+    verify: Mutex<Option<VerifyInProgress>>,
+    /// The established secure session, once Pair Verify completes.
+    session: Mutex<Option<AccessorySession>>,
 }
 
 impl ReferenceAccessory {
     /// Create a reference accessory with the given pairing id (a MAC-shaped
-    /// string such as `"AA:BB:CC:DD:EE:FF"`).
+    /// string such as `"AA:BB:CC:DD:EE:FF"`). A fresh long-term Ed25519 identity
+    /// is generated.
     pub fn new(pairing_id: impl Into<String>) -> Self {
+        let pairing_id = pairing_id.into();
+        let keypair = ControllerKeypair::generate(pairing_id.clone());
         Self {
-            pairing_id: pairing_id.into(),
+            pairing_id,
+            keypair,
+            controller: Mutex::new(None),
+            verify: Mutex::new(None),
+            session: Mutex::new(None),
         }
     }
 
@@ -53,13 +77,29 @@ impl ReferenceAccessory {
         &self.pairing_id
     }
 
-    /// Bind a UDP CoAP server to `addr` and serve requests until the task is
-    /// dropped. Returns the actual bound address via `on_bound` (useful when
-    /// binding to port 0 in tests) before entering the serve loop.
+    /// The accessory's long-term Ed25519 public key — a controller needs this
+    /// (as `AccessoryPairing::ltpk`) to run Pair Verify.
+    pub fn accessory_ltpk(&self) -> [u8; 32] {
+        self.keypair.ltpk()
+    }
+
+    /// Provision a paired controller (its id and long-term public key), as Pair
+    /// Setup would establish. Required before Pair Verify will succeed.
+    pub fn provision_controller(
+        &self,
+        controller_id: impl Into<String>,
+        controller_ltpk: [u8; 32],
+    ) {
+        if let Ok(mut c) = self.controller.lock() {
+            *c = Some((controller_id.into(), controller_ltpk));
+        }
+    }
+
+    /// Bind a UDP CoAP server to `addr` and serve until the task is dropped.
+    /// Reports the actual bound address via `on_bound` before serving.
     ///
     /// # Errors
-    /// [`DutError::Io`] if the socket cannot be bound or a fatal receive error
-    /// occurs.
+    /// [`DutError::Io`] if the socket cannot be bound or a fatal receive occurs.
     pub async fn serve<F>(self: Arc<Self>, addr: SocketAddr, on_bound: F) -> Result<()>
     where
         F: FnOnce(SocketAddr),
@@ -103,33 +143,75 @@ impl ReferenceAccessory {
     }
 
     /// Route one request to its handler, returning the CoAP response code and
-    /// payload. Synchronous today (identify and the crypto handlers do no
-    /// awaiting); the server loop drives it between awaited socket operations.
-    // `self` is unused while only identify is implemented; the pairing, session,
-    // and characteristic handlers landing next all read accessory state.
-    #[allow(clippy::unused_self)]
+    /// payload.
     fn handle(&self, path: &str, payload: &[u8]) -> (ResponseType, Vec<u8>) {
         match path {
             PATH_IDENTIFY => {
                 tracing::info!("identify");
                 (ResponseType::Changed, Vec::new())
             }
+            PATH_PAIR_VERIFY => self.pair_verify(payload),
             PATH_PAIR_SETUP => {
-                tracing::debug!(len = payload.len(), "pair-setup (not yet implemented)");
-                (ResponseType::NotFound, Vec::new())
-            }
-            PATH_PAIR_VERIFY => {
-                tracing::debug!(len = payload.len(), "pair-verify (not yet implemented)");
+                tracing::debug!("pair-setup (not yet implemented)");
                 (ResponseType::NotFound, Vec::new())
             }
             PATH_SECURE => {
-                tracing::debug!(len = payload.len(), "secure PDU (not yet implemented)");
+                tracing::debug!("secure PDU (not yet implemented)");
                 (ResponseType::NotFound, Vec::new())
             }
             other => {
                 tracing::debug!(path = other, "unknown resource");
                 (ResponseType::NotFound, Vec::new())
             }
+        }
+    }
+
+    /// Drive Pair Verify: M1→M2 (fresh) or M3→M4 (using the stored M1 state).
+    fn pair_verify(&self, payload: &[u8]) -> (ResponseType, Vec<u8>) {
+        let state = Tlv8Map::parse(payload)
+            .ok()
+            .and_then(|m| m.get_u8(hap::tlv::STATE).ok().flatten());
+        match state {
+            Some(hap::tlv::STATE_M1) => {
+                match pairing::handle_m1(&self.keypair, &self.pairing_id, payload) {
+                    Ok((m2, progress)) => {
+                        if let Ok(mut v) = self.verify.lock() {
+                            *v = Some(progress);
+                        }
+                        (ResponseType::Changed, m2)
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "pair-verify M1 failed");
+                        (ResponseType::BadRequest, Vec::new())
+                    }
+                }
+            }
+            Some(hap::tlv::STATE_M3) => {
+                let progress = self.verify.lock().ok().and_then(|mut v| v.take());
+                let controller = self.controller.lock().ok().and_then(|c| c.clone());
+                let (Some(progress), Some((cid, cltpk))) = (progress, controller) else {
+                    tracing::debug!("pair-verify M3 without M1 / unprovisioned controller");
+                    return (ResponseType::BadRequest, Vec::new());
+                };
+                match pairing::handle_m3(&progress, &cid, &cltpk, payload) {
+                    Ok((m4, maybe_session)) => {
+                        if let Some(sess) = maybe_session {
+                            if let Ok(mut s) = self.session.lock() {
+                                *s = Some(sess);
+                            }
+                            tracing::info!("pair-verify complete — session established");
+                        } else {
+                            tracing::warn!("pair-verify M3 rejected (auth)");
+                        }
+                        (ResponseType::Changed, m4)
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "pair-verify M3 failed");
+                        (ResponseType::BadRequest, Vec::new())
+                    }
+                }
+            }
+            _ => (ResponseType::BadRequest, Vec::new()),
         }
     }
 }
