@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## hap-controller 3.0.4 — 2026-08-08 — Fix: X-HM category masked to 8 bits
+
+`SetupPayload::parse` folded the payload's version/reserved bits (39+) into
+the 8-bit category field (bits 31-38) when a vendor sets them — observed live
+on an Onvis SMS2, whose category 10 (sensor) decoded as 778 and broke every
+category-matched discovery downstream. The category is now masked to its
+8-bit field. Patch release, no API change.
+
 ## 3.0.2 / hap-ble 0.6.1 — 2026-08-07 — Encrypted broadcast (0x11) motion, end-to-end
 
 Completes HAP-BLE encrypted broadcast notifications: a sleepy sensor's

@@ -55,7 +55,12 @@ impl SetupPayload {
         let ip = flags_nibble & 0b0010 != 0;
         let ble = flags_nibble & 0b0100 != 0;
         let nfc = flags_nibble & 0b1000 != 0;
-        let category = u16::try_from((value_high << 1) | ((value_low >> 31) & 1))
+        // Category is the 8-bit field at payload bits 31-38: bit 31 (the top
+        // of value_low) plus bits 32-38 (the low 7 bits of value_high). Bits
+        // 39+ are version/reserved — some vendors set them (observed on the
+        // Onvis SMS2), and folding them in here once turned category 10 into
+        // 778, so mask value_high to 7 bits before recombining.
+        let category = u16::try_from(((value_high & 0x7F) << 1) | ((value_low >> 31) & 1))
             .map_err(|_| HapError::InvalidSetupPayload)?;
         let setup_code = format!("{setup_code_num:08}");
         let setup_id = if setup_id_str.is_empty() {

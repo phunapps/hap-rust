@@ -61,6 +61,33 @@ fn rejects_invalid_base36() {
 }
 
 #[test]
+fn category_ignores_version_and_reserved_bits() {
+    // Live-caught (WeaveHome × Onvis SMS2, 2026-08-08): some vendors set the
+    // payload's version/reserved bits (39+). The category field is 8 bits
+    // (payload bits 31-38); folding the higher bits in turned category 10
+    // (sensor) into 778, and every category-matched discovery downstream
+    // rejected the accessory. Encode category 10 with version bits 39-40 set
+    // and assert the decode still yields 10.
+    fn to_base36_9(mut v: u64) -> String {
+        const D: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let mut buf = [b'0'; 9];
+        for i in (0..9).rev() {
+            buf[i] = D[(v % 36) as usize];
+            v /= 36;
+        }
+        String::from_utf8(buf.to_vec()).unwrap()
+    }
+    let value: u64 = (0b11 << 39) // version/reserved bits a vendor may set
+        | (10u64 << 31) // category: sensor
+        | (0x4 << 27) // flags: ble
+        | 12_345_678; // setup code
+    let p = SetupPayload::parse(&format!("X-HM://{}", to_base36_9(value))).unwrap();
+    assert_eq!(p.setup_code, "12345678");
+    assert_eq!(p.category, 10, "bits 39+ must not leak into the 8-bit category");
+    assert!(p.flags.ble);
+}
+
+#[test]
 fn decodes_ble_and_nfc_flags() {
     // Encode a payload with a chosen flag nibble, then assert the decode.
     // Layout: [category:8][flags:4][setup_code:27] within the 9-char base-36.
