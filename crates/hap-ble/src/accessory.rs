@@ -523,6 +523,76 @@ impl BleAccessory {
         .await
     }
 
+    /// Commission this accessory onto the Thread network described by `dataset`.
+    ///
+    /// HomeKit Thread accessories receive their Thread credentials over HAP-BLE
+    /// rather than a joiner flow: over the established secure session this writes
+    /// a query and then the operational dataset to the accessory's **Thread
+    /// Control Point** characteristic (`0x0704`). After it succeeds the accessory
+    /// joins that Thread network and becomes reachable over Thread (e.g. via
+    /// `hap-thread`).
+    ///
+    /// The accessory typically drops the BLE link as it switches networks, so a
+    /// transport error on the *provision* write is expected and treated as
+    /// success (mirroring aiohomekit); confirm the outcome by the device
+    /// appearing on the mesh, not by this call's result. The dataset carries a
+    /// secret network key — see [`ThreadDataset`](crate::ThreadDataset), whose
+    /// `Debug` redacts it.
+    ///
+    /// # Errors
+    /// [`BleError::CharacteristicNotFound`] if the accessory exposes no Thread
+    /// Control Point (not a Thread accessory); otherwise a GATT/PDU/crypto error
+    /// from the initial query write.
+    pub async fn thread_provision(&mut self, dataset: &crate::thread::ThreadDataset) -> Result<()> {
+        let (uuid, iid) = self.thread_control_point()?;
+
+        // 1. Query the control point (must succeed — proves we can address it).
+        write_char_raw(
+            self.gatt.as_ref(),
+            &self.secure,
+            &self.reviver,
+            &uuid,
+            iid,
+            &crate::thread::encode_query(),
+            self.frag_size,
+        )
+        .await?;
+
+        // 2. Provision. The accessory leaves BLE for Thread as it applies the
+        //    dataset, so an error here is the expected, non-fatal path.
+        let provision = crate::thread::encode_provision(dataset);
+        match write_char_raw(
+            self.gatt.as_ref(),
+            &self.secure,
+            &self.reviver,
+            &uuid,
+            iid,
+            &provision,
+            self.frag_size,
+        )
+        .await
+        {
+            Ok(()) => tracing::info!("thread provision write acknowledged"),
+            Err(e) => tracing::info!(
+                error = %e,
+                "thread provision write errored — expected as the accessory joins Thread"
+            ),
+        }
+        Ok(())
+    }
+
+    /// Resolve the Thread Control Point characteristic `(uuid, iid)` by its HAP
+    /// UUID, if this accessory exposes one.
+    fn thread_control_point(&self) -> Result<(String, u64)> {
+        self.chars
+            .iter()
+            .find(|(_, (uuid, _))| {
+                uuid.eq_ignore_ascii_case(crate::thread::THREAD_CONTROL_POINT_UUID)
+            })
+            .map(|(&(_, iid), (uuid, _))| (uuid.clone(), iid))
+            .ok_or(BleError::CharacteristicNotFound { aid: 0, iid: 0 })
+    }
+
     /// The accessory's HAP pairing id (as stored in the pairing record).
     #[must_use]
     pub fn pairing_id(&self) -> &str {
@@ -1502,6 +1572,49 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, BleError::RequestRejected(6)));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn thread_provision_writes_query_then_tolerates_provision_teardown() {
+        let (mut h, gatt) = ble_accessory_with_db().await;
+        // Give the accessory a Thread Control Point characteristic (aid 1, iid 99).
+        let cp = "00000704-0000-1000-8000-0026bb765291";
+        let (_, fmt) = h.chars.get(&(1, 11)).unwrap().clone();
+        h.chars.insert((1, 99), (cp.to_string(), fmt));
+
+        // The query write gets a sealed success; the provision write finds no
+        // queued response (the accessory has left BLE for Thread), so its read
+        // fails — which thread_provision must tolerate.
+        let plain = vec![0x02, 0x01, 0x00];
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&[0u8; 32], &[0u8; 12], &[], &plain).unwrap();
+        gatt.queue_read(cp, sealed);
+
+        let dataset = crate::thread::ThreadDataset {
+            network_name: "OpenThread-89d7".into(),
+            channel: 24,
+            pan_id: 0x89d7,
+            ext_pan_id: [0x78, 0x96, 0x21, 0x7f, 0x78, 0x7f, 0x6e, 0xbe],
+            network_key: [0u8; 16],
+        };
+        // Ok despite the provision write's teardown error.
+        h.thread_provision(&dataset).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn thread_provision_errors_without_a_control_point() {
+        let (mut h, _g) = ble_accessory_with_db().await;
+        let dataset = crate::thread::ThreadDataset {
+            network_name: "OpenThread-89d7".into(),
+            channel: 24,
+            pan_id: 0x89d7,
+            ext_pan_id: [0u8; 8],
+            network_key: [0u8; 16],
+        };
+        let err = h.thread_provision(&dataset).await.unwrap_err();
+        assert!(matches!(err, BleError::CharacteristicNotFound { .. }));
     }
 
     #[tokio::test]

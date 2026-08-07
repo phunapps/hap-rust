@@ -239,4 +239,4 @@ items checked off.
 - [x] Item 2 — Run over real Thread (DUT ⇄ controller over the OMR mesh address on the Pi; radio-hop deferred to a separate node in Item 4/5)
 - [x] Item 3 — Transport hardening (F1 separate-responses ✅, F2 Block2 ✅; token correlation covers F7)
 - [x] Item 4 — ESP32-C6 LED firmware (MicroPython flashed; byte→LED path verified; DUT drives On→serial end-to-end — physical photons pending a visual confirm)
-- [ ] Item 5 — Onvis validation + publish (commissioning **scoped** — see `docs/superpowers/specs/2026-08-07-onvis-thread-commissioning.md`; blocked on building the `hap-ble` Thread-provision write + the physical device + the user-gated publish)
+- [ ] Item 5 — Onvis validation + publish (commissioning **scoped + built**: `hap-ble` 0.7.0 `thread_provision` + `ble_thread_provision` example, byte-exact vs aiohomekit; pending a hardware run against the Onvis, then the Thread-side validation and the user-gated publish)
