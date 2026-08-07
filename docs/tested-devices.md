@@ -246,3 +246,36 @@ the DUT answers immediately with small payloads, so the CoAP separate-response
 empty-ACK/separate-CON behaviour nor the `0x09` database). `UdpCoapTransport`'s
 message-id matching sufficed for every exchange here; F1/F2 remain to be driven
 by Item 3's slow/blockwise DUT modes and, ultimately, the real accessory.
+
+## Onvis SMS2 — BLE→Thread commissioning (2026-08-07, roadmap Item 5)
+
+**The commissioning gap is closed and hardware-validated.** A factory-reset Onvis
+SMS2 (category 10, Sensor) was moved onto our Thread network (`OpenThread-89d7`)
+purely over BLE, using the new `hap-ble` 0.7.0 `thread_provision` + the
+`ble_thread_provision` example, run **on the Pi via BlueZ** (`bluer`).
+
+- **BLE pair + provision succeeded.** The example paired with the unpaired Onvis
+  (`1c:f1:73:f0:a5:eb`) and wrote our operational dataset (network name/channel/
+  PAN ID/ext-PAN ID/network key) to its Thread Control Point (`0x0704`); the
+  provision write was **acknowledged** (`thread provision write acknowledged`).
+- **The Onvis joined our mesh and SRP-registered**, confirmed on the OTBR:
+  `Onvis-SMS2-6B80EC._hap._udp` port 5683, `md=SMS2 ci=10 pv=1.2
+  id=1C:F1:73:F0:A5:EB`, address `fdc8:45f:7f98:1:b75e:8518:f7ff:ae00`.
+- **`hap-thread` reaches the real device over Thread.** An anonymous `identify`
+  from `hap-thread` to that OMR address got a CoAP `4.04` (→ `SessionExpired`) —
+  **a real round-trip over the 802.15.4 radio**, and the correct HAP response (a
+  *paired* accessory refuses anonymous identify). The transport path
+  (Pi → OTBR → radio → Onvis) works end-to-end against real hardware.
+
+**Ran on the Pi, not the Mac — a macOS-26 BLE blocker.** This Mac (macOS 26.5.2)
+panics in `objc2-foundation 0.3.2` (`NSUUID getUUIDBytes:` ABI mismatch) before
+`bluest` can scan, and `0.3.2` is the newest `bluest 0.6.9` permits. The Pi's
+`bluer`/BlueZ backend has no such issue, so all BLE now runs there.
+
+**Next (open):** an authenticated read over Thread needs a pairing reusable across
+transports — the commissioning example used an *ephemeral* BLE controller, so we
+can neither Pair Verify (key not kept) nor Pair Setup (already paired) over
+Thread. A combined flow that keeps the controller identity + `AccessoryPairing`
+from the BLE pairing and then Pair Verifies over Thread (plus a factory reset to
+start clean) will finish the `0x09`/sensor reads. Then the `0x09` tree decode
+(deferred) and the user-gated publish.
