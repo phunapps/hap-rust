@@ -302,10 +302,16 @@ impl CoapTransport for UdpCoapTransport {
             let next_num = usize::from(block.num) + 1;
             let request_block2 = BlockValue::new(next_num, false, block_size)
                 .map_err(|e| ThreadError::Coap(format!("invalid Block2 request: {e}")))?;
-            let mut req = self.frame(path, payload, &token);
+            // A Block2 continuation carries NO payload and a FRESH token — only
+            // the Block2 option changes (RFC 7959, exactly as aiocoap sends it).
+            // Re-sending the original (encrypted) request body would make the
+            // accessory treat each continuation as a new secure request, so the
+            // reassembled blocks would be different AEAD blobs and fail to open.
+            let cont_token = self.next_message_id().to_be_bytes().to_vec();
+            let mut req = self.frame(path, &[], &cont_token);
             req.add_option_as(CoapOption::Block2, request_block2);
 
-            let r = self.exchange(&req, &token).await?;
+            let r = self.exchange(&req, &cont_token).await?;
             code = split_code(&r);
             full.extend_from_slice(&r.payload);
             fetched += 1;
@@ -461,7 +467,8 @@ mod tests {
 
         let task = tokio::spawn(async move {
             let mut buf = vec![0u8; 1500];
-            let mut blocks_served = 0u32;
+            // Record (num, token, payload) of every request to check framing.
+            let mut requests: Vec<(usize, Vec<u8>, Vec<u8>)> = Vec::new();
             loop {
                 let (n, peer) = responder.recv_from(&mut buf).await.unwrap();
                 let req = Packet::from_bytes(&buf[..n]).unwrap();
@@ -470,7 +477,7 @@ mod tests {
                     .get_first_option_as::<BlockValue>(CoapOption::Block2)
                     .and_then(std::result::Result::ok)
                     .map_or(0usize, |b| b.num as usize);
-                blocks_served += 1;
+                requests.push((num, req.get_token().to_vec(), req.payload.clone()));
                 let start = num * block_size;
                 let end = (start + block_size).min(total.len());
                 let more = end < total.len();
@@ -490,7 +497,7 @@ mod tests {
                     .await
                     .unwrap();
                 if !more {
-                    break blocks_served;
+                    break requests;
                 }
             }
         });
@@ -502,8 +509,30 @@ mod tests {
             resp.payload, expected,
             "Block2 fragments must reassemble in order"
         );
-        let blocks_served = task.await.unwrap();
-        assert_eq!(blocks_served, 3, "700 bytes / 256 = 3 blocks requested");
+        let requests = task.await.unwrap();
+        assert_eq!(requests.len(), 3, "700 bytes / 256 = 3 blocks requested");
+        // The first request carries the real payload; block-wise continuations
+        // must carry an EMPTY payload and a FRESH token (RFC 7959 as aiocoap
+        // does it — re-sending the encrypted body/token corrupts a secure read).
+        assert_eq!(requests[0].0, 0, "first request is block 0");
+        assert_eq!(
+            requests[0].2,
+            vec![0x09],
+            "first request carries the payload"
+        );
+        let first_token = &requests[0].1;
+        for cont in &requests[1..] {
+            assert!(cont.0 > 0, "continuation asks for a later block");
+            assert!(
+                cont.2.is_empty(),
+                "continuation payload must be empty, got {:?}",
+                cont.2
+            );
+            assert_ne!(
+                &cont.1, first_token,
+                "continuation must use a fresh token, not the request's"
+            );
+        }
     }
 
     #[test]

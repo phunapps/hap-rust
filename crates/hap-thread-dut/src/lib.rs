@@ -77,16 +77,18 @@ pub struct ReferenceAccessory {
     /// If set, fragment any response larger than this into Block2 blocks
     /// (RFC 7959), exercising the controller's reassembly (F2).
     blockwise: Option<usize>,
-    /// The in-flight block-wise response, cached by request token so Block2
+    /// The in-flight block-wise response, cached by **peer** so Block2
     /// continuations are served without re-processing (and, for secure reads,
-    /// without re-decrypting under an advanced session nonce).
+    /// without re-decrypting under an advanced session nonce). Correlation is by
+    /// peer, not token, because a conformant client mints a *fresh* token for
+    /// each Block2 continuation (RFC 7959, as aiocoap does).
     block_cache: Mutex<Option<BlockwiseResponse>>,
 }
 
 /// A cached block-wise response awaiting further Block2 requests (F2).
 struct BlockwiseResponse {
-    /// The request token every block of this transfer shares.
-    token: Vec<u8>,
+    /// The peer this transfer is for (continuations arrive with fresh tokens).
+    peer: SocketAddr,
     /// The response code all its blocks carry.
     code: ResponseType,
     /// The full response payload, sliced per Block2 request.
@@ -266,7 +268,7 @@ impl ReferenceAccessory {
             if payload.len() > bs {
                 if let Ok(mut cache) = self.block_cache.lock() {
                     *cache = Some(BlockwiseResponse {
-                        token: token.clone(),
+                        peer,
                         code,
                         payload: payload.clone(),
                     });
@@ -324,7 +326,7 @@ impl ReferenceAccessory {
         let token = req.get_token().to_vec();
         let cached = self.block_cache.lock().ok().and_then(|c| {
             c.as_ref()
-                .filter(|b| b.token == token)
+                .filter(|b| b.peer == peer)
                 .map(|b| (b.code, b.payload.clone()))
         });
         let Some((code, payload)) = cached else {
