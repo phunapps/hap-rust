@@ -841,12 +841,13 @@ dependencies = [
 
 [[package]]
 name = "hap-thread"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "coap-lite",
  "hap-ble",
  "hap-crypto",
+ "hap-model",
  "hap-tlv8",
  "hex",
  "mdns-sd",

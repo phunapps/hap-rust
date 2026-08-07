@@ -29,6 +29,7 @@
 pub mod accessory;
 pub mod coap;
 pub mod controller;
+pub mod database;
 pub mod discovery;
 pub mod error;
 pub mod pairing;
@@ -37,5 +38,6 @@ pub mod session;
 
 pub use accessory::ThreadAccessory;
 pub use controller::ThreadController;
+pub use database::decode_database;
 pub use discovery::{discover, DiscoveredThreadAccessory};
 pub use error::{Result, ThreadError};

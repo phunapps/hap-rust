@@ -125,14 +125,7 @@ Only relevant if WeaveHome ever hosts an accessory/DUT. Controllers ignore it.
 
 ## 4. Caveats & known limitations (read these)
 
-1. **`0x09` → typed tree decode is NOT in Rust yet.** `read_database_raw` returns
-   the *raw decrypted* `0x09` body. It decodes cleanly with aiohomekit's
-   `Pdu09Database` (a captured real body is committed at
-   `test-vectors/thread-coap/onvis-sms2-0x09.bin`), and that's how we obtained the
-   characteristic iids (e.g. SMS2 MotionDetected = **iid 3074**). Until the Rust
-   `0x09`→`hap-model` decoder lands, WeaveHome must map iids either from a decoded
-   database (decode the raw bytes yourself / out-of-band) or from known device
-   profiles. **This is the main follow-up before a clean end-user Thread UX.**
+1. **`0x09` → typed tree decode now ships in `hap-thread` 0.2.0.** `ThreadAccessory::read_database()` returns a typed `Vec<hap_model::Accessory>` (services → characteristics with iid, HAP type, format, perms); `hap_thread::decode_database(raw)` decodes a raw body. Cross-verified against aiohomekit on the committed real SMS2 body. (`read_database_raw` still returns the raw bytes if you want them.) NB: bump `hap-thread = "0.2"` to get this.
 
 2. **Events API is low-level and blocking.** `next_event()` awaits one push on the
    session socket; there's no background event task / `Stream` yet, and issuing a

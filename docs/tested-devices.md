@@ -356,5 +356,4 @@ candidate loop again skipped two stale dead SRP addresses and hit the live one.
 **End-to-end on the real Onvis SMS2 over Thread is complete:** commission (BLE) →
 Pair Verify (Thread) → read `0x09` → subscribe → live MotionDetected events.
 
-**Still open:** the Rust `0x09`→`hap-model` tree decode (the vector is captured and
-aiohomekit-verified), and the **user-gated publish**.
+**0x09 tree decode DONE** (`hap-thread` 0.2.0 `read_database`/`decode_database`, cross-verified against aiohomekit on the real SMS2 vector).

@@ -159,6 +159,19 @@ impl ThreadAccessory {
         }
     }
 
+    /// Read the accessory's attribute database and decode it into a typed
+    /// [`hap_model`] tree ([`Accessory`](hap_model::Accessory) →
+    /// [`Service`](hap_model::Service) →
+    /// [`Characteristic`](hap_model::Characteristic)), giving each
+    /// characteristic's instance id, HAP type, format, and permissions.
+    ///
+    /// # Errors
+    /// Transport/crypto/PDU failures, or a malformed `0x09` structure.
+    pub async fn read_database(&self) -> Result<Vec<hap_model::Accessory>> {
+        let raw = self.read_database_raw().await?;
+        crate::database::decode_database(&raw)
+    }
+
     /// Subscribe to a characteristic's event notifications (a `0x0B` PDU). After
     /// this, the accessory pushes an encrypted PUT whenever the value changes;
     /// collect them with [`next_event`](Self::next_event).
