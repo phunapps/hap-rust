@@ -246,10 +246,10 @@ impl ThreadAccessory {
     /// characteristics of interest first. The task ends when the returned stream
     /// is dropped, when this accessory is dropped, or on a session/transport error.
     ///
-    /// Calling it again replaces the previous watcher. While a watcher is active
-    /// it owns the session's inbound path, so do not interleave reads/writes on
-    /// the same accessory with event watching — run the watcher on an accessory
-    /// dedicated to events, or drop the stream before issuing other requests.
+    /// A watcher runs concurrently with ordinary reads/writes on the same
+    /// accessory: the underlying transport is a connection actor that demuxes
+    /// event PUTs from request responses, so the two never steal each other's
+    /// datagrams. Calling this again replaces the previous watcher.
     ///
     /// [`subscribe`]: Self::subscribe
     pub fn watch_events(&mut self) -> impl tokio_stream::Stream<Item = (u16, Vec<u8>)> {

@@ -16,13 +16,10 @@ use crate::hap::nonce_counter;
 pub(crate) struct AccessorySession {
     read_key: [u8; 32],
     write_key: [u8; 32],
-    // The event channel (accessory→controller reverse PUT) is derived now and
-    // consumed once event push lands.
-    #[allow(dead_code)]
+    /// The event channel key (accessory→controller reverse PUT).
     event_key: [u8; 32],
     recv_ctr: u64,
     send_ctr: u64,
-    #[allow(dead_code)]
     event_ctr: u64,
 }
 
@@ -60,6 +57,19 @@ impl AccessorySession {
         let nonce = nonce_counter(self.send_ctr);
         let ct = chacha20poly1305_seal(&self.read_key, &nonce, &[], plaintext)?;
         self.send_ctr = self.send_ctr.wrapping_add(1);
+        Ok(ct)
+    }
+
+    /// Encrypt an accessory→controller **event** payload (the controller opens it
+    /// with the event key) and advance the event counter. The event channel has
+    /// its own key and counter, independent of request/response traffic.
+    ///
+    /// # Errors
+    /// [`crate::DutError::Crypto`] on an internal AEAD failure.
+    pub(crate) fn seal_event(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        let nonce = nonce_counter(self.event_ctr);
+        let ct = chacha20poly1305_seal(&self.event_key, &nonce, &[], plaintext)?;
+        self.event_ctr = self.event_ctr.wrapping_add(1);
         Ok(ct)
     }
 }

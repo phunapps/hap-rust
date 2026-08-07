@@ -11,17 +11,20 @@
 //! Incremental. Implemented: the CoAP server, `identify`, **Pair Setup** (M1–M6
 //! SRP, enabled via [`ReferenceAccessory::with_setup_code`]), **Pair Verify**
 //! (also usable against a pre-provisioned pairing via
-//! [`ReferenceAccessory::provision_controller`]), and Lightbulb `On`
-//! read/write over the encrypted session. The full characteristic database
-//! (`0x09`) and event push are not yet implemented.
+//! [`ReferenceAccessory::provision_controller`]), Lightbulb `On` read/write over
+//! the encrypted session, event **subscribe/unsubscribe** (`0x0B`/`0x0C`) and
+//! **event push** ([`ReferenceAccessory::push_event`], a sealed CoAP PUT on the
+//! event channel). A full multi-characteristic database (`0x09`) is still
+//! synthetic (see [`ReferenceAccessory::synthetic_database`]).
 #![forbid(unsafe_code)]
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 
 use coap_lite::block_handler::BlockValue;
-use coap_lite::{CoapOption, MessageClass, MessageType, Packet, ResponseType};
+use coap_lite::{CoapOption, MessageClass, MessageType, Packet, RequestType, ResponseType};
 use hap_crypto::ControllerKeypair;
 use hap_tlv8::Tlv8Map;
 use tokio::net::UdpSocket;
@@ -83,6 +86,13 @@ pub struct ReferenceAccessory {
     /// peer, not token, because a conformant client mints a *fresh* token for
     /// each Block2 continuation (RFC 7959, as aiocoap does).
     block_cache: Mutex<Option<BlockwiseResponse>>,
+    /// Characteristic instance ids the controller has subscribed to (`0x0B`).
+    subscriptions: Mutex<HashSet<u16>>,
+    /// The controller's address (the last peer seen), where event PUTs are sent.
+    peer: Mutex<Option<SocketAddr>>,
+    /// The bound server socket, shared with [`ReferenceAccessory::push_event`] so
+    /// events can be pushed from outside the serve loop. Set once serving starts.
+    socket: Mutex<Option<Arc<UdpSocket>>>,
 }
 
 /// A cached block-wise response awaiting further Block2 requests (F2).
@@ -125,6 +135,9 @@ impl ReferenceAccessory {
             slow: false,
             blockwise: None,
             block_cache: Mutex::new(None),
+            subscriptions: Mutex::new(HashSet::new()),
+            peer: Mutex::new(None),
+            socket: Mutex::new(None),
         }
     }
 
@@ -197,6 +210,71 @@ impl ReferenceAccessory {
         }
     }
 
+    /// Push a characteristic-change event to the subscribed controller, as a real
+    /// accessory does when a sensor's value changes. Encrypts a single event
+    /// record (`reserved ‖ iid ‖ len ‖ value-TLV`) on the event channel and sends
+    /// it as a Confirmable CoAP PUT to the accessory's own root resource.
+    ///
+    /// Returns `Ok(true)` if an event was sent, `Ok(false)` if there is nothing
+    /// to notify (no subscription for `iid`, no established session, or no known
+    /// controller/socket yet).
+    ///
+    /// # Errors
+    /// [`DutError::Crypto`] if sealing fails, or an I/O error sending the datagram.
+    pub async fn push_event(&self, iid: u16, value: &[u8]) -> Result<bool> {
+        // Only notify a live subscription.
+        let subscribed = self.subscriptions.lock().is_ok_and(|s| s.contains(&iid));
+        if !subscribed {
+            return Ok(false);
+        }
+        let Some(socket) = self.socket.lock().ok().and_then(|s| s.clone()) else {
+            return Ok(false);
+        };
+        let Some(peer) = self.peer.lock().ok().and_then(|p| *p) else {
+            return Ok(false);
+        };
+
+        // reserved(0) ‖ iid(u16 LE) ‖ len(u16 LE) ‖ body, body = value TLV (0x01).
+        let body = pdu::value_body(value);
+        let Ok(len) = u16::try_from(body.len()) else {
+            return Ok(false); // a value larger than a HAP event record can carry
+        };
+        let mut record = Vec::with_capacity(5 + body.len());
+        record.push(0u8);
+        record.extend_from_slice(&iid.to_le_bytes());
+        record.extend_from_slice(&len.to_le_bytes());
+        record.extend_from_slice(&body);
+
+        // Seal on the event channel (its own key + counter).
+        let sealed = {
+            let Ok(mut guard) = self.session.lock() else {
+                return Ok(false);
+            };
+            let Some(session) = guard.as_mut() else {
+                return Ok(false); // no session yet
+            };
+            session.seal_event(&record)?
+        };
+
+        // A Confirmable PUT to the root resource carrying the sealed event.
+        let mut put = Packet::new();
+        put.header.set_type(MessageType::Confirmable);
+        put.header.code = MessageClass::Request(RequestType::Put);
+        put.header.message_id = self.next_mid.fetch_add(1, Ordering::Relaxed);
+        put.set_token(
+            self.next_mid
+                .fetch_add(1, Ordering::Relaxed)
+                .to_be_bytes()
+                .to_vec(),
+        );
+        put.payload = sealed;
+        let bytes = put
+            .to_bytes()
+            .map_err(|_| DutError::Protocol("could not encode event PUT"))?;
+        socket.send_to(&bytes, peer).await?;
+        Ok(true)
+    }
+
     /// Bind a UDP CoAP server to `addr` and serve until the task is dropped.
     /// Reports the actual bound address via `on_bound` before serving.
     ///
@@ -206,9 +284,13 @@ impl ReferenceAccessory {
     where
         F: FnOnce(SocketAddr),
     {
-        let socket = UdpSocket::bind(addr).await?;
+        let socket = Arc::new(UdpSocket::bind(addr).await?);
         let local = socket.local_addr()?;
         tracing::info!(%local, pairing_id = %self.pairing_id, "hap-thread-dut listening");
+        // Share the socket so events can be pushed from outside this loop.
+        if let Ok(mut held) = self.socket.lock() {
+            *held = Some(Arc::clone(&socket));
+        }
         on_bound(local);
 
         let mut buf = vec![0u8; RECV_BUF];
@@ -221,12 +303,15 @@ impl ReferenceAccessory {
                     continue;
                 }
             };
-            // Drop empty ACKs — a controller acknowledging one of our separate
-            // (slow-mode) responses; there is nothing to answer.
-            if req.header.get_type() == MessageType::Acknowledgement
-                && req.header.code == MessageClass::Empty
-            {
+            // Drop any ACK: an empty ACK for one of our separate (slow-mode)
+            // responses, or the controller's `2.03 Valid` ACK of an event PUT.
+            // Neither is a request to answer.
+            if req.header.get_type() == MessageType::Acknowledgement {
                 continue;
+            }
+            // Remember where to push events for this controller.
+            if let Ok(mut p) = self.peer.lock() {
+                *p = Some(peer);
             }
 
             // Block-wise continuation (Block2 num > 0): serve the next fragment
@@ -600,6 +685,20 @@ impl ReferenceAccessory {
                 }
                 Err(_) => pdu::encode_response(req.tid, pdu::STATUS_UNSUPPORTED, &[]),
             },
+            pdu::OP_SUBSCRIBE => {
+                if let Ok(mut subs) = self.subscriptions.lock() {
+                    subs.insert(req.iid);
+                }
+                tracing::info!(iid = req.iid, "subscribed to events");
+                pdu::encode_response(req.tid, pdu::STATUS_SUCCESS, &[])
+            }
+            pdu::OP_UNSUBSCRIBE => {
+                if let Ok(mut subs) = self.subscriptions.lock() {
+                    subs.remove(&req.iid);
+                }
+                tracing::info!(iid = req.iid, "unsubscribed from events");
+                pdu::encode_response(req.tid, pdu::STATUS_SUCCESS, &[])
+            }
             _ => pdu::encode_response(req.tid, pdu::STATUS_UNSUPPORTED, &[]),
         }
     }

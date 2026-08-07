@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "hap-thread-dut"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "coap-lite",
  "hap-crypto",
@@ -869,6 +869,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tracing-subscriber",
 ]
