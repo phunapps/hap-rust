@@ -54,6 +54,10 @@ const CONTROL_SALT: &[u8] = b"Control-Salt";
 const CONTROL_READ_INFO: &[u8] = b"Control-Read-Encryption-Key";
 /// HKDF info for the controller→accessory (write) session key.
 const CONTROL_WRITE_INFO: &[u8] = b"Control-Write-Encryption-Key";
+/// HKDF salt for the CoAP (HAP-over-Thread) event-notification key.
+const EVENT_SALT: &[u8] = b"Event-Salt";
+/// HKDF info for the CoAP event-notification key.
+const EVENT_READ_INFO: &[u8] = b"Event-Read-Encryption-Key";
 
 /// ChaCha20-Poly1305 nonce label for the encrypted M2 sub-TLV.
 const NONCE_M2: &[u8] = b"PV-Msg02";
@@ -300,6 +304,25 @@ impl PairVerifyClient {
         crate::BroadcastKey::derive(&shared, controller_ltpk)
     }
 
+    /// Derive the CoAP (HAP-over-Thread) event-notification key,
+    /// `HKDF-SHA512(shared_secret, "Event-Salt", "Event-Read-Encryption-Key")`.
+    ///
+    /// HAP-over-Thread delivers characteristic-change events on a dedicated
+    /// reverse channel encrypted with this key and its own message counter,
+    /// separate from the control-channel [`SessionKeys`]. The IP and BLE
+    /// transports do not use it. Call after Pair Verify has completed (the same
+    /// precondition as [`Self::broadcast_key`]).
+    ///
+    /// # Errors
+    /// Returns [`CryptoError`] if the Pair Verify shared secret has not been
+    /// established yet, or if key derivation fails.
+    pub fn event_key(&self) -> Result<[u8; 32]> {
+        let shared = self
+            .shared_secret
+            .ok_or(CryptoError::Encoding("Pair Verify shared secret missing"))?;
+        derive_key(&shared, EVENT_SALT, EVENT_READ_INFO)
+    }
+
     /// Handle M4: accept `State=4` (surfacing an accessory error code) and emit
     /// the derived [`SessionKeys`].
     fn handle_m4(&mut self, response: &[u8]) -> Result<PairVerifyStep> {
@@ -450,6 +473,42 @@ mod tests {
             derive_key(&shared, CONTROL_SALT, CONTROL_WRITE_INFO).unwrap(),
             write
         );
+    }
+
+    // --- Test 3b: the three CoAP/control session keys match aiohomekit for a
+    // synthetic (non-secret) shared secret 00..1f. Cross-verifies the HKDF-SHA512
+    // derivation and every salt/info string byte-for-byte against aiohomekit's
+    // `hkdf_derive` (the `Event-*` key is HAP-over-Thread specific). ---
+    #[test]
+    #[allow(clippy::unwrap_used)] // test code: derivation success is the assertion
+    fn coap_session_keys_match_aiohomekit() {
+        let shared: [u8; 32] = std::array::from_fn(|i| u8::try_from(i).unwrap_or(0)); // 00..1f
+                                                                                      // Expected values produced by aiohomekit's hkdf_derive over the same
+                                                                                      // synthetic shared secret (see xtask capture notes).
+        let event = hex32("37c286d4ae336aeead7048a00b7762b642653d0e8aa691d4d3b7f0cf621db796");
+        let read = hex32("c09403ef8aa6c5045cbd8cf9bf3e665b2caed623af2be0e87c8f80f519914d3d");
+        let write = hex32("c3ca130c7033dbe5e7ff7f91d117ead869bac476994c7a48ca170c111136ed96");
+        assert_eq!(
+            derive_key(&shared, EVENT_SALT, EVENT_READ_INFO).unwrap(),
+            event
+        );
+        assert_eq!(
+            derive_key(&shared, CONTROL_SALT, CONTROL_READ_INFO).unwrap(),
+            read
+        );
+        assert_eq!(
+            derive_key(&shared, CONTROL_SALT, CONTROL_WRITE_INFO).unwrap(),
+            write
+        );
+    }
+
+    #[allow(clippy::unwrap_used)] // test helper: fixed-length hex input
+    fn hex32(s: &str) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        out
     }
 
     // --- Test 4: full handle replay against the real trace. This is the

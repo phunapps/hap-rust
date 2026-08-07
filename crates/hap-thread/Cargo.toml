@@ -1,0 +1,38 @@
+[package]
+name = "hap-thread"
+version = "0.1.0"
+description = "HomeKit Accessory Protocol (HAP) Thread transport: discover, pair, and read/write HomeKit accessories over CoAP/Thread."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["homekit", "hap", "thread", "coap", "iot"]
+categories = ["network-programming", "asynchronous"]
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[features]
+# Exposes the mock CoAP transport for downstream tests, mirroring hap-ble's
+# `test-support`.
+test-support = []
+
+[dependencies]
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "sync", "macros", "time"] }
+mdns-sd = { workspace = true }
+coap-lite = { workspace = true }
+hap-tlv8 = { path = "../hap-tlv8", version = "1.0.0" }
+hap-crypto = { path = "../hap-crypto", version = "1.3.0" }
+# hap-model (0x09 database → typed tree) and hap-pairing (StoredTransport::Thread
+# persistence) are added when those milestones land — see the design doc §11 and
+# the bring-up notes. They are intentionally NOT dependencies yet.
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "sync", "macros", "time", "test-util"] }
+hex = { workspace = true }

@@ -8,6 +8,8 @@ members = [
     "crates/hap-model",
     "crates/hap-controller",
     "crates/hap-ble",
+    "crates/hap-thread",
+    "crates/hap-thread-dut",
     "xtask",
 ]
 
@@ -69,8 +71,8 @@ tokio-stream = { version = "0.1", default-features = false }
 # Structured, zero-cost-when-disabled diagnostics (hap-ble advert/sleepy path).
 # No-op unless the consumer installs a `tracing` subscriber.
 tracing = { version = "0.1", default-features = false, features = ["std"] }
-# Dev-only: a subscriber so example binaries can print the `tracing` diagnostics
-# (e.g. `hap_ble=debug`). Not a library dependency — examples/tests only.
+# A subscriber so the reference accessory bin and examples can print `tracing`
+# diagnostics. Not a library dependency.
 tracing-subscriber = { version = "0.3", default-features = false, features = [
     "fmt",
     "env-filter",
@@ -100,8 +102,13 @@ anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 toml = "0.8" # reserved for xtask config/manifest parsing in a later milestone
-# mDNS service discovery for _hap._tcp (hap-transport M4).
+# mDNS service discovery for _hap._tcp (hap-transport M4) and _hap._udp
+# (hap-thread / Thread-CoAP).
 mdns-sd = "0.20"
+# CoAP message codec (sans-I/O: encode/decode only; hap-thread owns the UDP
+# socket via tokio). Isolated behind the crate's CoapTransport trait so the
+# choice is swappable. See hap-thread design decision D1.
+coap-lite = "0.13"
 # Dev-only: RFC 5054 known-answer test uses SHA-1 (sha1) and hex fixtures.
 sha-1 = "0.10"
 hex = "0.4"
