@@ -208,3 +208,41 @@ arm does its own scan-and-connect, so calling it while still holding a live
 — a connected peripheral stops advertising, so the internal scan finds nothing.
 Callers should drop the handle first, or a future `remove_pairing` overload
 could reuse an existing connection. Filed for a `hap-controller` 2.x follow-up.
+
+## HAP-over-Thread — reference DUT over the mesh (2026-08-07, roadmap Item 2)
+
+First run of the HAP-over-Thread stack over a real Thread-mesh address (not
+loopback). Both ends ran on the Pi test rig (`admin@192.168.1.29`, the OTBR
+**leader** of `OpenThread-89d7`): the `hap-thread-dut` reference accessory
+(`hap-crypto` 1.4.0 / the Item-1 Pair Setup server) driven by `hap-thread`'s
+`thread_connect` example (release builds, `cargo 1.97.1`, `aarch64`).
+
+**Topology.** The DUT bound to `[::]:5683`; the controller connected to the Pi's
+**off-mesh-routable Thread address** `fdc8:45f:7f98:1:3d49:f636:db39:786` (in the
+OTBR off-mesh prefix `fdc8:45f:7f98:1::/64`) — the real Thread/OMR address on the
+`wpan` interface, distinct from `::1` loopback. Pair Setup enabled via
+`HAP_SETUP_CODE=123-45-678`.
+
+**What validated (full chain, twice):**
+`identify` → **Pair Setup SRP M1–M6** (`pair-setup complete — controller
+provisioned`) → **Pair Verify M1–M4** (`session established`) → encrypted
+Lightbulb `On` read/write over the CoAP secure session — once on the session
+`pair` left open, then again after **dropping it and reconnecting with the
+persisted `AccessoryPairing`** (a fresh Pair Verify). Controller reported `OK`
+(rc=0); the DUT's timestamped log shows every round-trip
+(identify → pair-setup → pair-verify → 4× `lightbulb On written`).
+
+**Caveat — co-located, so not yet a radio hop.** Because the DUT runs on the OTBR
+host itself, datagrams to the OMR address are delivered locally on the `wpan`
+interface; they do not traverse the 802.15.4 radio. This proves the real
+Thread-address / CoAP transport path end-to-end beyond loopback, but true
+over-the-air radio transit needs a *separate* Thread node running an accessory —
+that arrives with the real Onvis SMS2 in Item 5 (and the ESP32-C6 LED demo in
+Item 4).
+
+**Nothing broke — no Item 3 transport work surfaced.** As the roadmap predicted,
+the DUT answers immediately with small payloads, so the CoAP separate-response
+(F1) and Block2 (F2) paths were never exercised (the DUT implements neither the
+empty-ACK/separate-CON behaviour nor the `0x09` database). `UdpCoapTransport`'s
+message-id matching sufficed for every exchange here; F1/F2 remain to be driven
+by Item 3's slow/blockwise DUT modes and, ultimately, the real accessory.

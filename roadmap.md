@@ -236,7 +236,7 @@ items checked off.
 
 ## Status checklist
 - [x] Item 1 — Pair Setup server (SRP primitive ✅; M1–M6 orchestration + M5/M6 ✅)
-- [ ] Item 2 — Run over real Thread
+- [x] Item 2 — Run over real Thread (DUT ⇄ controller over the OMR mesh address on the Pi; radio-hop deferred to a separate node in Item 4/5)
 - [ ] Item 3 — Transport hardening (F1 separate-responses, F2 Block2)
 - [ ] Item 4 — ESP32-C6 LED firmware
 - [ ] Item 5 — Onvis validation + publish
