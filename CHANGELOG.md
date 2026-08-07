@@ -8,6 +8,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## hap-controller 3.1.0 / hap-transport 1.3.0 / hap-ble 0.8.0 — 2026-08-08 — Early-exit discovery
+
+Discovery no longer has to wait out the full window: a consumer looking for one
+specific accessory can stop the instant it appears (a device that advertises in
+200 ms no longer costs a flat multi-second scan per attempt). All additive; the
+existing batch `discover`/`scan` APIs are untouched.
+
+### `hap-controller` 3.1.0
+- **New:** `HapController::discover_until(timeout, stop)` — runs the mDNS
+  browse and (with the `ble` feature) the BLE scan concurrently, collecting
+  results incrementally. Results are deduplicated by accessory id (ASCII
+  case-insensitive, so the same accessory heard on both transports counts
+  once; the first sighting wins) and `stop` is called once per newly-seen
+  accessory; when it returns `true` the method returns everything found so far
+  immediately and the underlying scans tear down cleanly (the mDNS daemon is
+  shut down; the BLE scan stream and adapter are dropped, releasing the
+  central — on Linux, its D-Bus session). If `stop` never matches, behavior
+  matches `discover`: everything found within `timeout`, with the same error
+  semantics (one transport failing to start while the other starts is fine;
+  both failing surfaces the IP error).
+
+### `hap-transport` 1.3.0
+- **New:** `discover_stream(timeout)` — incremental variant of `discover`:
+  returns a `tokio::sync::mpsc::Receiver<DiscoveredAccessory>` immediately and
+  sends each accessory as its mDNS record resolves (deduplicated by `id`,
+  first record wins). The channel closes when the window elapses; dropping the
+  receiver tears the browse down early. Either way the mDNS daemon is shut
+  down.
+
+### `hap-ble` 0.8.0
+- **New:** `scan_stream(timeout)` — incremental variant of `scan`: returns a
+  `tokio::sync::mpsc::Receiver<DiscoveredBleAccessory>` immediately and sends
+  each accessory as its HAP advertisement is heard (deduplicated by peripheral
+  id). The channel closes when the window elapses; dropping the receiver tears
+  the scan down early — the background task drops its scan stream and then the
+  adapter, so no central (or Linux D-Bus session) outlives the call.
+
 ## hap-controller 3.0.4 — 2026-08-08 — Fix: X-HM category masked to 8 bits
 
 `SetupPayload::parse` folded the payload's version/reserved bits (39+) into

@@ -206,6 +206,83 @@ impl HapController {
         }
     }
 
+    /// Discover accessories on every enabled transport, returning **as soon
+    /// as** `stop` says so instead of always waiting out the full window.
+    ///
+    /// Both transports (mDNS, and with the `ble` feature a BLE scan) run
+    /// concurrently and report incrementally. Results are deduplicated by
+    /// accessory id (ASCII case-insensitive, so the same accessory heard on
+    /// both transports counts once; the first sighting wins), and `stop` is
+    /// called once per newly-seen accessory. When `stop` returns `true` the
+    /// method returns everything found so far immediately, and the underlying
+    /// scans are torn down (the mDNS browse is shut down; the BLE scan stream
+    /// and its adapter are dropped, releasing the central — on Linux, the
+    /// D-Bus session). If `stop` never matches, this behaves like
+    /// [`discover`](Self::discover): everything found within `timeout` is
+    /// returned.
+    ///
+    /// # Errors
+    ///
+    /// Matches [`discover`](Self::discover): if one transport fails to start
+    /// while the other starts, the working side's results are returned; if
+    /// both fail, the IP-side [`HapError::Transport`] error surfaces.
+    /// Transport failures *after* a scan has started end that transport's
+    /// stream silently.
+    pub async fn discover_until<F>(&self, timeout: Duration, stop: F) -> Result<Vec<Discovered>>
+    where
+        F: FnMut(&Discovered) -> bool,
+    {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Discovered>(16);
+        #[cfg(feature = "ble")]
+        {
+            let (ip, ble) = tokio::join!(
+                hap_transport::discover_stream(timeout),
+                hap_ble::scan_stream(timeout)
+            );
+            let (ip, ble) = match (ip, ble) {
+                // Both transports failed to start: surface the IP error.
+                (Err(ip_err), Err(_ble_err)) => return Err(ip_err.into()),
+                (ip, ble) => (ip.ok(), ble.ok()),
+            };
+            if let Some(mut ip_rx) = ip {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    while let Some(d) = ip_rx.recv().await {
+                        if tx.send(Discovered::Ip(d)).await.is_err() {
+                            break; // early exit: dropping ip_rx stops the browse
+                        }
+                    }
+                });
+            }
+            if let Some(mut ble_rx) = ble {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    while let Some(d) = ble_rx.recv().await {
+                        if tx.send(Discovered::Ble(d)).await.is_err() {
+                            break; // early exit: dropping ble_rx stops the scan
+                        }
+                    }
+                });
+            }
+        }
+        #[cfg(not(feature = "ble"))]
+        {
+            let mut ip_rx = hap_transport::discover_stream(timeout).await?;
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                while let Some(d) = ip_rx.recv().await {
+                    if tx.send(Discovered::Ip(d)).await.is_err() {
+                        break; // early exit: dropping ip_rx stops the browse
+                    }
+                }
+            });
+        }
+        // Drop the local sender so the merged channel closes once every
+        // forwarder finishes (i.e. when the discovery window elapses).
+        drop(tx);
+        Ok(crate::discover_until::collect_until(rx, stop).await)
+    }
+
     /// Discover `_hap._tcp` accessories on the local network for up to
     /// `timeout`. IP only; see [`discover`](Self::discover) for a unified method.
     ///

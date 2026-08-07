@@ -41,6 +41,88 @@ pub async fn scan(timeout: Duration) -> Result<Vec<DiscoveredBleAccessory>> {
     Ok(found)
 }
 
+/// Scan for HAP accessories incrementally, yielding each one as it is heard.
+///
+/// Like [`scan`], but instead of blocking for the full `timeout` window it
+/// returns a channel receiver immediately; each accessory is sent as soon as
+/// its HAP advertisement is parsed, deduplicated by peripheral id within the
+/// window. The channel closes when the window elapses — or as soon as the
+/// receiver is dropped, which tears the scan down early: the background task
+/// drops its scan stream (stopping the radio scan) and then the adapter
+/// itself, so no central or (on Linux) D-Bus session outlives the call.
+///
+/// # Errors
+/// Returns [`BleError::AccessoryNotFound`] if no BLE adapter is present and
+/// [`BleError::Backend`] on adapter/scan-start failures. Failures after the
+/// scan has started end the stream (the channel closes) rather than surfacing
+/// an error.
+pub async fn scan_stream(
+    timeout: Duration,
+) -> Result<tokio::sync::mpsc::Receiver<DiscoveredBleAccessory>> {
+    let adapter = Adapter::default()
+        .await
+        .ok_or(BleError::AccessoryNotFound)?;
+    adapter.wait_available().await.map_err(be)?;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<DiscoveredBleAccessory>(16);
+    // `Adapter::scan` borrows the adapter, so the scan stream must be created
+    // inside the task that owns it; a oneshot reports scan-start success back
+    // so this function's error behavior matches `scan`.
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<()>>();
+    tokio::spawn(async move {
+        let mut stream = match adapter.scan(&[]).await {
+            Ok(s) => {
+                let _ = ready_tx.send(Ok(()));
+                s
+            }
+            Err(e) => {
+                let _ = ready_tx.send(Err(be(e)));
+                return;
+            }
+        };
+        let mut seen = std::collections::HashSet::new();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            tokio::select! {
+                // The consumer dropped its receiver: stop scanning early.
+                () = tx.closed() => break,
+                next = tokio::time::timeout_at(deadline, stream.next()) => {
+                    match next {
+                        Err(_) | Ok(None) => break,
+                        Ok(Some(adv)) => {
+                            let Some(mfg) = adv.adv_data.manufacturer_data else {
+                                continue;
+                            };
+                            if mfg.company_id != APPLE_COMPANY_ID {
+                                continue;
+                            }
+                            if let Some(acc) =
+                                parse_hap_advert(&mfg.data, adv.device.id().to_string())
+                            {
+                                if seen.insert(acc.peripheral_id.clone())
+                                    && tx.send(acc).await.is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Deterministic teardown: stop the radio scan, then release the
+        // central (on Linux this closes the bluer session's D-Bus connection).
+        drop(stream);
+        drop(adapter);
+    });
+    match ready_rx.await {
+        Ok(Ok(())) => Ok(rx),
+        Ok(Err(e)) => Err(e),
+        // The scan task died before reporting; treat as a backend failure.
+        Err(_recv) => Err(BleError::Backend("scan task exited early".into())),
+    }
+}
+
 /// Connect to a discovered accessory and return a resilient GATT link.
 ///
 /// # Errors

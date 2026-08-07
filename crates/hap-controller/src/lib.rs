@@ -164,6 +164,7 @@
 #![forbid(unsafe_code)]
 
 mod controller;
+mod discover_until;
 mod discovered;
 mod error;
 mod event;

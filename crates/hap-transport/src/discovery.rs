@@ -105,6 +105,76 @@ pub async fn discover(timeout: Duration) -> Result<Vec<DiscoveredAccessory>> {
     Ok(found.into_values().collect())
 }
 
+/// Discover HAP accessories incrementally, yielding each one as it resolves.
+///
+/// Like [`discover`], but instead of blocking for the full `timeout` window it
+/// returns a channel receiver immediately; each accessory is sent as soon as
+/// its mDNS record resolves, so a consumer can react (or stop) without waiting
+/// out the window. Deduplicates by accessory `id` within the window (the first
+/// resolved record wins). The channel closes when the window elapses — or as
+/// soon as the receiver is dropped, which also tears the browse down early
+/// (the mDNS daemon is shut down either way).
+///
+/// # Errors
+///
+/// Returns [`TransportError::Mdns`] if the mDNS daemon cannot be started or
+/// the browse cannot be initiated. Failures after the browse has started end
+/// the stream (the channel closes) rather than surfacing an error.
+pub async fn discover_stream(
+    timeout: Duration,
+) -> Result<tokio::sync::mpsc::Receiver<DiscoveredAccessory>> {
+    let daemon = ServiceDaemon::new().map_err(|e| TransportError::Mdns(e.to_string()))?;
+    let receiver = daemon
+        .browse(HAP_SERVICE_TYPE)
+        .map_err(|e| TransportError::Mdns(e.to_string()))?;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<DiscoveredAccessory>(16);
+    tokio::spawn(async move {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            tokio::select! {
+                // The consumer dropped its receiver: stop browsing early.
+                () = tx.closed() => break,
+                event = tokio::time::timeout(remaining, receiver.recv_async()) => {
+                    match event {
+                        Err(_elapsed) => break,
+                        Ok(Err(_recv_err)) => break,
+                        Ok(Ok(ServiceEvent::ServiceResolved(info))) => {
+                            let txt: HashMap<String, String> = info
+                                .get_properties()
+                                .iter()
+                                .map(|p| (p.key().to_string(), p.val_str().to_string()))
+                                .collect();
+                            let Some(addr) = info
+                                .get_addresses()
+                                .iter()
+                                .find(|ip| ip.is_ipv4())
+                                .or_else(|| info.get_addresses().iter().next())
+                                .map(|ip| SocketAddr::new(ip.to_ip_addr(), info.get_port()))
+                            else {
+                                continue;
+                            };
+                            if let Ok(acc) = parse_txt(info.get_fullname(), addr, &txt) {
+                                if seen.insert(acc.id.clone()) && tx.send(acc).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(Ok(_other)) => {}
+                    }
+                }
+            }
+        }
+        let _ = daemon.shutdown();
+    });
+    Ok(rx)
+}
+
 /// Derive the human-readable name from an mDNS fullname like
 /// `My Lamp 1234._hap._tcp.local.`.
 fn instance_name(fullname: &str) -> String {

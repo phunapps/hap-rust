@@ -51,7 +51,7 @@ pub use error::error_test_support;
 
 #[doc(hidden)]
 pub use discovery::discovery_test_support;
-pub use discovery::{discover, DiscoveredAccessory};
+pub use discovery::{discover, discover_stream, DiscoveredAccessory};
 
 #[doc(hidden)]
 pub use http::http_test_support;
