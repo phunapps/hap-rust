@@ -127,14 +127,16 @@ Only relevant if WeaveHome ever hosts an accessory/DUT. Controllers ignore it.
 
 1. **`0x09` → typed tree decode now ships in `hap-thread` 0.2.0.** `ThreadAccessory::read_database()` returns a typed `Vec<hap_model::Accessory>` (services → characteristics with iid, HAP type, format, perms); `hap_thread::decode_database(raw)` decodes a raw body. Cross-verified against aiohomekit on the committed real SMS2 body. (`read_database_raw` still returns the raw bytes if you want them.) NB: bump `hap-thread = "0.2"` to get this.
 
-2. **Events stream (`hap-thread` 0.3.0).** `ThreadAccessory::watch_events()` returns
-   a `Stream<Item = (u16, Vec<u8>)>` backed by a background task — feed it straight
-   to your event bus (the lower-level `next_event()` loop is still available).
-   `subscribe()` the characteristics first; re-subscribe after any Pair Verify
-   (session reset). **Caveat:** while a watcher is active it owns the session's
-   inbound path, so don't interleave reads/writes with event watching on the *same*
-   accessory (a full request/response + event demux on one socket is future work).
-   NB: bump `hap-thread = "0.3"`.
+2. **Events stream + concurrent reads (`hap-thread` 0.4.0).**
+   `ThreadAccessory::watch_events()` returns a `Stream<Item = (u16, Vec<u8>)>` backed
+   by a background task — feed it straight to your event bus (the lower-level
+   `next_event()` loop is still available). `subscribe()` the characteristics first;
+   re-subscribe after any Pair Verify (session reset). As of **0.4.0** the transport
+   is a **connection actor**: a single reader task owns the socket and demuxes
+   responses (matched to the awaiting request by token) from accessory-pushed event
+   PUTs, so you can now **read/write and watch events concurrently on the same
+   accessory** — the earlier "don't interleave" caveat is gone. NB: bump
+   `hap-thread = "0.4"`.
 
 3. **Sleepy accessories.** The SMS2 is a Thread SED: high, variable latency
    (ping RTT 0.4–1.5 s) and it re-arms motion slowly (~15 s between triggers). The

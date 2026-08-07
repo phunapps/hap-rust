@@ -1,6 +1,6 @@
 [package]
 name = "hap-thread"
-version = "0.3.0"
+version = "0.4.0"
 description = "HomeKit Accessory Protocol (HAP) Thread transport: discover, pair, and read/write HomeKit accessories over CoAP/Thread."
 edition.workspace = true
 rust-version.workspace = true

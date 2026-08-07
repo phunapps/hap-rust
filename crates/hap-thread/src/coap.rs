@@ -11,16 +11,23 @@
 //! load-bearing: `2.04 Changed` is success and `4.04 Not Found` means the
 //! accessory dropped the session and the caller must re-run Pair Verify.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use coap_lite::block_handler::BlockValue;
 use coap_lite::{CoapOption, MessageClass, MessageType, Packet, RequestType, ResponseType};
 use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use crate::error::{Result, ThreadError};
+
+/// The channel a pending request's responses are delivered on, keyed by token.
+type PendingMap = Arc<Mutex<HashMap<Vec<u8>, mpsc::UnboundedSender<Packet>>>>;
 
 /// CoAP resource paths (single Uri-Path segment; the root is the empty string).
 pub(crate) const PATH_IDENTIFY: &str = "0";
@@ -105,20 +112,35 @@ pub(crate) trait CoapTransport: Send + Sync {
     async fn recv_event(&self) -> Result<Vec<u8>>;
 }
 
-/// A real CoAP client over a connected UDP/IPv6 socket.
-///
-/// Performs Confirmable exchanges correlated by **token** (RFC 7252), so it
-/// tolerates the two things a real accessory does that a fast one does not:
-/// *separate responses* — an empty ACK followed by a later CON carrying the
-/// payload (§5.2.2) — and *block-wise transfer* — a large response delivered as
-/// Block2 fragments (RFC 7959), reassembled here before it is handed up.
+/// A real CoAP client over a connected UDP/IPv6 socket, structured as a
+/// **connection actor**: a background reader task owns `socket.recv` and demuxes
+/// every datagram — a *response* (matched to a pending request by token) is
+/// routed to the awaiting [`post`](CoapTransport::post), while an
+/// accessory-initiated *event PUT* (a CON carrying a request method) is
+/// acknowledged and handed to the event channel. This lets a request and an
+/// event watcher run concurrently on the one socket without stealing each
+/// other's datagrams. Exchanges still handle retransmit-until-ack, separate
+/// responses (RFC 7252 §5.2.2), and Block2 reassembly (RFC 7959).
 pub(crate) struct UdpCoapTransport {
-    socket: UdpSocket,
+    socket: Arc<UdpSocket>,
     message_id: AtomicU16,
+    /// Pending requests: token → the channel their response is delivered on.
+    pending: PendingMap,
+    /// Encrypted event payloads the reader extracted from accessory PUTs.
+    events: tokio::sync::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>,
+    /// The background reader task, aborted when the transport is dropped.
+    reader: JoinHandle<()>,
+}
+
+impl Drop for UdpCoapTransport {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
 }
 
 impl UdpCoapTransport {
-    /// Connect a UDP socket to the accessory's `[ipv6]:port`.
+    /// Connect a UDP socket to the accessory's `[ipv6]:port` and start the
+    /// reader task.
     ///
     /// # Errors
     /// [`ThreadError::Io`] if the socket cannot be bound or connected.
@@ -133,11 +155,21 @@ impl UdpCoapTransport {
                 ThreadError::Coap("could not parse the IPv4 wildcard bind address".into())
             })?
         };
-        let socket = UdpSocket::bind(bind).await?;
+        let socket = Arc::new(UdpSocket::bind(bind).await?);
         socket.connect(addr).await?;
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let reader = tokio::spawn(reader_loop(
+            Arc::clone(&socket),
+            Arc::clone(&pending),
+            event_tx,
+        ));
         Ok(Self {
             socket,
             message_id: AtomicU16::new(1),
+            pending,
+            events: tokio::sync::Mutex::new(event_rx),
+            reader,
         })
     }
 
@@ -185,41 +217,52 @@ impl UdpCoapTransport {
         Ok(())
     }
 
-    /// Perform one Confirmable request/response exchange, correlating strictly by
-    /// `token`.
+    /// Perform one Confirmable request/response exchange through the reader,
+    /// correlating by `token`.
     ///
-    /// Retransmits the CON up to [`MAX_TRANSMISSIONS`] until it is answered. An
-    /// *empty* ACK (RFC 7252 §5.2.2) means the accessory will answer later with a
-    /// **separate** CON carrying the same token: retransmission stops and this
-    /// waits [`SEPARATE_RESPONSE_TIMEOUT`] for that CON, then ACKs it. Matching on
-    /// the token (not the message-id) also discards a stray/duplicate response
-    /// left over from an earlier exchange. Returns the decoded response packet.
+    /// Registers `token` so the reader routes its responses here, retransmits the
+    /// CON up to [`MAX_TRANSMISSIONS`] until answered, and handles the *empty ACK
+    /// → separate response* case (RFC 7252 §5.2.2), ACKing a separate CON. The
+    /// token is deregistered on return.
     async fn exchange(&self, request: &Packet, token: &[u8]) -> Result<Packet> {
         let bytes = request
             .to_bytes()
             .map_err(|e| ThreadError::Coap(format!("could not encode CoAP request: {e}")))?;
-        let mut buf = vec![0u8; RECV_BUF];
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(token.to_vec(), tx);
 
+        let result = self.exchange_inner(&bytes, &mut rx).await;
+
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(token);
+        result
+    }
+
+    /// The exchange retransmit/response state machine, reading responses the
+    /// reader delivers on `rx` (already filtered to this exchange's token).
+    async fn exchange_inner(
+        &self,
+        bytes: &[u8],
+        rx: &mut mpsc::UnboundedReceiver<Packet>,
+    ) -> Result<Packet> {
         let mut acknowledged = false;
         'transmit: for _ in 0..MAX_TRANSMISSIONS {
-            self.socket.send(&bytes).await?;
-            loop {
-                match tokio::time::timeout(ACK_TIMEOUT, self.socket.recv(&mut buf)).await {
-                    Ok(Ok(n)) => {
-                        warn_if_truncated(n);
-                        let resp = decode(&buf[..n])?;
-                        if resp.get_token() != token {
-                            continue; // not ours — a late/stray packet
-                        }
-                        if is_empty(&resp) {
-                            acknowledged = true; // a separate response is coming
-                            break 'transmit;
-                        }
-                        return self.accept(resp).await;
+            self.socket.send(bytes).await?;
+            match tokio::time::timeout(ACK_TIMEOUT, rx.recv()).await {
+                Ok(Some(resp)) => {
+                    if is_empty(&resp) {
+                        acknowledged = true; // a separate response is coming
+                        break 'transmit;
                     }
-                    Ok(Err(e)) => return Err(ThreadError::Io(e)),
-                    Err(_elapsed) => break, // ack timeout — retransmit
+                    return self.accept(resp).await;
                 }
+                Ok(None) => return Err(ThreadError::Coap("CoAP reader task stopped".into())),
+                Err(_elapsed) => {} // ack timeout — retransmit
             }
         }
 
@@ -231,17 +274,14 @@ impl UdpCoapTransport {
 
         // Empty-ACKed: await the separate response without retransmitting.
         loop {
-            match tokio::time::timeout(SEPARATE_RESPONSE_TIMEOUT, self.socket.recv(&mut buf)).await
-            {
-                Ok(Ok(n)) => {
-                    warn_if_truncated(n);
-                    let resp = decode(&buf[..n])?;
-                    if resp.get_token() != token || is_empty(&resp) {
-                        continue; // duplicate empty ACK or an unrelated packet
+            match tokio::time::timeout(SEPARATE_RESPONSE_TIMEOUT, rx.recv()).await {
+                Ok(Some(resp)) => {
+                    if is_empty(&resp) {
+                        continue; // a duplicate empty ACK
                     }
                     return self.accept(resp).await;
                 }
-                Ok(Err(e)) => return Err(ThreadError::Io(e)),
+                Ok(None) => return Err(ThreadError::Coap("CoAP reader task stopped".into())),
                 Err(_elapsed) => {
                     return Err(ThreadError::Coap(
                         "no separate CoAP response after the empty ACK".into(),
@@ -259,6 +299,66 @@ impl UdpCoapTransport {
         }
         Ok(resp)
     }
+}
+
+/// The background reader: owns `socket.recv` and demuxes each datagram. A
+/// response/ACK is routed to the pending request for its token; an
+/// accessory-initiated event PUT is ACKed (`2.03 Valid`) and its payload is sent
+/// to the event channel. Exits when the socket errors (transport dropped).
+async fn reader_loop(
+    socket: Arc<UdpSocket>,
+    pending: PendingMap,
+    events: mpsc::UnboundedSender<Vec<u8>>,
+) {
+    let mut buf = vec![0u8; RECV_BUF];
+    loop {
+        let n = match socket.recv(&mut buf).await {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::debug!(error = %e, "CoAP reader socket closed");
+                return;
+            }
+        };
+        warn_if_truncated(n);
+        let Ok(packet) = decode(&buf[..n]) else {
+            continue; // malformed datagram
+        };
+
+        if is_event_put(&packet) {
+            // Accessory-initiated event PUT: acknowledge and forward its payload.
+            let mut ack = Packet::new();
+            ack.header.set_type(MessageType::Acknowledgement);
+            ack.header.code = MessageClass::Response(ResponseType::Valid);
+            ack.header.message_id = packet.header.message_id;
+            ack.set_token(packet.get_token().to_vec());
+            if let Ok(bytes) = ack.to_bytes() {
+                let _ = socket.send(&bytes).await;
+            }
+            if events.send(packet.payload).is_err() {
+                // No event consumer; keep reading (responses still need routing).
+            }
+        } else {
+            // A response or ACK: hand it to the exchange awaiting this token.
+            let token = packet.get_token().to_vec();
+            let sender = pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&token)
+                .cloned();
+            if let Some(sender) = sender {
+                let _ = sender.send(packet); // receiver gone → exchange already done
+            }
+            // Unmatched (a late/duplicate response) → dropped.
+        }
+    }
+}
+
+/// Whether a datagram is an accessory-initiated event PUT — a Confirmable
+/// message carrying a *request* method code (class 0, non-empty) — rather than a
+/// response or ACK to one of our requests.
+fn is_event_put(packet: &Packet) -> bool {
+    let code = u8::from(packet.header.code);
+    packet.header.get_type() == MessageType::Confirmable && code != 0 && (code >> 5) == 0
 }
 
 /// Decode a CoAP datagram, mapping a parse failure to [`ThreadError::Coap`].
@@ -300,29 +400,13 @@ fn block2_of(packet: &Packet) -> Option<BlockValue> {
 #[async_trait]
 impl CoapTransport for UdpCoapTransport {
     async fn recv_event(&self) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; RECV_BUF];
-        loop {
-            let n = self.socket.recv(&mut buf).await?;
-            warn_if_truncated(n);
-            let req = decode(&buf[..n])?;
-            // Only an accessory-initiated CON request (its event PUT) is of
-            // interest here; ignore stray ACKs/empties.
-            if req.header.get_type() != MessageType::Confirmable || is_empty(&req) {
-                continue;
-            }
-            // Acknowledge the PUT: a piggy-backed 2.03 Valid echoing its
-            // message-id and token (what aiohomekit's EventResource replies).
-            let mut ack = Packet::new();
-            ack.header.set_type(MessageType::Acknowledgement);
-            ack.header.code = MessageClass::Response(ResponseType::Valid);
-            ack.header.message_id = req.header.message_id;
-            ack.set_token(req.get_token().to_vec());
-            let bytes = ack
-                .to_bytes()
-                .map_err(|e| ThreadError::Coap(format!("could not encode event ACK: {e}")))?;
-            self.socket.send(&bytes).await?;
-            return Ok(req.payload);
-        }
+        // The reader task already demuxed, ACKed, and extracted the payload; just
+        // take the next one off the event channel.
+        let mut events = self.events.lock().await;
+        events
+            .recv()
+            .await
+            .ok_or_else(|| ThreadError::Coap("CoAP event channel closed".into()))
     }
 
     async fn post(&self, path: &str, payload: &[u8]) -> Result<CoapResponse> {
