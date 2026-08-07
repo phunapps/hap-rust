@@ -40,5 +40,5 @@ hex = { workspace = true }
 tracing-subscriber = { workspace = true }
 # The `onvis_thread` example commissions over BLE then reads over Thread, so it
 # needs the BLE transport (no dependency cycle: hap-ble does not depend on hap-thread).
-hap-ble = { path = "../hap-ble" }
-hap-crypto = { path = "../hap-crypto" }
+hap-ble = { path = "../hap-ble", version = "0.7.0" }
+hap-crypto = { path = "../hap-crypto", version = "1.4.0" }
