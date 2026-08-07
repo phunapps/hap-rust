@@ -303,6 +303,27 @@ capture to finish. Each retry costs a factory reset (the failed run leaves the
 device paired to the exited process's key), so proper fixing wants a capture, not
 blind iteration.
 
-**Next (open):** capture the real `0x09` CoAP exchange (aiohomekit as the oracle),
-fix the encrypted-read/Block2 framing, decode the `0x09` tree into `hap-model`,
-read sensors, then the user-gated publish.
+### `0x09` read FIXED and read on hardware (2026-08-07)
+
+Root-caused with the aiohomekit CoAP source as the oracle, then fixed and
+verified live. **Two bugs:**
+
+1. **Block2 continuation framing.** Our block-wise continuation requests re-sent
+   the full encrypted request body and reused the token; aiocoap sends
+   continuations with an *empty* payload and a *fresh* token (only the Block2
+   option changes). Fixed in `coap.rs`; the DUT's blockwise mode now correlates
+   continuations by peer, not token.
+2. **The actual fault: receive-buffer truncation.** The Onvis returns the whole
+   `0x09` database as **one ~2.7 KB IPv6-fragmented datagram, not Block2**. The
+   1500-byte `RECV_BUF` silently truncated it → AEAD tag mismatch. Raised to
+   16 KiB (+ a truncation warning and datagram-size logging).
+
+**Live result:** commission → Pair Verify over Thread → `read_database_raw`
+returned **2737 bytes** (`received CoAP datagram len=2765` → single datagram →
+decrypted). The body is committed as `test-vectors/thread-coap/onvis-sms2-0x09.bin`
+— the vector for the pending `0x09`→`hap-model` tree decode. The try-each
+candidate loop again skipped two stale dead SRP addresses and hit the live one.
+
+**Next (open):** events over Thread (subscribe `0x0B` + an inbound CoAP event
+server for the accessory's encrypted PUTs), then the `0x09` tree decode, sensor
+reads, and the user-gated publish.
