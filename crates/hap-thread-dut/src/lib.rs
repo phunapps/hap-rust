@@ -83,7 +83,7 @@ impl ReferenceAccessory {
                 .get_first_option(CoapOption::UriPath)
                 .map(|v| String::from_utf8_lossy(v).into_owned())
                 .unwrap_or_default();
-            let (code, payload) = self.handle(&path, &req.payload).await;
+            let (code, payload) = self.handle(&path, &req.payload);
 
             let mut resp = Packet::new();
             resp.header.set_type(MessageType::Acknowledgement);
@@ -103,8 +103,9 @@ impl ReferenceAccessory {
     }
 
     /// Route one request to its handler, returning the CoAP response code and
-    /// payload.
-    async fn handle(&self, path: &str, payload: &[u8]) -> (ResponseType, Vec<u8>) {
+    /// payload. Synchronous today (identify and the crypto handlers do no
+    /// awaiting); the server loop drives it between awaited socket operations.
+    fn handle(&self, path: &str, payload: &[u8]) -> (ResponseType, Vec<u8>) {
         match path {
             PATH_IDENTIFY => {
                 tracing::info!("identify");
