@@ -272,10 +272,37 @@ panics in `objc2-foundation 0.3.2` (`NSUUID getUUIDBytes:` ABI mismatch) before
 `bluest` can scan, and `0.3.2` is the newest `bluest 0.6.9` permits. The Pi's
 `bluer`/BlueZ backend has no such issue, so all BLE now runs there.
 
-**Next (open):** an authenticated read over Thread needs a pairing reusable across
-transports — the commissioning example used an *ephemeral* BLE controller, so we
-can neither Pair Verify (key not kept) nor Pair Setup (already paired) over
-Thread. A combined flow that keeps the controller identity + `AccessoryPairing`
-from the BLE pairing and then Pair Verifies over Thread (plus a factory reset to
-start clean) will finish the `0x09`/sensor reads. Then the `0x09` tree decode
-(deferred) and the user-gated publish.
+### Authenticated session over Thread — WORKS (2026-08-07)
+
+The `onvis_thread` example keeps **one controller identity** across transports:
+BLE Pair Setup + `thread_provision`, then reuse the `AccessoryPairing` to Pair
+Verify over Thread. On the real SMS2 (Pi rig):
+
+- **BLE pair → provision → mesh join** as above; the device re-registered SRP.
+- **Stale-registration handling proven live.** SRP retains dead host entries from
+  earlier commissionings until their lease expires; discovery returned a stale
+  address first (dead — timed out) and the example's *try-each-candidate* loop
+  moved on to the live one (`fdc8:45f:7f98:1:904b:c658:ad9d:d1ee`).
+- **Pair Verify completed over Thread.** `ThreadController::connect` ran M1–M4 to
+  the real accessory and **established the encrypted session over the radio** —
+  the pairing set up over BLE, reused for an authenticated Thread session. The
+  cross-transport identity story works end-to-end on hardware.
+- The SMS2 is a **sleepy end device**: ping RTT to it runs 0.4–1.5 s, and the
+  first Pair-Verify attempt sometimes needs the transport's retransmits.
+
+**Bug found on hardware — the `0x09` database read fails with `Crypto(Aead)`.**
+Right after the session is established, `read_database_raw` (a `ReadDatabase`
+`0x09` PDU over the secure session) returns an AEAD authentication error. Since
+Pair Verify (ECDH + HKDF) succeeded, the session keys are correct, so the fault
+is in the `0x09` *read* itself — most likely the CoAP framing/Block2 the real
+accessory uses for a large encrypted response, or that the device answers the
+`0x09` PDU differently than our reference DUT. The CoAP `0x09` read + tree decode
+was already **deferred in MT-1** (never verified against hardware); this is the
+concrete data point that says it needs the aiohomekit CoAP reference + a real
+capture to finish. Each retry costs a factory reset (the failed run leaves the
+device paired to the exited process's key), so proper fixing wants a capture, not
+blind iteration.
+
+**Next (open):** capture the real `0x09` CoAP exchange (aiohomekit as the oracle),
+fix the encrypted-read/Block2 framing, decode the `0x09` tree into `hap-model`,
+read sensors, then the user-gated publish.
