@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "hap-thread"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "coap-lite",
@@ -852,6 +852,7 @@ dependencies = [
  "mdns-sd",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tracing-subscriber",
 ]

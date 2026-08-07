@@ -72,12 +72,25 @@ impl SecureCoapConnection {
 
 /// A connected HAP-over-Thread accessory: read and write its characteristics.
 pub struct ThreadAccessory {
-    conn: SecureCoapConnection,
+    conn: Arc<SecureCoapConnection>,
+    /// The background task feeding [`Self::watch_events`], aborted on drop.
+    event_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for ThreadAccessory {
+    fn drop(&mut self) {
+        if let Some(task) = self.event_task.take() {
+            task.abort();
+        }
+    }
 }
 
 impl ThreadAccessory {
     pub(crate) fn new(conn: SecureCoapConnection) -> Self {
-        Self { conn }
+        Self {
+            conn: Arc::new(conn),
+            event_task: None,
+        }
     }
 
     /// Read one characteristic's raw value bytes by instance id.
@@ -215,10 +228,54 @@ impl ThreadAccessory {
     /// Await the next event the accessory pushes, returning `(iid, value)` for
     /// each characteristic that changed. Blocks until an event arrives.
     ///
+    /// For most uses prefer [`watch_events`](Self::watch_events), which delivers
+    /// events through a [`Stream`](tokio_stream::Stream) from a background task
+    /// instead of a manual loop.
+    ///
     /// # Errors
     /// Transport/crypto failures, or a malformed event record stream.
     pub async fn next_event(&self) -> Result<Vec<(u16, Vec<u8>)>> {
         self.conn.next_event().await
+    }
+
+    /// Stream characteristic-change events the accessory pushes, as `(iid, value)`.
+    ///
+    /// Spawns a background task that receives, decrypts, and forwards events, so
+    /// the caller consumes them as a [`Stream`](tokio_stream::Stream) rather than
+    /// awaiting [`next_event`](Self::next_event) in a loop. [`subscribe`] to the
+    /// characteristics of interest first. The task ends when the returned stream
+    /// is dropped, when this accessory is dropped, or on a session/transport error.
+    ///
+    /// Calling it again replaces the previous watcher. While a watcher is active
+    /// it owns the session's inbound path, so do not interleave reads/writes on
+    /// the same accessory with event watching — run the watcher on an accessory
+    /// dedicated to events, or drop the stream before issuing other requests.
+    ///
+    /// [`subscribe`]: Self::subscribe
+    pub fn watch_events(&mut self) -> impl tokio_stream::Stream<Item = (u16, Vec<u8>)> {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let conn = Arc::clone(&self.conn);
+        let task = tokio::spawn(async move {
+            loop {
+                match conn.next_event().await {
+                    Ok(events) => {
+                        for event in events {
+                            if tx.send(event).await.is_err() {
+                                return; // the stream was dropped
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "thread event watcher stopped");
+                        return;
+                    }
+                }
+            }
+        });
+        if let Some(previous) = self.event_task.replace(task) {
+            previous.abort();
+        }
+        tokio_stream::wrappers::ReceiverStream::new(rx)
     }
 }
 
@@ -376,5 +433,36 @@ mod tests {
 
         let events = acc.next_event().await.unwrap();
         assert_eq!(events, vec![(3074u16, vec![0x01u8])]);
+    }
+
+    #[tokio::test]
+    async fn watch_events_streams_pushed_events() {
+        use crate::coap::MockCoapTransport;
+        use tokio_stream::StreamExt as _;
+
+        let event_key = hex32("37c286d4ae336aeead7048a00b7762b642653d0e8aa691d4d3b7f0cf621db796");
+        let session = CoapSession::new(&control_keys(), event_key);
+
+        let mock = Arc::new(MockCoapTransport::new());
+        // Two events at event counters 0 and 1: motion true then false.
+        for (ctr, val) in [(0u64, 1u8), (1u64, 0u8)] {
+            let mut nonce = [0u8; 12];
+            nonce[4..].copy_from_slice(&ctr.to_le_bytes());
+            let plaintext = vec![0x00, 0x02, 0x0c, 0x03, 0x00, 0x01, 0x01, val];
+            let sealed =
+                hap_crypto::aead::chacha20poly1305_seal(&event_key, &nonce, &[], &plaintext)
+                    .unwrap();
+            mock.queue_event(sealed);
+        }
+
+        let mut acc = ThreadAccessory::new(SecureCoapConnection::new(mock, session));
+        let stream = acc.watch_events();
+        tokio::pin!(stream);
+        // The stream ends once the mock's queue drains (next_event then errors).
+        let mut got = Vec::new();
+        while let Some(event) = stream.next().await {
+            got.push(event);
+        }
+        assert_eq!(got, vec![(3074u16, vec![1u8]), (3074u16, vec![0u8])]);
     }
 }
