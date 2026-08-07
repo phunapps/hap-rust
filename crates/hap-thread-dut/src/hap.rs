@@ -52,8 +52,6 @@ pub(crate) fn nonce_label(label: &[u8]) -> [u8; 12] {
 
 /// A 96-bit session nonce: four zero bytes then the little-endian 64-bit
 /// `counter` — matches `hap-thread`'s CoAP session nonce.
-// Used by the secure session (next increment: characteristic read/write).
-#[allow(dead_code)]
 pub(crate) fn nonce_counter(counter: u64) -> [u8; 12] {
     let mut nonce = [0u8; 12];
     nonce[4..].copy_from_slice(&counter.to_le_bytes());

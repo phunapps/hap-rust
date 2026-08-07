@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use coap_lite::{CoapOption, MessageClass, MessageType, Packet, ResponseType};
@@ -24,12 +25,15 @@ use hap_tlv8::Tlv8Map;
 use tokio::net::UdpSocket;
 
 mod hap;
+mod light;
 mod pairing;
+mod pdu;
 mod session;
 
 pub mod error;
 
 pub use error::{DutError, Result};
+pub use light::{LightActuator, LoggingActuator};
 
 use pairing::VerifyInProgress;
 use session::AccessorySession;
@@ -43,8 +47,8 @@ const PATH_SECURE: &str = "";
 /// Receive buffer for a single CoAP datagram.
 const RECV_BUF: usize = 1500;
 
-/// The reference accessory: its identity, the paired controller, and the live
-/// Pair Verify / session state.
+/// The reference accessory: its identity, the paired controller, the live Pair
+/// Verify / session state, and a single Lightbulb `On` characteristic.
 pub struct ReferenceAccessory {
     pairing_id: String,
     keypair: ControllerKeypair,
@@ -54,13 +58,26 @@ pub struct ReferenceAccessory {
     verify: Mutex<Option<VerifyInProgress>>,
     /// The established secure session, once Pair Verify completes.
     session: Mutex<Option<AccessorySession>>,
+    /// The Lightbulb `On` characteristic value.
+    on: AtomicBool,
+    /// Where a written `On` value is applied (LED, log, …).
+    actuator: Box<dyn LightActuator>,
 }
 
 impl ReferenceAccessory {
+    /// The instance id of the Lightbulb `On` characteristic (what a controller
+    /// reads and writes).
+    pub const ON_IID: u16 = 9;
+
     /// Create a reference accessory with the given pairing id (a MAC-shaped
     /// string such as `"AA:BB:CC:DD:EE:FF"`). A fresh long-term Ed25519 identity
-    /// is generated.
+    /// is generated and the `On` characteristic starts off, logging writes.
     pub fn new(pairing_id: impl Into<String>) -> Self {
+        Self::with_actuator(pairing_id, Box::new(LoggingActuator))
+    }
+
+    /// Create a reference accessory whose `On` writes drive `actuator`.
+    pub fn with_actuator(pairing_id: impl Into<String>, actuator: Box<dyn LightActuator>) -> Self {
         let pairing_id = pairing_id.into();
         let keypair = ControllerKeypair::generate(pairing_id.clone());
         Self {
@@ -69,12 +86,19 @@ impl ReferenceAccessory {
             controller: Mutex::new(None),
             verify: Mutex::new(None),
             session: Mutex::new(None),
+            on: AtomicBool::new(false),
+            actuator,
         }
     }
 
     /// The accessory's pairing identifier.
     pub fn pairing_id(&self) -> &str {
         &self.pairing_id
+    }
+
+    /// The current `On` value.
+    pub fn is_on(&self) -> bool {
+        self.on.load(Ordering::SeqCst)
     }
 
     /// The accessory's long-term Ed25519 public key — a controller needs this
@@ -155,10 +179,7 @@ impl ReferenceAccessory {
                 tracing::debug!("pair-setup (not yet implemented)");
                 (ResponseType::NotFound, Vec::new())
             }
-            PATH_SECURE => {
-                tracing::debug!("secure PDU (not yet implemented)");
-                (ResponseType::NotFound, Vec::new())
-            }
+            PATH_SECURE => self.secure_pdu(payload),
             other => {
                 tracing::debug!(path = other, "unknown resource");
                 (ResponseType::NotFound, Vec::new())
@@ -212,6 +233,58 @@ impl ReferenceAccessory {
                 }
             }
             _ => (ResponseType::BadRequest, Vec::new()),
+        }
+    }
+
+    /// Handle an encrypted PDU on `/`: decrypt with the session, serve each
+    /// batched characteristic request, and seal the batched response.
+    fn secure_pdu(&self, payload: &[u8]) -> (ResponseType, Vec<u8>) {
+        let Ok(mut guard) = self.session.lock() else {
+            return (ResponseType::InternalServerError, Vec::new());
+        };
+        let Some(session) = guard.as_mut() else {
+            tracing::debug!("secure PDU before Pair Verify");
+            return (ResponseType::Unauthorized, Vec::new());
+        };
+        let Ok(plaintext) = session.open_request(payload) else {
+            tracing::debug!("secure PDU failed to decrypt");
+            return (ResponseType::Unauthorized, Vec::new());
+        };
+        let Ok(requests) = pdu::decode_requests(&plaintext) else {
+            return (ResponseType::BadRequest, Vec::new());
+        };
+        let mut responses = Vec::new();
+        for req in &requests {
+            responses.extend_from_slice(&self.handle_char(req));
+        }
+        match session.seal_response(&responses) {
+            Ok(sealed) => (ResponseType::Changed, sealed),
+            Err(_) => (ResponseType::InternalServerError, Vec::new()),
+        }
+    }
+
+    /// Serve one characteristic request against the Lightbulb `On` characteristic,
+    /// returning its response PDU.
+    fn handle_char(&self, req: &pdu::Request) -> Vec<u8> {
+        if req.iid != Self::ON_IID {
+            return pdu::encode_response(req.tid, pdu::STATUS_INVALID_INSTANCE_ID, &[]);
+        }
+        match req.opcode {
+            pdu::OP_CHAR_READ => {
+                let body = pdu::value_body(&[u8::from(self.is_on())]);
+                pdu::encode_response(req.tid, pdu::STATUS_SUCCESS, &body)
+            }
+            pdu::OP_CHAR_WRITE => match pdu::extract_value(&req.body) {
+                Ok(value) => {
+                    let on = value.first().copied().unwrap_or(0) != 0;
+                    self.on.store(on, Ordering::SeqCst);
+                    self.actuator.set(on);
+                    tracing::info!(on, "lightbulb On written");
+                    pdu::encode_response(req.tid, pdu::STATUS_SUCCESS, &[])
+                }
+                Err(_) => pdu::encode_response(req.tid, pdu::STATUS_UNSUPPORTED, &[]),
+            },
+            _ => pdu::encode_response(req.tid, pdu::STATUS_UNSUPPORTED, &[]),
         }
     }
 }

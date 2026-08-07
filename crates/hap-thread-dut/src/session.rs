@@ -13,19 +13,19 @@ use crate::error::Result;
 use crate::hap::nonce_counter;
 
 /// A verified session's keys and per-direction counters (accessory side).
-// The session is established by Pair Verify now; it is consumed by the secure
-// PDU handler (characteristic read/write) and event push in the next increments.
-#[allow(dead_code)]
 pub(crate) struct AccessorySession {
     read_key: [u8; 32],
     write_key: [u8; 32],
+    // The event channel (accessory→controller reverse PUT) is derived now and
+    // consumed once event push lands.
+    #[allow(dead_code)]
     event_key: [u8; 32],
     recv_ctr: u64,
     send_ctr: u64,
+    #[allow(dead_code)]
     event_ctr: u64,
 }
 
-#[allow(dead_code)]
 impl AccessorySession {
     /// Build a session from the three derived keys. Counters start at 0.
     pub(crate) fn new(read_key: [u8; 32], write_key: [u8; 32], event_key: [u8; 32]) -> Self {

@@ -56,6 +56,38 @@ async fn controller_pair_verifies_with_the_reference_accessory() {
 }
 
 #[tokio::test]
+async fn controller_reads_and_writes_the_lightbulb() {
+    let accessory = Arc::new(ReferenceAccessory::new("11:22:33:44:55:66"));
+    let controller = ThreadController::generate("AA:BB:CC:DD:EE:FF".into());
+    accessory.provision_controller(controller.keypair().id.clone(), controller.keypair().ltpk());
+    let pairing = AccessoryPairing {
+        pairing_id: accessory.pairing_id().into(),
+        ltpk: accessory.accessory_ltpk(),
+    };
+    let on_iid = ReferenceAccessory::ON_IID;
+    let acc_for_assert = Arc::clone(&accessory);
+    let addr = spawn(accessory).await;
+
+    let handle = controller
+        .connect(addr, &pairing)
+        .await
+        .expect("pair verify");
+
+    // Reads back off, over the encrypted session.
+    assert_eq!(handle.read_characteristic(on_iid).await.unwrap(), vec![0]);
+
+    // Write On = true, then read it back as true — and the accessory state moved.
+    handle.write_characteristic(on_iid, &[1]).await.unwrap();
+    assert_eq!(handle.read_characteristic(on_iid).await.unwrap(), vec![1]);
+    assert!(acc_for_assert.is_on());
+
+    // Write On = false again.
+    handle.write_characteristic(on_iid, &[0]).await.unwrap();
+    assert_eq!(handle.read_characteristic(on_iid).await.unwrap(), vec![0]);
+    assert!(!acc_for_assert.is_on());
+}
+
+#[tokio::test]
 async fn pair_verify_rejects_an_unknown_controller() {
     let accessory = Arc::new(ReferenceAccessory::new("11:22:33:44:55:66"));
     let controller = ThreadController::generate("AA:BB:CC:DD:EE:FF".into());
