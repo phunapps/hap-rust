@@ -845,6 +845,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "coap-lite",
+ "hap-ble",
  "hap-crypto",
  "hap-tlv8",
  "hex",

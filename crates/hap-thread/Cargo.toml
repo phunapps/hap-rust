@@ -38,3 +38,7 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util
 hex = { workspace = true }
 # For the `thread_connect` bring-up example's log output.
 tracing-subscriber = { workspace = true }
+# The `onvis_thread` example commissions over BLE then reads over Thread, so it
+# needs the BLE transport (no dependency cycle: hap-ble does not depend on hap-thread).
+hap-ble = { path = "../hap-ble" }
+hap-crypto = { path = "../hap-crypto" }
