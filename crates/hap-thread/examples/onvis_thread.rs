@@ -75,31 +75,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dataset.network_name
     );
 
-    // ---- Thread: discover the now-joined accessory and Pair Verify ----
-    let mut addr = None;
-    for attempt in 1..=15 {
+    // ---- Thread: discover the joined accessory and Pair Verify ----
+    //
+    // SRP can hold *stale* registrations for the same host from earlier
+    // commissionings (they linger until their lease expires) whose addresses are
+    // dead. So gather every candidate and try Pair Verify against each until one
+    // responds — a dead address just times out and we move on.
+    let controller = ThreadController::new(keypair);
+    let mut handle = None;
+    'discover: for attempt in 1..=15 {
         tokio::time::sleep(Duration::from_secs(3)).await;
-        match hap_thread::discover(Duration::from_secs(4)).await {
-            Ok(found) => {
-                if let Some(a) = found
-                    .into_iter()
-                    .find(|a| a.category == 10 || a.name.to_lowercase().contains("onvis"))
-                {
-                    println!("discovered over Thread: {} @ {}", a.name, a.addr);
-                    addr = Some(a.addr);
-                    break;
-                }
-                println!("thread discovery {attempt}: not on the mesh yet...");
+        let found = match hap_thread::discover(Duration::from_secs(4)).await {
+            Ok(f) => f,
+            Err(e) => {
+                println!("thread discovery {attempt} error: {e}");
+                continue;
             }
-            Err(e) => println!("thread discovery {attempt} error: {e}"),
+        };
+        let mut candidates: Vec<(String, std::net::SocketAddr)> = found
+            .into_iter()
+            .filter(|a| {
+                let n = a.name.to_lowercase();
+                a.category == 10 || n.contains("onvis") || n.contains("sms")
+            })
+            .map(|a| (a.name, a.addr))
+            .collect();
+        candidates.sort_by_key(|(_, addr)| *addr);
+        candidates.dedup_by_key(|(_, addr)| *addr);
+        if candidates.is_empty() {
+            println!("thread discovery {attempt}: not on the mesh yet...");
+            continue;
+        }
+        for (name, addr) in candidates {
+            println!("Pair Verify over Thread: {name} @ {addr}...");
+            match controller.connect(addr, &pairing).await {
+                Ok(h) => {
+                    println!("Pair Verify complete @ {addr} — encrypted session established.");
+                    handle = Some(h);
+                    break 'discover;
+                }
+                Err(e) => println!("  {addr} did not respond/verify: {e}"),
+            }
         }
     }
-    let addr = addr.ok_or("accessory did not appear on the Thread mesh in time")?;
-
-    println!("Pair Verify over Thread at {addr}...");
-    let controller = ThreadController::new(keypair);
-    let handle = controller.connect(addr, &pairing).await?;
-    println!("Pair Verify complete — encrypted session over Thread established.");
+    let handle = handle.ok_or("could not Pair Verify with the accessory over Thread")?;
 
     // ---- Read the 0x09 attribute database over Thread (Block2) ----
     println!("Reading the 0x09 database over Thread...");
