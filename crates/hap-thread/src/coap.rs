@@ -38,9 +38,12 @@ const MAX_TRANSMISSIONS: u32 = 4;
 /// Safety cap on Block2 fragments reassembled for one response (RFC 7959), so a
 /// misbehaving accessory cannot drive an unbounded request loop.
 const MAX_BLOCKS: u32 = 1024;
-/// Receive buffer for a single CoAP datagram. Sized for one Block2 block plus
-/// CoAP framing; large responses arrive block-wise (RFC 7959), not in one datagram.
-const RECV_BUF: usize = 1500;
+/// Receive buffer for a single CoAP datagram. A HAP accessory may return a large
+/// response either block-wise (RFC 7959, small blocks) *or* as one big datagram
+/// relying on IPv6 fragmentation (the real Onvis does the latter for the `0x09`
+/// database); this must be large enough for that single datagram or the payload
+/// is silently truncated and its AEAD tag fails to verify.
+const RECV_BUF: usize = 16 * 1024;
 
 /// A CoAP response: the two-part code (`class.detail`, e.g. `2.04`) and payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +198,7 @@ impl UdpCoapTransport {
             loop {
                 match tokio::time::timeout(ACK_TIMEOUT, self.socket.recv(&mut buf)).await {
                     Ok(Ok(n)) => {
+                        warn_if_truncated(n);
                         let resp = decode(&buf[..n])?;
                         if resp.get_token() != token {
                             continue; // not ours — a late/stray packet
@@ -222,6 +226,7 @@ impl UdpCoapTransport {
             match tokio::time::timeout(SEPARATE_RESPONSE_TIMEOUT, self.socket.recv(&mut buf)).await
             {
                 Ok(Ok(n)) => {
+                    warn_if_truncated(n);
                     let resp = decode(&buf[..n])?;
                     if resp.get_token() != token || is_empty(&resp) {
                         continue; // duplicate empty ACK or an unrelated packet
@@ -250,8 +255,20 @@ impl UdpCoapTransport {
 
 /// Decode a CoAP datagram, mapping a parse failure to [`ThreadError::Coap`].
 fn decode(bytes: &[u8]) -> Result<Packet> {
+    tracing::debug!(len = bytes.len(), "received CoAP datagram");
     Packet::from_bytes(bytes)
         .map_err(|e| ThreadError::Coap(format!("could not decode CoAP response: {e}")))
+}
+
+/// Warn when a datagram exactly fills [`RECV_BUF`] — a strong sign the socket
+/// truncated a larger datagram (which then fails to decrypt / decode).
+fn warn_if_truncated(n: usize) {
+    if n == RECV_BUF {
+        tracing::warn!(
+            n,
+            "CoAP datagram filled the receive buffer — likely truncated"
+        );
+    }
 }
 
 /// Whether a packet carries the empty code `0.00` (an ACK-only, no payload).
@@ -281,6 +298,10 @@ impl CoapTransport for UdpCoapTransport {
 
         // Fast path: the response is not block-wise.
         let Some(mut block) = block2_of(&resp) else {
+            tracing::debug!(
+                len = resp.payload.len(),
+                "single-datagram CoAP response (no Block2)"
+            );
             return Ok(CoapResponse {
                 code,
                 payload: resp.payload,
@@ -320,6 +341,11 @@ impl CoapTransport for UdpCoapTransport {
                 None => break, // accessory stopped chunking — take what arrived
             }
         }
+        tracing::debug!(
+            blocks = fetched,
+            len = full.len(),
+            "reassembled block-wise CoAP response"
+        );
         Ok(CoapResponse {
             code,
             payload: full,
