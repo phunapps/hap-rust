@@ -5,6 +5,10 @@
 //!
 //! With a serial-led device, `On` writes drive an ESP32-C6's onboard LED (its
 //! firmware reads `1`/`0`); without it, writes are just logged.
+//!
+//! Set `HAP_SETUP_CODE` (e.g. `HAP_SETUP_CODE=123-45-678`) to enable Pair Setup
+//! against that 8-digit code; without it the `/1` resource stays a `4.04` and a
+//! controller can only Pair Verify against a pre-provisioned pairing.
 #![forbid(unsafe_code)]
 
 use std::net::SocketAddr;
@@ -41,7 +45,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => Box::new(LoggingActuator),
     };
 
-    let accessory = Arc::new(ReferenceAccessory::with_actuator(pairing_id, actuator));
+    let mut accessory = ReferenceAccessory::with_actuator(pairing_id, actuator);
+    if let Ok(code) = std::env::var("HAP_SETUP_CODE") {
+        println!("Pair Setup enabled (setup code from HAP_SETUP_CODE)");
+        accessory = accessory.with_setup_code(code);
+    } else {
+        println!("Pair Setup disabled (set HAP_SETUP_CODE to enable); Pair Verify only");
+    }
+    let accessory = Arc::new(accessory);
     accessory
         .serve(bind, |addr| println!("hap-thread-dut listening on {addr}"))
         .await?;
