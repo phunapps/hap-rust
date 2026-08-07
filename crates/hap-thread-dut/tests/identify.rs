@@ -1,7 +1,7 @@
 //! End-to-end: the real `hap-thread` controller identifies the reference
 //! accessory over a UDP CoAP round-trip (no Thread hardware needed).
 
-#![allow(clippy::unwrap_used)] // test code
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code
 
 use std::net::SocketAddr;
 use std::sync::Arc;
