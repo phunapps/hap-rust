@@ -46,7 +46,7 @@ mod x25519;
 pub use broadcast::BroadcastKey;
 pub use error::{CryptoError, Result};
 pub use keys::{verify_ed25519, ControllerKeypair};
-pub use pair_setup::{AccessoryPairing, PairSetupClient, PairSetupStep};
+pub use pair_setup::{AccessoryPairing, HapPairSetupSrpServer, PairSetupClient, PairSetupStep};
 pub use pair_verify::{PairVerifyClient, PairVerifyStep, SessionKeys};
 pub use setup::setup_hash;
 pub use x25519::{x25519_shared, EphemeralKeypair};

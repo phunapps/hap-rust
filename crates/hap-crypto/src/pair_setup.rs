@@ -45,7 +45,7 @@ use crate::aead::{decrypt, encrypt, hap_nonce};
 use crate::error::{CryptoError, Result};
 use crate::kdf::hkdf_sha512;
 use crate::keys::{verify_ed25519, ControllerKeypair};
-use crate::srp::{hap_group, SrpClient};
+use crate::srp::{hap_group, SrpClient, SrpServer};
 use crate::tlv_types as tlv;
 
 /// The SRP-6a username HAP fixes for Pair Setup (`I` in RFC 5054 notation).
@@ -349,6 +349,86 @@ impl PairSetupClient {
         verify_ed25519(&ltpk, &signed, &signature)?;
 
         Ok(PairSetupStep::Done(AccessoryPairing { pairing_id, ltpk }))
+    }
+}
+
+/// The accessory (server) half of HAP Pair Setup's SRP-6a exchange.
+///
+/// This is the counterpart of [`PairSetupClient`]'s SRP portion (M2–M4),
+/// packaged for a reference accessory to drive Pair Setup without touching the
+/// crate-internal SRP generics: it fixes the HAP group (RFC 5054 Appendix A
+/// 3072-bit, `g = 5`), the hash (SHA-512), and the SRP username (`"Pair-Setup"`),
+/// and normalises the setup code exactly as [`PairSetupClient`] does so the two
+/// derive the same verifier.
+///
+/// Construct one per pairing attempt with [`new`](HapPairSetupSrpServer::new)
+/// (a fresh random salt and private ephemeral `b`), send M2 as
+/// `State=2, Salt=`[`salt`](HapPairSetupSrpServer::new)`, PublicKey=`
+/// [`b_pub_bytes`](HapPairSetupSrpServer::b_pub_bytes), then on M3 compute the
+/// session key from the controller's `A` with
+/// [`session_key`](HapPairSetupSrpServer::session_key) and verify its proof with
+/// [`verify_m1_prove_m2`](HapPairSetupSrpServer::verify_m1_prove_m2).
+pub struct HapPairSetupSrpServer {
+    inner: SrpServer<Sha512>,
+}
+
+impl HapPairSetupSrpServer {
+    /// Build a Pair Setup SRP server for `setup_code`, returning it together with
+    /// the 16-byte SRP salt to send in M2.
+    ///
+    /// `setup_code` is accepted hyphenated (`"123-45-678"`) or as bare digits
+    /// (`"12345678"`); it is normalised to the canonical `XXX-XX-XXX` form —
+    /// identically to [`PairSetupClient::new`] — before use as the SRP password.
+    /// The salt and the private ephemeral `b` are drawn from the OS CSPRNG.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError`] only if the embedded HAP group is rejected (which
+    /// the fixed constant never triggers).
+    pub fn new(setup_code: &str) -> Result<(Self, Vec<u8>)> {
+        let password = normalize_setup_code(setup_code);
+        let inner =
+            SrpServer::<Sha512>::new(hap_group()?, PAIR_SETUP_USERNAME, password.as_bytes());
+        let salt = inner.salt().to_vec();
+        Ok((Self { inner }, salt))
+    }
+
+    /// `PAD(B)` — the accessory's SRP public ephemeral in wire form (384 bytes),
+    /// sent as `PublicKey` in M2.
+    #[must_use]
+    pub fn b_pub_bytes(&self) -> Vec<u8> {
+        self.inner.b_pub_bytes()
+    }
+
+    /// Compute the SRP session key `K` from the controller's public ephemeral
+    /// `A` (the `PublicKey` bytes received in M3).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::SrpBadParameters`] if `A` is zero mod `N`, or
+    /// [`CryptoError::SrpProofMismatch`] if the scrambler `u` is zero.
+    pub fn session_key(&self, a_pub_bytes: &[u8]) -> Result<Vec<u8>> {
+        let a_pub = BigUint::from_bytes_be(a_pub_bytes);
+        self.inner.session_key(&a_pub)
+    }
+
+    /// Verify the controller's proof `M1` (from M3) against its public ephemeral
+    /// `A`, returning the accessory proof `M2` to send in M4.
+    ///
+    /// The session key is recomputed from `A` internally, so this is
+    /// self-contained; callers that also need `K` (to derive the M5/M6 keys)
+    /// should call [`session_key`](HapPairSetupSrpServer::session_key) once and
+    /// keep the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::SrpProofMismatch`] if `M1` does not verify (the
+    /// wrong setup code), or the errors of
+    /// [`session_key`](HapPairSetupSrpServer::session_key).
+    pub fn verify_m1_prove_m2(&self, a_pub_bytes: &[u8], m1: &[u8]) -> Result<Vec<u8>> {
+        let a_pub = BigUint::from_bytes_be(a_pub_bytes);
+        let session_key = self.inner.session_key(&a_pub)?;
+        self.inner.verify_m1_prove_m2(&a_pub, &session_key, m1)
     }
 }
 
@@ -763,5 +843,82 @@ mod tests {
         assert_eq!(normalize_setup_code("12345678"), "123-45-678");
         assert_eq!(normalize_setup_code("123-45-678"), "123-45-678");
         assert_eq!(normalize_setup_code("oddball"), "oddball");
+    }
+
+    // ---- The public accessory-side SRP wrapper ----
+    //
+    // `HapPairSetupSrpServer` is the accessory counterpart of `PairSetupClient`'s
+    // SRP half. Drive a full M1..M4 SRP handshake between the real client and the
+    // wrapper: if the client accepts M4 (advances to M5) then the salt, `B`, the
+    // session key `K`, and both proofs all agreed byte-for-byte.
+
+    #[test]
+    fn hap_pair_setup_srp_server_interoperates_with_client() {
+        let (server, salt) = HapPairSetupSrpServer::new("123-45-678").unwrap();
+
+        let a = [0x37u8; 32];
+        let mut client =
+            PairSetupClient::new_with_private("123-45-678", test_controller(), &a).unwrap();
+        let _m1 = client.start();
+
+        // Accessory M2: State=2, Salt, PublicKey=B.
+        let mut m2 = Vec::new();
+        let mut w = Tlv8Writer::new(&mut m2);
+        w.push_u8(tlv::STATE, tlv::STATE_M2);
+        w.push(tlv::SALT, &salt);
+        w.push(tlv::PUBLIC_KEY, &server.b_pub_bytes());
+
+        // Client consumes M2, emits M3 (A + proof M1).
+        let PairSetupStep::Send(m3) = client.handle(&m2).unwrap() else {
+            panic!("expected M3 from the client");
+        };
+        let m3_map = Tlv8Map::parse(&m3).unwrap();
+        let a_pub = m3_map.get(tlv::PUBLIC_KEY).unwrap();
+        let m1 = m3_map.get(tlv::PROOF).unwrap();
+
+        // The server's session key must equal the client's (proven transitively
+        // via the proofs), and it must verify M1 and return a matching M2.
+        let m2_proof = server.verify_m1_prove_m2(a_pub, m1).unwrap();
+
+        // Feed M4 (State=4, Proof=M2) to the client: accepting it (advancing to
+        // M5) means the whole SRP half agreed.
+        let mut m4 = Vec::new();
+        let mut w = Tlv8Writer::new(&mut m4);
+        w.push_u8(tlv::STATE, tlv::STATE_M4);
+        w.push(tlv::PROOF, &m2_proof);
+        assert!(
+            matches!(client.handle(&m4).unwrap(), PairSetupStep::Send(_)),
+            "client must accept M4 and emit M5"
+        );
+    }
+
+    #[test]
+    fn hap_pair_setup_srp_server_rejects_wrong_setup_code() {
+        // The controller proves knowledge of "123-45-678"; a server built for a
+        // different code computes a different verifier, so M1 must not verify.
+        let (setup_server, salt) = HapPairSetupSrpServer::new("123-45-678").unwrap();
+        let a = [0x37u8; 32];
+        let mut client =
+            PairSetupClient::new_with_private("123-45-678", test_controller(), &a).unwrap();
+        let _m1 = client.start();
+
+        let mut m2 = Vec::new();
+        let mut w = Tlv8Writer::new(&mut m2);
+        w.push_u8(tlv::STATE, tlv::STATE_M2);
+        w.push(tlv::SALT, &salt);
+        w.push(tlv::PUBLIC_KEY, &setup_server.b_pub_bytes());
+        let PairSetupStep::Send(m3) = client.handle(&m2).unwrap() else {
+            panic!("expected M3");
+        };
+        let m3_map = Tlv8Map::parse(&m3).unwrap();
+        let a_pub = m3_map.get(tlv::PUBLIC_KEY).unwrap();
+        let m1 = m3_map.get(tlv::PROOF).unwrap();
+
+        // A different server (wrong code) must reject that M1.
+        let (wrong_server, _) = HapPairSetupSrpServer::new("999-99-999").unwrap();
+        assert!(matches!(
+            wrong_server.verify_m1_prove_m2(a_pub, m1),
+            Err(CryptoError::SrpProofMismatch)
+        ));
     }
 }

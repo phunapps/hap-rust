@@ -88,6 +88,64 @@ async fn controller_reads_and_writes_the_lightbulb() {
 }
 
 #[tokio::test]
+async fn controller_pair_setup_then_connect_and_read() {
+    // Nothing is pre-provisioned: the controller learns the accessory's LTPK and
+    // the accessory learns the controller's, purely by running Pair Setup over
+    // CoAP with the shared setup code.
+    let accessory =
+        Arc::new(ReferenceAccessory::new("11:22:33:44:55:66").with_setup_code("123-45-678"));
+    let controller = ThreadController::generate("AA:BB:CC:DD:EE:FF".into());
+    let addr = spawn(accessory).await;
+
+    // Full Pair Setup M1–M6 over CoAP, followed (inside `pair`) by a Pair Verify.
+    let (_first, pairing) = controller
+        .pair(addr, "123-45-678")
+        .await
+        .expect("Pair Setup should complete against the reference accessory");
+    assert_eq!(pairing.pairing_id, "11:22:33:44:55:66");
+
+    // The pairing persists: a fresh Pair Verify with it reconnects and reads.
+    let handle = controller
+        .connect(addr, &pairing)
+        .await
+        .expect("Pair Verify with the freshly established pairing should connect");
+    assert_eq!(
+        handle
+            .read_characteristic(ReferenceAccessory::ON_IID)
+            .await
+            .unwrap(),
+        vec![0]
+    );
+}
+
+#[tokio::test]
+async fn pair_setup_rejects_wrong_setup_code() {
+    let accessory =
+        Arc::new(ReferenceAccessory::new("11:22:33:44:55:66").with_setup_code("123-45-678"));
+    let controller = ThreadController::generate("AA:BB:CC:DD:EE:FF".into());
+    let addr = spawn(accessory).await;
+
+    assert!(
+        controller.pair(addr, "000-00-000").await.is_err(),
+        "Pair Setup must fail when the controller uses the wrong setup code"
+    );
+}
+
+#[tokio::test]
+async fn pair_setup_unavailable_without_a_setup_code() {
+    // An accessory built without a setup code refuses Pair Setup (the `/1`
+    // resource stays a 4.04), so `pair` errors out.
+    let accessory = Arc::new(ReferenceAccessory::new("11:22:33:44:55:66"));
+    let controller = ThreadController::generate("AA:BB:CC:DD:EE:FF".into());
+    let addr = spawn(accessory).await;
+
+    assert!(
+        controller.pair(addr, "123-45-678").await.is_err(),
+        "Pair Setup must be unavailable when the accessory has no setup code"
+    );
+}
+
+#[tokio::test]
 async fn pair_verify_rejects_an_unknown_controller() {
     let accessory = Arc::new(ReferenceAccessory::new("11:22:33:44:55:66"));
     let controller = ThreadController::generate("AA:BB:CC:DD:EE:FF".into());

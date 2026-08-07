@@ -12,17 +12,29 @@ use crate::error::{DutError, Result};
 
 /// HAP pairing TLV8 type numbers (HAP spec, chapter 5).
 pub(crate) mod tlv {
+    /// `kTLVType_Method` — the pairing method requested in Pair Setup M1.
+    pub(crate) const METHOD: u8 = 0x00;
     pub(crate) const IDENTIFIER: u8 = 0x01;
+    /// `kTLVType_Salt` — the 16-byte SRP salt the accessory sends in M2.
+    pub(crate) const SALT: u8 = 0x02;
     pub(crate) const PUBLIC_KEY: u8 = 0x03;
+    /// `kTLVType_Proof` — an SRP proof (`M1` from the controller, `M2` from the
+    /// accessory).
+    pub(crate) const PROOF: u8 = 0x04;
     pub(crate) const ENCRYPTED_DATA: u8 = 0x05;
     pub(crate) const STATE: u8 = 0x06;
     pub(crate) const ERROR: u8 = 0x07;
     pub(crate) const SIGNATURE: u8 = 0x0A;
 
+    /// `kTLVMethod_PairSetup` — Pair Setup without MFi/Apple authentication.
+    pub(crate) const METHOD_PAIR_SETUP: u8 = 0x00;
+
     pub(crate) const STATE_M1: u8 = 1;
     pub(crate) const STATE_M2: u8 = 2;
     pub(crate) const STATE_M3: u8 = 3;
     pub(crate) const STATE_M4: u8 = 4;
+    pub(crate) const STATE_M5: u8 = 5;
+    pub(crate) const STATE_M6: u8 = 6;
 
     /// `kTLVError_Authentication` (2) — signature/decrypt failure.
     pub(crate) const ERROR_AUTHENTICATION: u8 = 0x02;
@@ -37,9 +49,24 @@ pub(crate) const CONTROL_WRITE_INFO: &[u8] = b"Control-Write-Encryption-Key";
 pub(crate) const EVENT_SALT: &[u8] = b"Event-Salt";
 pub(crate) const EVENT_READ_INFO: &[u8] = b"Event-Read-Encryption-Key";
 
+/// Pair-Setup HKDF salt/info (HAP, chapter 5.6), identical to `hap-crypto`.
+/// Derives the M5/M6 ChaCha20-Poly1305 session key from the SRP key `K`.
+pub(crate) const PS_ENCRYPT_SALT: &[u8] = b"Pair-Setup-Encrypt-Salt";
+pub(crate) const PS_ENCRYPT_INFO: &[u8] = b"Pair-Setup-Encrypt-Info";
+/// Derives `iOSDeviceX`, the controller signing material verified in M5.
+pub(crate) const PS_CONTROLLER_SIGN_SALT: &[u8] = b"Pair-Setup-Controller-Sign-Salt";
+pub(crate) const PS_CONTROLLER_SIGN_INFO: &[u8] = b"Pair-Setup-Controller-Sign-Info";
+/// Derives `AccessoryX`, the accessory signing material produced in M6.
+pub(crate) const PS_ACCESSORY_SIGN_SALT: &[u8] = b"Pair-Setup-Accessory-Sign-Salt";
+pub(crate) const PS_ACCESSORY_SIGN_INFO: &[u8] = b"Pair-Setup-Accessory-Sign-Info";
+
 /// Pair-Verify sub-TLV encryption nonce labels.
 pub(crate) const NONCE_PV_M2: &[u8] = b"PV-Msg02";
 pub(crate) const NONCE_PV_M3: &[u8] = b"PV-Msg03";
+
+/// Pair-Setup M5/M6 sub-TLV encryption nonce labels.
+pub(crate) const NONCE_PS_M5: &[u8] = b"PS-Msg05";
+pub(crate) const NONCE_PS_M6: &[u8] = b"PS-Msg06";
 
 /// A 96-bit nonce with an 8-byte ASCII `label` in the counter region (4 zero
 /// pad bytes then the label) — matches `hap_crypto`'s `hap_nonce`.

@@ -1,6 +1,6 @@
 [package]
 name = "hap-crypto"
-version = "1.3.0"
+version = "1.4.0"
 description = "HomeKit Accessory Protocol pairing crypto: Pair Setup (SRP-6a) and Pair Verify (X25519/Ed25519); HAP-BLE broadcast key derivation and decryption."
 edition.workspace = true
 rust-version.workspace = true

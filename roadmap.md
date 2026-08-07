@@ -235,7 +235,7 @@ items checked off.
 ---
 
 ## Status checklist
-- [ ] Item 1 — Pair Setup server (SRP primitive ✅; M1–M6 orchestration + M5/M6 pending)
+- [x] Item 1 — Pair Setup server (SRP primitive ✅; M1–M6 orchestration + M5/M6 ✅)
 - [ ] Item 2 — Run over real Thread
 - [ ] Item 3 — Transport hardening (F1 separate-responses, F2 Block2)
 - [ ] Item 4 — ESP32-C6 LED firmware

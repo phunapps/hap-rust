@@ -8,11 +8,12 @@
 //! without Apple hardware. It is a test/reference tool, not a product.
 //!
 //! # Status
-//! Incremental. Implemented: the CoAP server, `identify`, and **Pair Verify**
-//! (against a pre-provisioned pairing, via [`ReferenceAccessory::provision_controller`]).
-//! Pair Setup, the secure characteristic database (read/write), and event push
-//! are being added; until then `/1` returns `4.04` and `/` (post-verify) is a
-//! stub.
+//! Incremental. Implemented: the CoAP server, `identify`, **Pair Setup** (M1–M6
+//! SRP, enabled via [`ReferenceAccessory::with_setup_code`]), **Pair Verify**
+//! (also usable against a pre-provisioned pairing via
+//! [`ReferenceAccessory::provision_controller`]), and Lightbulb `On`
+//! read/write over the encrypted session. The full characteristic database
+//! (`0x09`) and event push are not yet implemented.
 #![forbid(unsafe_code)]
 
 use std::net::SocketAddr;
@@ -35,7 +36,7 @@ pub mod error;
 pub use error::{DutError, Result};
 pub use light::{LightActuator, LoggingActuator, SerialLedActuator};
 
-use pairing::VerifyInProgress;
+use pairing::{SetupInProgress, VerifyInProgress};
 use session::AccessorySession;
 
 /// CoAP resource paths (single Uri-Path segment; the root is the empty string).
@@ -52,8 +53,13 @@ const RECV_BUF: usize = 1500;
 pub struct ReferenceAccessory {
     pairing_id: String,
     keypair: ControllerKeypair,
+    /// The setup code Pair Setup authenticates against, if this accessory
+    /// supports pairing (`None` leaves the `/1` resource a `4.04`).
+    setup_code: Option<String>,
     /// The paired controller `(id, ltpk)`, if provisioned.
     controller: Mutex<Option<(String, [u8; 32])>>,
+    /// In-progress Pair Setup state (between M1/M3/M5).
+    setup: Mutex<Option<SetupInProgress>>,
     /// In-progress Pair Verify state (between M1 and M3).
     verify: Mutex<Option<VerifyInProgress>>,
     /// The established secure session, once Pair Verify completes.
@@ -83,12 +89,24 @@ impl ReferenceAccessory {
         Self {
             pairing_id,
             keypair,
+            setup_code: None,
             controller: Mutex::new(None),
+            setup: Mutex::new(None),
             verify: Mutex::new(None),
             session: Mutex::new(None),
             on: AtomicBool::new(false),
             actuator,
         }
+    }
+
+    /// Enable Pair Setup against `setup_code` (the 8-digit code a controller
+    /// pairs with, hyphenated or bare). Without this, the `/1` Pair Setup
+    /// resource returns `4.04` and only a pre-[`provision`](Self::provision_controller)ed
+    /// controller can Pair Verify.
+    #[must_use]
+    pub fn with_setup_code(mut self, setup_code: impl Into<String>) -> Self {
+        self.setup_code = Some(setup_code.into());
+        self
     }
 
     /// The accessory's pairing identifier.
@@ -175,15 +193,89 @@ impl ReferenceAccessory {
                 (ResponseType::Changed, Vec::new())
             }
             PATH_PAIR_VERIFY => self.pair_verify(payload),
-            PATH_PAIR_SETUP => {
-                tracing::debug!("pair-setup (not yet implemented)");
-                (ResponseType::NotFound, Vec::new())
-            }
+            PATH_PAIR_SETUP => self.pair_setup(payload),
             PATH_SECURE => self.secure_pdu(payload),
             other => {
                 tracing::debug!(path = other, "unknown resource");
                 (ResponseType::NotFound, Vec::new())
             }
+        }
+    }
+
+    /// Drive Pair Setup: M1→M2 (SRP start), M3→M4 (SRP verify), or M5→M6 (the
+    /// long-term key exchange that provisions the controller as a pairing).
+    fn pair_setup(&self, payload: &[u8]) -> (ResponseType, Vec<u8>) {
+        let Some(setup_code) = self.setup_code.as_deref() else {
+            tracing::debug!("pair-setup requested but no setup code configured");
+            return (ResponseType::NotFound, Vec::new());
+        };
+        let state = Tlv8Map::parse(payload)
+            .ok()
+            .and_then(|m| m.get_u8(hap::tlv::STATE).ok().flatten());
+        match state {
+            Some(hap::tlv::STATE_M1) => match pairing::handle_setup_m1(setup_code, payload) {
+                Ok((m2, progress)) => {
+                    if let Ok(mut s) = self.setup.lock() {
+                        *s = Some(progress);
+                    }
+                    (ResponseType::Changed, m2)
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "pair-setup M1 failed");
+                    (ResponseType::BadRequest, Vec::new())
+                }
+            },
+            Some(hap::tlv::STATE_M3) => {
+                let progress = self.setup.lock().ok().and_then(|mut s| s.take());
+                let Some(SetupInProgress::AwaitingM3 { server }) = progress else {
+                    tracing::debug!("pair-setup M3 without a pending M1");
+                    return (ResponseType::BadRequest, Vec::new());
+                };
+                match pairing::handle_setup_m3(&server, payload) {
+                    Ok((m4, Some(session_key))) => {
+                        if let Ok(mut s) = self.setup.lock() {
+                            *s = Some(SetupInProgress::AwaitingM5 { session_key });
+                        }
+                        (ResponseType::Changed, m4)
+                    }
+                    Ok((m4, None)) => {
+                        tracing::warn!("pair-setup M3 rejected (wrong setup code)");
+                        (ResponseType::Changed, m4)
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "pair-setup M3 failed");
+                        (ResponseType::BadRequest, Vec::new())
+                    }
+                }
+            }
+            Some(hap::tlv::STATE_M5) => {
+                let progress = self.setup.lock().ok().and_then(|mut s| s.take());
+                let Some(SetupInProgress::AwaitingM5 { session_key }) = progress else {
+                    tracing::debug!("pair-setup M5 without a completed M3");
+                    return (ResponseType::BadRequest, Vec::new());
+                };
+                match pairing::handle_setup_m5(
+                    &session_key,
+                    &self.keypair,
+                    &self.pairing_id,
+                    payload,
+                ) {
+                    Ok((m6, Some((cid, cltpk)))) => {
+                        self.provision_controller(cid, cltpk);
+                        tracing::info!("pair-setup complete — controller provisioned");
+                        (ResponseType::Changed, m6)
+                    }
+                    Ok((m6, None)) => {
+                        tracing::warn!("pair-setup M5 rejected (auth)");
+                        (ResponseType::Changed, m6)
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "pair-setup M5 failed");
+                        (ResponseType::BadRequest, Vec::new())
+                    }
+                }
+            }
+            _ => (ResponseType::BadRequest, Vec::new()),
         }
     }
 
