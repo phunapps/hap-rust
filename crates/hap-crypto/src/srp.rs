@@ -195,6 +195,170 @@ pub(crate) fn compute_b(group: &SrpGroup, k: &BigUint, v: &BigUint, b_priv: &Big
     (((k * v) % n) + gb) % n
 }
 
+/// `M1 = H( H(N) XOR H(g) | H(I) | s | PAD(A) | PAD(B) | K )`, the controller
+/// proof — computed identically by the client (to send) and the server (to
+/// verify).
+pub(crate) fn proof_m1<D: Digest>(
+    group: &SrpGroup,
+    username: &[u8],
+    salt: &[u8],
+    a_pub: &BigUint,
+    b_pub: &BigUint,
+    session_key: &[u8],
+) -> Vec<u8> {
+    let h_n = {
+        let mut h = D::new();
+        h.update(group.modulus().to_bytes_be());
+        h.finalize()
+    };
+    let h_g = {
+        let mut h = D::new();
+        h.update(group.generator().to_bytes_be());
+        h.finalize()
+    };
+    let h_xor: Vec<u8> = h_n.iter().zip(h_g.iter()).map(|(a, b)| a ^ b).collect();
+    let h_i = {
+        let mut h = D::new();
+        h.update(username);
+        h.finalize()
+    };
+    let mut h = D::new();
+    h.update(h_xor);
+    h.update(h_i);
+    h.update(salt);
+    h.update(group.pad(a_pub));
+    h.update(group.pad(b_pub));
+    h.update(session_key);
+    h.finalize().to_vec()
+}
+
+/// `M2 = H( PAD(A) | M1 | K )`, the accessory proof — computed identically by
+/// the server (to send) and the client (to verify).
+pub(crate) fn proof_m2<D: Digest>(
+    group: &SrpGroup,
+    a_pub: &BigUint,
+    m1: &[u8],
+    session_key: &[u8],
+) -> Vec<u8> {
+    let mut h = D::new();
+    h.update(group.pad(a_pub));
+    h.update(m1);
+    h.update(session_key);
+    h.finalize().to_vec()
+}
+
+/// SRP-6a accessory (server) state for a single exchange, generic over the hash
+/// `D`. Reuses the same validated value functions as the client, so the two
+/// agree by construction; a self-check test drives a full client↔server round.
+pub(crate) struct SrpServer<D: Digest> {
+    group: SrpGroup,
+    username: Vec<u8>,
+    salt: Vec<u8>,
+    /// `v = g^x mod N` — the password verifier.
+    v: BigUint,
+    /// `b` — the server private ephemeral exponent.
+    b: BigUint,
+    /// `B = (k*v + g^b) mod N` — the server public ephemeral.
+    b_pub: BigUint,
+    _hash: core::marker::PhantomData<D>,
+}
+
+impl<D: Digest> SrpServer<D> {
+    /// Build a server from the credentials, with a caller-supplied salt and
+    /// private exponent `b` (the deterministic constructor for tests/replay).
+    pub(crate) fn with_salt_and_private(
+        group: SrpGroup,
+        username: &[u8],
+        password: &[u8],
+        salt: &[u8],
+        b: BigUint,
+    ) -> Self {
+        let x = compute_x::<D>(salt, username, password);
+        let v = compute_v(&group, &x);
+        let k = compute_k::<D>(&group);
+        let b_pub = compute_b(&group, &k, &v, &b);
+        Self {
+            group,
+            username: username.to_vec(),
+            salt: salt.to_vec(),
+            v,
+            b,
+            b_pub,
+            _hash: core::marker::PhantomData,
+        }
+    }
+
+    /// Build a server with a random salt and private `b` from the OS CSPRNG.
+    pub(crate) fn new(group: SrpGroup, username: &[u8], password: &[u8]) -> Self {
+        use rand_core::RngCore;
+        let mut salt = [0u8; 16];
+        let mut b = [0u8; 32];
+        rand_core::OsRng.fill_bytes(&mut salt);
+        rand_core::OsRng.fill_bytes(&mut b);
+        Self::with_salt_and_private(group, username, password, &salt, BigUint::from_bytes_be(&b))
+    }
+
+    /// The salt `s`.
+    pub(crate) fn salt(&self) -> &[u8] {
+        &self.salt
+    }
+
+    /// `PAD(B)` — the server public ephemeral in wire form (`len(N)` bytes).
+    pub(crate) fn b_pub_bytes(&self) -> Vec<u8> {
+        self.group.pad(&self.b_pub)
+    }
+
+    /// Compute the server premaster `S = (A * v^u)^b mod N` and session key
+    /// `K = H(PAD(S))` from the client public ephemeral `A`.
+    ///
+    /// # Errors
+    /// [`CryptoError::SrpBadParameters`] if `A` is zero mod `N`;
+    /// [`CryptoError::SrpProofMismatch`] if the scrambler `u` is zero.
+    pub(crate) fn session_key(&self, a_pub: &BigUint) -> Result<Vec<u8>> {
+        let n = self.group.modulus();
+        if (a_pub % n).is_zero() {
+            return Err(CryptoError::SrpBadParameters(
+                "client public A is zero mod N",
+            ));
+        }
+        let u = compute_u::<D>(&self.group, a_pub, &self.b_pub);
+        if u.is_zero() {
+            return Err(CryptoError::SrpProofMismatch);
+        }
+        let vu = self.v.modpow(&u, n);
+        let base = (a_pub * &vu) % n;
+        let premaster = base.modpow(&self.b, n);
+        let mut h = D::new();
+        h.update(self.group.pad(&premaster));
+        Ok(h.finalize().to_vec())
+    }
+
+    /// Verify the controller proof `M1` against `a_pub` and return the accessory
+    /// proof `M2`.
+    ///
+    /// # Errors
+    /// [`CryptoError::SrpProofMismatch`] if `M1` does not match.
+    pub(crate) fn verify_m1_prove_m2(
+        &self,
+        a_pub: &BigUint,
+        session_key: &[u8],
+        received_m1: &[u8],
+    ) -> Result<Vec<u8>> {
+        let expected_m1 = proof_m1::<D>(
+            &self.group,
+            &self.username,
+            &self.salt,
+            a_pub,
+            &self.b_pub,
+            session_key,
+        );
+        if !ct_eq(&expected_m1, received_m1) {
+            return Err(CryptoError::SrpProofMismatch);
+        }
+        Ok(proof_m2::<D>(&self.group, a_pub, received_m1, session_key))
+    }
+}
+
 /// SRP-6a controller (client) state for a single exchange, generic over the
 /// hash `D` and parameterised by the [`SrpGroup`].
 pub(crate) struct SrpClient<D: Digest> {
@@ -313,40 +477,19 @@ impl<D: Digest> SrpClient<D> {
 
     /// The controller proof `M1 = H( H(N) XOR H(g) | H(I) | s | PAD(A) | PAD(B) | K )`.
     pub(crate) fn proof_m1(&self, salt: &[u8], b_pub: &BigUint, session_key: &[u8]) -> Vec<u8> {
-        let h_n = {
-            let mut h = D::new();
-            h.update(self.group.modulus().to_bytes_be());
-            h.finalize()
-        };
-        let h_g = {
-            let mut h = D::new();
-            h.update(self.group.generator().to_bytes_be());
-            h.finalize()
-        };
-        let h_xor: Vec<u8> = h_n.iter().zip(h_g.iter()).map(|(a, b)| a ^ b).collect();
-        let h_i = {
-            let mut h = D::new();
-            h.update(&self.username);
-            h.finalize()
-        };
-
-        let mut h = D::new();
-        h.update(h_xor);
-        h.update(h_i);
-        h.update(salt);
-        h.update(self.group.pad(&self.a_pub));
-        h.update(self.group.pad(b_pub));
-        h.update(session_key);
-        h.finalize().to_vec()
+        proof_m1::<D>(
+            &self.group,
+            &self.username,
+            salt,
+            &self.a_pub,
+            b_pub,
+            session_key,
+        )
     }
 
     /// The expected accessory proof `M2 = H( PAD(A) | M1 | K )`.
     pub(crate) fn expected_m2(&self, m1: &[u8], session_key: &[u8]) -> Vec<u8> {
-        let mut h = D::new();
-        h.update(self.group.pad(&self.a_pub));
-        h.update(m1);
-        h.update(session_key);
-        h.finalize().to_vec()
+        proof_m2::<D>(&self.group, &self.a_pub, m1, session_key)
     }
 
     /// Verify the accessory proof `M2` in constant time.
@@ -575,6 +718,49 @@ mod tests {
         let mut bad = m2.clone();
         bad[0] ^= 0x01;
         assert!(client.verify_m2(&m1, &client_key, &bad).is_err());
+    }
+
+    #[test]
+    fn srp_client_and_server_agree_end_to_end() {
+        let group = hap_group();
+        let username = b"Pair-Setup";
+        let password = b"123-45-678";
+        let salt = b"\x00\x11\x22\x33\x44\x55\x66\x77\x88\x99\xaa\xbb\xcc\xdd\xee\xff";
+
+        let server = SrpServer::<Sha512>::with_salt_and_private(
+            group.clone(),
+            username,
+            password,
+            salt,
+            BigUint::from_bytes_be(&[0x42u8; 32]),
+        );
+        let client = SrpClient::<Sha512>::with_private(
+            group,
+            username,
+            BigUint::from_bytes_be(&[0x37u8; 32]),
+        )
+        .unwrap();
+
+        let b_pub = BigUint::from_bytes_be(&server.b_pub_bytes());
+        let a_pub = client.a_pub().clone();
+
+        // Session keys agree from both sides' independent computations.
+        let client_key =
+            client.session_key(&client.premaster(server.salt(), password, &b_pub).unwrap());
+        let server_key = server.session_key(&a_pub).unwrap();
+        assert_eq!(client_key, server_key, "SRP session keys must agree");
+
+        // Controller proof M1 → server verifies and returns M2 → client verifies.
+        let m1 = client.proof_m1(server.salt(), &b_pub, &client_key);
+        let m2 = server.verify_m1_prove_m2(&a_pub, &server_key, &m1).unwrap();
+        client.verify_m2(&m1, &client_key, &m2).unwrap();
+
+        // A tampered M1 is rejected by the server.
+        let mut bad = m1;
+        bad[0] ^= 0x01;
+        assert!(server
+            .verify_m1_prove_m2(&a_pub, &server_key, &bad)
+            .is_err());
     }
 
     #[test]
