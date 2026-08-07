@@ -324,6 +324,37 @@ decrypted). The body is committed as `test-vectors/thread-coap/onvis-sms2-0x09.b
 — the vector for the pending `0x09`→`hap-model` tree decode. The try-each
 candidate loop again skipped two stale dead SRP addresses and hit the live one.
 
-**Next (open):** events over Thread (subscribe `0x0B` + an inbound CoAP event
-server for the accessory's encrypted PUTs), then the `0x09` tree decode, sensor
-reads, and the user-gated publish.
+### `0x09` database decodes; MotionDetected EVENTS over Thread — VALIDATED (2026-08-07)
+
+- **The captured `0x09` body decodes cleanly.** aiohomekit's `Pdu09Database.decode`
+  parsed `onvis-sms2-0x09.bin` into the full SMS2 database — 1 accessory, all its
+  services/characteristics with the expected HAP types: **MotionDetected iid 3074**,
+  CurrentTemperature 2723, CurrentRelativeHumidity 2643, BatteryLevel 225,
+  StatusLowBattery 227. (The Rust `0x09`→`hap-model` tree decode is still to be
+  built; this confirms the bytes are correct and gave us the iids.)
+
+- **Events work over Thread — live on the real SMS2.** HAP-over-Thread events are
+  accessory-pushed CoAP PUTs (not Observe), decrypted on a third "event" channel.
+  Built `CoapTransport::recv_event` (receive the PUT, ACK `2.03 Valid`),
+  `session::open_event`, `pdu::decode_events` (record stream
+  `reserved‖iid‖len‖body`, value from the `0x01` TLV), and
+  `ThreadAccessory::subscribe`/`next_event`. The `onvis_thread` example
+  (commission → verify → read `0x09` → subscribe iid 3074 → watch) produced, on a
+  wave of the hand:
+
+  ```
+  EVENT #1: iid=3074 value=[1] (motion=true)
+  EVENT #2: iid=3074 value=[0] (motion=false)
+  Received 2 event(s).
+  ```
+
+  Both the detect and the clear pushed over the 802.15.4 radio and decrypted —
+  proving the event channel and its independent counter (event #2 opened at
+  counter 1). The example also gained pairing persistence + an `ONVIS_WATCH_ONLY`
+  mode so events can be re-watched without another factory reset.
+
+**End-to-end on the real Onvis SMS2 over Thread is complete:** commission (BLE) →
+Pair Verify (Thread) → read `0x09` → subscribe → live MotionDetected events.
+
+**Still open:** the Rust `0x09`→`hap-model` tree decode (the vector is captured and
+aiohomekit-verified), and the **user-gated publish**.
