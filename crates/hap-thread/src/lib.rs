@@ -11,13 +11,13 @@
 //!   framing HAP-BLE uses), including the batched form CoAP relies on.
 //! - CoAP transport ([`coap`]) — POST HAP payloads to the accessory's CoAP
 //!   resources (`/0` identify, `/1` pair-setup, `/2` pair-verify, `/` for all
-//!   encrypted post-verify traffic) behind a swappable [`coap::CoapTransport`]
+//!   encrypted post-verify traffic) behind a swappable `coap::CoapTransport`
 //!   seam with a real UDP implementation and a mock for tests.
 //! - Secure session ([`session`]) — the post-Pair-Verify ChaCha20-Poly1305
 //!   record layer (three directional keys, empty AAD, whole-payload framing).
 //!
 //! The pairing and session-key cryptography lives in [`hap_crypto`]; the
-//! accessory data model in [`hap_model`]; persistence in [`hap_pairing`]. This
+//! accessory data model in [`hap_model`]; persistence in `hap_pairing`. This
 //! crate reuses all of them and adds only the CoAP-specific transport.
 //!
 //! # Scope

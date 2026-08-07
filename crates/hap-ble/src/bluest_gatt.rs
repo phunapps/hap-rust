@@ -383,7 +383,7 @@ impl AdvertSource for BluestConnection {
     /// best-effort: frames are dropped when the receiver falls behind, not
     /// queued unboundedly, to ensure the task never blocks on backpressure
     /// and can always respond to a pause request. While a connect owns the
-    /// radio (the [`ScanGate`] is paused) the task drops its scan stream and
+    /// radio (the `ScanGate` is paused) the task drops its scan stream and
     /// restarts it on resume. The task stops for good when the receiver is
     /// dropped or the adapter's scan stream ends.
     ///

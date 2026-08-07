@@ -4,7 +4,7 @@
 //! over BLE, reusing the pairing crypto from [`hap_crypto`], the TLV8 codec
 //! from [`hap_tlv8`], and the attribute model from [`hap_model`].
 //!
-//! The transport-unified API lives in [`hap_controller`] (feature `ble`);
+//! The transport-unified API lives in `hap_controller` (feature `ble`);
 //! this crate remains usable standalone.
 #![forbid(unsafe_code)]
 

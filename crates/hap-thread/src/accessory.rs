@@ -1,7 +1,7 @@
 //! The connected-accessory handle: secure characteristic I/O over CoAP.
 //!
-//! After Pair Verify, all traffic is HAP PDUs encrypted by the [`CoapSession`]
-//! and POSTed to the root resource `/`. [`SecureCoapConnection::post_secure`]
+//! After Pair Verify, all traffic is HAP PDUs encrypted by the `CoapSession`
+//! and POSTed to the root resource `/`. `SecureCoapConnection::post_secure`
 //! is the single choke point (seal → POST → open); [`ThreadAccessory`] layers
 //! characteristic reads/writes and the raw database read on top.
 //!

@@ -9,10 +9,10 @@
 //! - The length field is **always present**, even for an empty body (BLE omits
 //!   it). This matches aiohomekit's `encode_pdu`
 //!   (`struct.pack("<BBBHH", 0, opcode, tid, iid, len) + data`).
-//! - Requests are commonly **batched** ([`encode_all`]): several PDUs are
+//! - Requests are commonly **batched** (`encode_all`): several PDUs are
 //!   concatenated in one CoAP payload, each tagged with its list index as the
 //!   transaction id, and the response is likewise several concatenated PDUs
-//!   ([`decode_all`]).
+//!   (`decode_all`).
 //!
 //! There is no fragmentation here — CoAP handles payloads larger than a single
 //! frame via block-wise transfer, so the PDU layer treats each request and
@@ -84,7 +84,7 @@ pub(crate) fn encode_request(op: OpCode, tid: u8, iid: u16, body: &[u8]) -> Vec<
 
 /// Encode several PDUs into one batched request payload. Each entry is
 /// `(iid, body)`; the transaction id is the entry's index (matching
-/// aiohomekit's `encode_all_pdus`), so [`decode_all`] can be started at tid `0`.
+/// aiohomekit's `encode_all_pdus`), so `decode_all` can be started at tid `0`.
 pub(crate) fn encode_all(op: OpCode, entries: &[(u16, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
     debug_assert!(
@@ -219,7 +219,7 @@ fn decode_one(pdu: &[u8]) -> Result<(Response, usize)> {
 }
 
 /// Decode a single response PDU, requiring it to consume the whole slice. Used
-/// by tests; the transport path always uses the batched [`decode_all`].
+/// by tests; the transport path always uses the batched `decode_all`.
 ///
 /// # Errors
 /// Returns [`ThreadError::MalformedPdu`] as [`decode_one`] does.
@@ -234,7 +234,7 @@ pub(crate) fn decode_response(pdu: &[u8]) -> Result<Response> {
 /// # Errors
 /// Returns [`ThreadError::MalformedPdu`] if any PDU in the batch is malformed or
 /// its transaction id does not match its position (the batch is tagged
-/// `tid = index`, as [`encode_all`] emits and aiohomekit's `decode_all_pdus`
+/// `tid = index`, as `encode_all` emits and aiohomekit's `decode_all_pdus`
 /// checks) — results are position-aligned with the request, so a misordered
 /// batch must not be accepted silently.
 pub(crate) fn decode_all(pdu: &[u8]) -> Result<Vec<Response>> {

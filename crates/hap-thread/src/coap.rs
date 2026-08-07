@@ -2,10 +2,10 @@
 //!
 //! HAP-over-Thread uses four CoAP resources, all POST: `/0` identify, `/1`
 //! pair-setup, `/2` pair-verify, and `/` (the root) for every encrypted
-//! post-verify PDU. The [`CoapTransport`] trait abstracts a single
+//! post-verify PDU. The `CoapTransport` trait abstracts a single
 //! request/response so the pairing and session layers are testable without a
-//! socket; [`UdpCoapTransport`] is the real UDP/IPv6 implementation and
-//! [`MockCoapTransport`] a queue-driven test double.
+//! socket; `UdpCoapTransport` is the real UDP/IPv6 implementation and
+//! `MockCoapTransport` a queue-driven test double.
 //!
 //! The response *code* is returned alongside the payload because it is
 //! load-bearing: `2.04 Changed` is success and `4.04 Not Found` means the
@@ -387,9 +387,12 @@ impl CoapTransport for UdpCoapTransport {
     }
 }
 
-/// A queue-driven [`CoapTransport`] test double: pre-load the responses the
+/// A queue-driven `CoapTransport` test double: pre-load the responses the
 /// accessory would return, drive a flow, then inspect the recorded requests.
 #[cfg(any(test, feature = "test-support"))]
+// Under the `test-support` feature (but not this crate's own tests) the mock is
+// compiled for downstream consumers, so it reads as dead code here.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct MockCoapTransport {
     responses: std::sync::Mutex<std::collections::VecDeque<CoapResponse>>,
     requests: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
@@ -397,6 +400,7 @@ pub(crate) struct MockCoapTransport {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+#[cfg_attr(not(test), allow(dead_code))]
 impl MockCoapTransport {
     /// A mock with no queued responses.
     pub(crate) fn new() -> Self {
