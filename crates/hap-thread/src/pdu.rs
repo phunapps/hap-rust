@@ -138,6 +138,50 @@ impl Response {
     }
 }
 
+/// Decode a stream of CoAP event records pushed by the accessory.
+///
+/// Each record is `reserved(1)=0 ‖ iid(u16 LE) ‖ len(u16 LE) ‖ body`, where
+/// `body` is a param TLV8 whose `Value` (`0x01`) entry is the characteristic's
+/// new value (mirrors aiohomekit's `decode_pdu_03`). Returns `(iid, value)` per
+/// record.
+///
+/// # Errors
+/// [`ThreadError::MalformedPdu`] if a record is truncated; [`ThreadError::Tlv8`]
+/// if a record body is not valid TLV8.
+pub(crate) fn decode_events(payload: &[u8]) -> Result<Vec<(u16, Vec<u8>)>> {
+    let mut out = Vec::new();
+    let mut off = 0;
+    while off < payload.len() {
+        let rest = &payload[off..];
+        if rest.len() < 5 {
+            return Err(ThreadError::MalformedPdu(
+                "event record shorter than its 5-byte header",
+            ));
+        }
+        // rest[0] is a reserved byte (0).
+        let iid = u16::from_le_bytes([rest[1], rest[2]]);
+        let len = usize::from(u16::from_le_bytes([rest[3], rest[4]]));
+        let end = 5 + len;
+        if rest.len() < end {
+            return Err(ThreadError::MalformedPdu(
+                "event record body shorter than declared",
+            ));
+        }
+        let body = &rest[5..end];
+        let value = if body.is_empty() {
+            Vec::new()
+        } else {
+            let map = hap_tlv8::Tlv8Map::parse(body)?;
+            map.get(param::VALUE)
+                .map(<[u8]>::to_vec)
+                .unwrap_or_default()
+        };
+        out.push((iid, value));
+        off += end;
+    }
+    Ok(out)
+}
+
 /// Decode one response PDU from the front of `pdu`, returning the response and
 /// the number of bytes it consumed (`5 + body_len`).
 ///
@@ -319,5 +363,33 @@ mod tests {
             body: Vec::new(),
         };
         assert_eq!(resp.value().unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn decode_events_parses_a_two_record_stream() {
+        // Record A: iid 3074 (0x0C02), value TLV(0x01)=0x01.
+        // Record B: iid 2723 (0x0AA3), value TLV(0x01)=[0xCD, 0xCC, 0x0C, 0x42].
+        let mut payload = vec![0x00, 0x02, 0x0c, 0x03, 0x00, 0x01, 0x01, 0x01];
+        payload.extend_from_slice(&[
+            0x00, 0xa3, 0x0a, 0x06, 0x00, 0x01, 0x04, 0xcd, 0xcc, 0x0c, 0x42,
+        ]);
+        let events = decode_events(&payload).unwrap();
+        assert_eq!(
+            events,
+            vec![
+                (3074u16, vec![0x01u8]),
+                (2723u16, vec![0xcd, 0xcc, 0x0c, 0x42]),
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_events_rejects_a_truncated_record() {
+        // Declares a 4-byte body but only 1 byte follows.
+        let payload = vec![0x00, 0x02, 0x0c, 0x04, 0x00, 0x01];
+        assert!(matches!(
+            decode_events(&payload),
+            Err(ThreadError::MalformedPdu(_))
+        ));
     }
 }

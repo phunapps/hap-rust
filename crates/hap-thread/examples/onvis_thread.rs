@@ -22,6 +22,7 @@ use hap_crypto::ControllerKeypair;
 use hap_thread::ThreadController;
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)] // a linear bring-up script reads clearest inline
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -131,7 +132,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::fs::write(out, &db).is_ok() {
         println!("saved raw 0x09 body to {out} (for the future tree-decode vector)");
     }
-    println!("OK — commissioned over BLE and read over Thread with one identity.");
+
+    // ---- Subscribe to MotionDetected and watch for events over Thread ----
+    // iid 3074 is the SMS2's MotionDetected characteristic (decoded from the
+    // 0x09 database); override with the 2nd CLI arg for a different accessory.
+    let motion_iid: u16 = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3074);
+    println!("Subscribing to iid={motion_iid} (MotionDetected)...");
+    handle.subscribe(motion_iid).await?;
+    println!("Subscribed. Watching for events for 120s — trigger motion now...");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    let mut count = 0u32;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, handle.next_event()).await {
+            Ok(Ok(events)) => {
+                for (iid, value) in events {
+                    count += 1;
+                    let detected = value.first().copied().unwrap_or(0) != 0;
+                    println!("EVENT: iid={iid} value={value:?} (motion={detected})");
+                }
+            }
+            Ok(Err(e)) => {
+                println!("event error: {e}");
+                break;
+            }
+            Err(_) => break, // 120s deadline
+        }
+    }
+    println!("Received {count} event(s).");
+    println!("OK — commissioned over BLE, read 0x09, and watched events over Thread.");
     Ok(())
 }
 

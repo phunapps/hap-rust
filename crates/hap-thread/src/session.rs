@@ -30,13 +30,10 @@ fn counter_nonce(counter: u64) -> [u8; 12] {
 pub(crate) struct CoapSession {
     read_key: [u8; 32],
     write_key: [u8; 32],
-    // The event channel is derived and ready now; it is consumed by the inbound
-    // event server (MT-2) and exercised by tests here.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The CoAP-only reverse channel key for accessory-pushed events.
     event_key: [u8; 32],
     send_ctr: u64,
     recv_ctr: u64,
-    #[cfg_attr(not(test), allow(dead_code))]
     event_ctr: u64,
 }
 
@@ -83,7 +80,6 @@ impl CoapSession {
     ///
     /// # Errors
     /// [`crate::ThreadError::Crypto`] if authentication fails.
-    #[cfg_attr(not(test), allow(dead_code))] // consumed by the event server (MT-2)
     pub(crate) fn open_event(&mut self, ciphertext_and_tag: &[u8]) -> Result<Vec<u8>> {
         let nonce = counter_nonce(self.event_ctr);
         let pt = chacha20poly1305_open(&self.event_key, &nonce, &[], ciphertext_and_tag)?;

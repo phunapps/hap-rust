@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use coap_lite::block_handler::BlockValue;
-use coap_lite::{CoapOption, MessageClass, MessageType, Packet, RequestType};
+use coap_lite::{CoapOption, MessageClass, MessageType, Packet, RequestType, ResponseType};
 use tokio::net::UdpSocket;
 
 use crate::error::{Result, ThreadError};
@@ -95,6 +95,14 @@ pub(crate) trait CoapTransport: Send + Sync {
     /// # Errors
     /// Transport, timeout, or malformed-response failures.
     async fn post(&self, path: &str, payload: &[u8]) -> Result<CoapResponse>;
+
+    /// Await one accessory-initiated event PUT to the root resource, acknowledge
+    /// it (`2.03 Valid`), and return its still-encrypted payload for the session
+    /// to decrypt on the event channel.
+    ///
+    /// # Errors
+    /// Transport failures.
+    async fn recv_event(&self) -> Result<Vec<u8>>;
 }
 
 /// A real CoAP client over a connected UDP/IPv6 socket.
@@ -291,6 +299,32 @@ fn block2_of(packet: &Packet) -> Option<BlockValue> {
 
 #[async_trait]
 impl CoapTransport for UdpCoapTransport {
+    async fn recv_event(&self) -> Result<Vec<u8>> {
+        let mut buf = vec![0u8; RECV_BUF];
+        loop {
+            let n = self.socket.recv(&mut buf).await?;
+            warn_if_truncated(n);
+            let req = decode(&buf[..n])?;
+            // Only an accessory-initiated CON request (its event PUT) is of
+            // interest here; ignore stray ACKs/empties.
+            if req.header.get_type() != MessageType::Confirmable || is_empty(&req) {
+                continue;
+            }
+            // Acknowledge the PUT: a piggy-backed 2.03 Valid echoing its
+            // message-id and token (what aiohomekit's EventResource replies).
+            let mut ack = Packet::new();
+            ack.header.set_type(MessageType::Acknowledgement);
+            ack.header.code = MessageClass::Response(ResponseType::Valid);
+            ack.header.message_id = req.header.message_id;
+            ack.set_token(req.get_token().to_vec());
+            let bytes = ack
+                .to_bytes()
+                .map_err(|e| ThreadError::Coap(format!("could not encode event ACK: {e}")))?;
+            self.socket.send(&bytes).await?;
+            return Ok(req.payload);
+        }
+    }
+
     async fn post(&self, path: &str, payload: &[u8]) -> Result<CoapResponse> {
         let (request, token) = self.build_post(path, payload);
         let resp = self.exchange(&request, &token).await?;
@@ -359,6 +393,7 @@ impl CoapTransport for UdpCoapTransport {
 pub(crate) struct MockCoapTransport {
     responses: std::sync::Mutex<std::collections::VecDeque<CoapResponse>>,
     requests: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+    events: std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -368,6 +403,14 @@ impl MockCoapTransport {
         Self {
             responses: std::sync::Mutex::new(std::collections::VecDeque::new()),
             requests: std::sync::Mutex::new(Vec::new()),
+            events: std::sync::Mutex::new(std::collections::VecDeque::new()),
+        }
+    }
+
+    /// Queue an (already-encrypted) event payload for [`CoapTransport::recv_event`].
+    pub(crate) fn queue_event(&self, payload: Vec<u8>) {
+        if let Ok(mut q) = self.events.lock() {
+            q.push_back(payload);
         }
     }
 
@@ -406,13 +449,20 @@ impl CoapTransport for MockCoapTransport {
             .and_then(|mut q| q.pop_front())
             .ok_or_else(|| ThreadError::Coap("mock: no queued response".into()))
     }
+
+    async fn recv_event(&self) -> Result<Vec<u8>> {
+        self.events
+            .lock()
+            .ok()
+            .and_then(|mut q| q.pop_front())
+            .ok_or_else(|| ThreadError::Coap("mock: no queued event".into()))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use coap_lite::ResponseType;
     use tokio::net::UdpSocket;
 
     /// Build an empty CoAP ACK (`0.00`) echoing `message_id`, carrying no token.

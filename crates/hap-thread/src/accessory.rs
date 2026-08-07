@@ -52,6 +52,22 @@ impl SecureCoapConnection {
             .changed_payload()?;
         session.open_response(&response)
     }
+
+    /// Await one accessory-pushed event: receive its encrypted PUT, decrypt it on
+    /// the event channel, and return the `(iid, value)` records it carries.
+    ///
+    /// # Errors
+    /// Transport failures; [`ThreadError::Crypto`] if the event fails to
+    /// authenticate (an event-counter desync); [`ThreadError`] if the record
+    /// stream is malformed.
+    pub(crate) async fn next_event(&self) -> Result<Vec<(u16, Vec<u8>)>> {
+        let encrypted = self.transport.recv_event().await?;
+        let plaintext = {
+            let mut session = self.session.lock().await;
+            session.open_event(&encrypted)?
+        };
+        pdu::decode_events(&plaintext)
+    }
 }
 
 /// A connected HAP-over-Thread accessory: read and write its characteristics.
@@ -142,6 +158,55 @@ impl ThreadAccessory {
             Err(ThreadError::PduStatus(first.status))
         }
     }
+
+    /// Subscribe to a characteristic's event notifications (a `0x0B` PDU). After
+    /// this, the accessory pushes an encrypted PUT whenever the value changes;
+    /// collect them with [`next_event`](Self::next_event).
+    ///
+    /// # Errors
+    /// [`ThreadError::PduStatus`] if the accessory rejects the subscription, plus
+    /// transport/crypto/PDU failures.
+    pub async fn subscribe(&self, iid: u16) -> Result<()> {
+        let req = pdu::encode_all(OpCode::Subscribe, &[(iid, Vec::new())]);
+        let resp = self.conn.post_secure(&req).await?;
+        let first = pdu::decode_all(&resp)?
+            .into_iter()
+            .next()
+            .ok_or(ThreadError::MalformedPdu("empty subscribe response"))?;
+        if first.status == 0 {
+            Ok(())
+        } else {
+            Err(ThreadError::PduStatus(first.status))
+        }
+    }
+
+    /// Unsubscribe from a characteristic's events (a `0x0C` PDU).
+    ///
+    /// # Errors
+    /// [`ThreadError::PduStatus`] if the accessory rejects it, plus
+    /// transport/crypto/PDU failures.
+    pub async fn unsubscribe(&self, iid: u16) -> Result<()> {
+        let req = pdu::encode_all(OpCode::Unsubscribe, &[(iid, Vec::new())]);
+        let resp = self.conn.post_secure(&req).await?;
+        let first = pdu::decode_all(&resp)?
+            .into_iter()
+            .next()
+            .ok_or(ThreadError::MalformedPdu("empty unsubscribe response"))?;
+        if first.status == 0 {
+            Ok(())
+        } else {
+            Err(ThreadError::PduStatus(first.status))
+        }
+    }
+
+    /// Await the next event the accessory pushes, returning `(iid, value)` for
+    /// each characteristic that changed. Blocks until an event arrives.
+    ///
+    /// # Errors
+    /// Transport/crypto failures, or a malformed event record stream.
+    pub async fn next_event(&self) -> Result<Vec<(u16, Vec<u8>)>> {
+        self.conn.next_event().await
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +254,12 @@ mod tests {
                 code: (2, 4),
                 payload: sealed,
             })
+        }
+
+        async fn recv_event(&self) -> Result<Vec<u8>> {
+            // This loopback models request/response only; event delivery is tested
+            // separately via MockCoapTransport::queue_event.
+            Err(ThreadError::Coap("loopback: no events".into()))
         }
     }
 
@@ -259,5 +330,38 @@ mod tests {
         assert_eq!(r.tid, 3);
         assert_eq!(r.status, 0);
         assert_eq!(r.body, vec![0xEE]);
+    }
+
+    #[tokio::test]
+    async fn subscribe_sends_a_0x0b_pdu_and_accepts_success() {
+        fn respond(req: &[u8]) -> Vec<u8> {
+            assert_eq!(req[1], 0x0B, "subscribe must use opcode 0x0B");
+            encode_ok_response(0, &[])
+        }
+        let acc = connected(respond);
+        assert!(acc.subscribe(3074).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn next_event_decrypts_and_parses_records() {
+        use crate::coap::MockCoapTransport;
+        // The event key aiohomekit derives from shared secret 00..1f.
+        let event_key = hex32("37c286d4ae336aeead7048a00b7762b642653d0e8aa691d4d3b7f0cf621db796");
+        let session = CoapSession::new(&control_keys(), event_key);
+
+        // One event record for iid 3074 (0x0C02): reserved, iid LE, len=3 LE,
+        // body = a value TLV8 (type 0x01, len 1, value 0x01), sealed at event
+        // counter 0 (nonce all-zero).
+        let plaintext = vec![0x00, 0x02, 0x0c, 0x03, 0x00, 0x01, 0x01, 0x01];
+        let sealed =
+            hap_crypto::aead::chacha20poly1305_seal(&event_key, &[0u8; 12], &[], &plaintext)
+                .unwrap();
+
+        let mock = Arc::new(MockCoapTransport::new());
+        mock.queue_event(sealed);
+        let acc = ThreadAccessory::new(SecureCoapConnection::new(mock, session));
+
+        let events = acc.next_event().await.unwrap();
+        assert_eq!(events, vec![(3074u16, vec![0x01u8])]);
     }
 }
