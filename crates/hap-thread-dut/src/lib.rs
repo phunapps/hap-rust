@@ -33,7 +33,7 @@ mod session;
 pub mod error;
 
 pub use error::{DutError, Result};
-pub use light::{LightActuator, LoggingActuator};
+pub use light::{LightActuator, LoggingActuator, SerialLedActuator};
 
 use pairing::VerifyInProgress;
 use session::AccessorySession;
