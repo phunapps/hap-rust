@@ -74,7 +74,7 @@ pub async fn discover(timeout: Duration) -> Result<Vec<DiscoveredAccessory>> {
             Err(_elapsed) => break,
             Ok(Err(_recv_err)) => break,
             Ok(Ok(ServiceEvent::ServiceResolved(info))) => {
-                // mdns-sd 0.20: ServiceResolved carries Box<ResolvedService>.
+                // mdns-sd 0.21: ServiceResolved carries Box<ResolvedService>.
                 // get_properties() returns &TxtProperties (iterable via .iter()).
                 // Each TxtProperty exposes .key() and .val_str().
                 let txt: HashMap<String, String> = info

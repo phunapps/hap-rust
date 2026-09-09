@@ -8,6 +8,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## hap-transport 1.3.1 / hap-thread 0.4.1 — 2026-09-09 — mDNS parser hardening (mdns-sd 0.21)
+
+Both crates browse mDNS with `mdns-sd`, which parses every multicast packet that
+arrives on the LAN. The pinned 0.20 line had two parser defects that a malformed
+packet from any host on the network could reach:
+
+- **Out-of-bounds panic on a truncated HINFO record** (mdns-sd 0.21.2, found by
+  fuzzing): `read_char_string` read its length octet without checking the octet
+  was present, indexing past the end of the packet buffer. A single malformed
+  HINFO record could panic the mDNS daemon thread, ending discovery for the
+  process. Nothing in `hap-rust` reads HINFO records — the panic happened in the
+  packet parser, before any HAP-level filtering, so browsing `_hap._tcp` or
+  `_hap._udp` was enough to be exposed.
+- **A malformed record discarded the whole packet** (mdns-sd 0.21.1): name
+  parsing and name-compression handling now skip only the offending record, so
+  one bad record no longer drops the valid `_hap.` answers travelling with it.
+
+No RUSTSEC advisory, and neither defect affects a well-formed network. This is a
+robustness release: a hostile or simply buggy responder should not be able to
+stop a controller from discovering accessories.
+
+There is **no API change in either crate** — the bump is the `mdns-sd`
+dependency only, which is entirely internal to `discovery.rs` in both crates.
+Neither crate exposes an `mdns-sd` type in its public API, so consumers need no
+source changes.
+
+### Why a republish was needed
+
+`mdns-sd` is a transitive dependency pinned as `^0.20` in the published
+manifests, so no downstream consumer could move it themselves
+(`cargo update --precise` cannot cross a semver-incompatible boundary). Shipping
+new patch releases of the two crates that carry the pin is the only delivery
+path.
+
+### `hap-transport` 1.3.1
+- **Changed:** `mdns-sd` dependency `0.20` → `0.21` (resolves 0.21.3).
+
+### `hap-thread` 0.4.1
+- **Changed:** `mdns-sd` dependency `0.20` → `0.21` (resolves 0.21.3).
+
+### Notes on the 0.21 upgrade
+
+- mdns-sd 0.21.0 reduced the **maximum outgoing packet size** from 8972 to 1452
+  bytes (Ethernet MTU, per RFC 6762 §17). This does not affect `hap-rust`:
+  both crates are browse-only — neither registers an mDNS service — so the only
+  packets they send are service queries of a few dozen bytes. Accessory TXT
+  records are *inbound*, and the receive-side limits were not reduced (they are
+  tracked separately at 8972 bytes for IPv4 and 8952 for IPv6).
+- mdns-sd 0.21 moved internally from `flume` 0.11 to 0.12. No `hap-rust`
+  manifest depends on `flume`; it enters the tree only through `mdns-sd`, and
+  the only use of its receiver is an inferred `.recv_async()` call in each
+  crate's `discovery.rs`. `Cargo.lock` carries exactly one `flume` (0.12.0) and
+  one `mdns-sd` (0.21.3).
+
 ## hap-controller 3.1.0 / hap-transport 1.3.0 / hap-ble 0.8.0 — 2026-08-08 — Early-exit discovery
 
 Discovery no longer has to wait out the full window: a consumer looking for one
