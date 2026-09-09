@@ -77,13 +77,20 @@ fn category_ignores_version_and_reserved_bits() {
         }
         String::from_utf8(buf.to_vec()).unwrap()
     }
+    // Written in decimal on purpose: this is the setup code the assertion below
+    // expects to read back as the string "12345678". Bound to a name so the
+    // decimal form survives without tripping `clippy::decimal_bitwise_operands`.
+    let setup_code: u64 = 12_345_678;
     let value: u64 = (0b11 << 39) // version/reserved bits a vendor may set
         | (10u64 << 31) // category: sensor
         | (0x4 << 27) // flags: ble
-        | 12_345_678; // setup code
+        | setup_code;
     let p = SetupPayload::parse(&format!("X-HM://{}", to_base36_9(value))).unwrap();
     assert_eq!(p.setup_code, "12345678");
-    assert_eq!(p.category, 10, "bits 39+ must not leak into the 8-bit category");
+    assert_eq!(
+        p.category, 10,
+        "bits 39+ must not leak into the 8-bit category"
+    );
     assert!(p.flags.ble);
 }
 
