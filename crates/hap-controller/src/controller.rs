@@ -63,7 +63,7 @@ pub struct HapController {
     store: Arc<dyn PairingStore + Send + Sync>,
     keypair: ControllerKeypair,
     /// Snapshot of the stored accessory ids, kept in sync by `pair`/
-    /// `remove_pairing` so the synchronous [`paired`](Self::paired) accessor
+    /// `remove_pairing`/`forget_pairing` so the synchronous [`paired`](Self::paired) accessor
     /// need not touch the async store. Assumes this process is the sole writer
     /// of the store (the v1.0 single-controller model).
     cached_ids: Vec<String>,
@@ -307,8 +307,9 @@ impl HapController {
 
     /// The accessory ids of every pairing currently in the store.
     ///
-    /// This is a synchronous snapshot maintained by [`pair`](Self::pair) and
-    /// [`remove_pairing`](Self::remove_pairing); it assumes this controller is
+    /// This is a synchronous snapshot maintained by [`pair`](Self::pair),
+    /// [`remove_pairing`](Self::remove_pairing), and
+    /// [`forget_pairing`](Self::forget_pairing); it assumes this controller is
     /// the only writer of the underlying store.
     pub fn paired(&self) -> Vec<String> {
         self.cached_ids.clone()
@@ -535,6 +536,11 @@ impl HapController {
     /// Remove a pairing both from the accessory (`/pairings` remove of this
     /// controller's own identity) and from the local store.
     ///
+    /// The remote removal runs first. If it fails, nothing local is changed:
+    /// the pairing stays in the store and in [`paired`](Self::paired), so the
+    /// call can be retried. To drop the local record anyway, follow up with
+    /// [`forget_pairing`](Self::forget_pairing).
+    ///
     /// # Errors
     ///
     /// [`HapError::UnknownAccessory`] if not paired; [`HapError::Transport`] /
@@ -572,6 +578,46 @@ impl HapController {
         }
         self.store.delete_pairing(&canonical_id).await?;
         self.cached_ids.retain(|id| id != &canonical_id);
+        Ok(())
+    }
+
+    /// Forget a pairing locally WITHOUT contacting the accessory: delete it
+    /// from the store and drop it from the [`paired`](Self::paired) snapshot.
+    ///
+    /// Use it after [`remove_pairing`](Self::remove_pairing) has failed, when
+    /// the caller has decided to give up on the accessory anyway (it went
+    /// unreachable, or a sleepy BLE accessory dropped off right after Pair
+    /// Setup). **The accessory still trusts this controller** and will need a
+    /// factory reset before it can be paired again, so prefer `remove_pairing`
+    /// whenever the accessory can be reached.
+    ///
+    /// `accessory_id` resolves exactly as it does for `remove_pairing`:
+    /// ASCII-case-insensitively, with the BLE device-id fallback. Idempotent:
+    /// an id with no stored pairing is `Ok(())`, and any stale `paired()` entry
+    /// for it is dropped.
+    ///
+    /// An [`AccessoryHandle`] or sleepy watch already open for the accessory
+    /// is not closed by this call; drop it yourself.
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::Pairing`] if the store cannot be read or the record cannot
+    /// be deleted; in that case the `paired()` snapshot is left unchanged.
+    pub async fn forget_pairing(&mut self, accessory_id: &str) -> Result<()> {
+        match self.load_stored(accessory_id).await {
+            Ok(stored) => {
+                let canonical_id = stored.pairing.pairing_id;
+                self.store.delete_pairing(&canonical_id).await?;
+                self.cached_ids.retain(|id| id != &canonical_id);
+            }
+            // Nothing in the store to delete. The snapshot can still list the
+            // id if the record was removed behind this controller's back.
+            Err(HapError::UnknownAccessory(_)) => {
+                self.cached_ids
+                    .retain(|id| !id.eq_ignore_ascii_case(accessory_id));
+            }
+            Err(e) => return Err(e),
+        }
         Ok(())
     }
 

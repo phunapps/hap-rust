@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## hap-controller 3.2.0 — 2026-10-01 — Local-only `forget_pairing`
+
+`remove_pairing` unpairs on the accessory first and only then deletes the local
+record, so when the accessory cannot be reached the pairing stays in the store.
+That order is deliberate (do not forget a controller the accessory still
+trusts), but it left a caller who had decided to give up on an unreachable
+accessory with no way to drop the record: deleting through the `PairingStore`
+directly leaves `paired()` listing the id until the process restarts. Additive;
+no existing behavior changes.
+
+- **New:** `HapController::forget_pairing(accessory_id)` — deletes the pairing
+  from the store and drops it from the `paired()` snapshot **without contacting
+  the accessory**. Meant for use after a failed `remove_pairing`. The accessory
+  still trusts this controller and needs a factory reset before it can be
+  paired again. The id resolves as it does for `remove_pairing`
+  (ASCII-case-insensitive, with the BLE device-id fallback). Idempotent: an id
+  with no stored pairing is `Ok(())`, and a stale `paired()` entry for it (the
+  record was deleted behind the controller's back) is dropped too. Works for IP
+  and BLE records, with or without the `ble` feature.
+- **Docs:** `remove_pairing` now states the guarantee callers rely on — on
+  `Err`, nothing local was changed. A regression test pins it.
+
 ## hap-transport 1.3.1 / hap-thread 0.4.1 — 2026-09-09 — mDNS parser hardening (mdns-sd 0.21)
 
 Both crates browse mDNS with `mdns-sd`, which parses every multicast packet that

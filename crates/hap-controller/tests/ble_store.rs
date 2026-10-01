@@ -84,6 +84,29 @@ async fn store_lookup_falls_back_to_ble_device_id_bytes() {
 }
 
 #[tokio::test]
+async fn forget_pairing_resolves_the_ble_device_id_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p.json");
+    let store = JsonFileStore::new(path.clone());
+    let observer = JsonFileStore::new(path);
+    // As above: only the device-id-bytes fallback can find this record, and
+    // the store delete must then use its canonical pairing id.
+    store
+        .save_pairing(&ble_record_with_device_id(
+            "TOTALLY-DIFFERENT",
+            [0x59, 0xfa, 0xbc, 0x61, 0x09, 0xd2],
+        ))
+        .await
+        .unwrap();
+    let mut c = HapController::new(store).await.unwrap();
+
+    c.forget_pairing("59:fa:bc:61:09:d2").await.unwrap();
+
+    assert!(c.paired().is_empty());
+    assert!(observer.load_pairings().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn paired_lists_ble_records_too() {
     let dir = tempfile::tempdir().unwrap();
     let store = JsonFileStore::new(dir.path().join("p.json"));

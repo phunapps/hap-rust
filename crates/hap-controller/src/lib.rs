@@ -60,6 +60,7 @@
 //! | `identify` | ✓ | ✗ | not in this milestone |
 //! | `list_pairings` / `add_pairing` | ✓ | ✗ | Not in HAP-BLE spec |
 //! | `remove_pairing` | ✓ | ✓ | removes this controller's own pairing |
+//! | `forget_pairing` | ✓ | ✓ | local-only: never contacts the accessory |
 //!
 //! ## QR / setup-payload pairing
 //!

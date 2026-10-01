@@ -43,7 +43,8 @@ async fn main() -> hap_controller::Result<()> {
 ## The two types
 
 - **`HapController`** — owns a `PairingStore` and the controller's long-term
-  identity. `new`, `discover`, `pair`, `connect`, `paired`, `remove_pairing`.
+  identity. `new`, `discover`, `pair`, `connect`, `paired`, `remove_pairing`,
+  `forget_pairing` (local-only, after a failed `remove_pairing`).
 - **`AccessoryHandle`** — one live secure session to one accessory.
   `accessories` (cached attribute database), typed `find(ServiceType,
   CharacteristicType)`, `read`, `write`, `subscribe`, and `events()` — an async
