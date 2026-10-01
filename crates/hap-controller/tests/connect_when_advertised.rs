@@ -328,10 +328,46 @@ async fn backs_off_between_attempts_after_a_lost_accessory() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_rejected_pair_verify_is_returned_without_retrying() {
+async fn one_failed_handshake_does_not_end_the_wait() {
     let (controller, connector) =
         controller_with(vec![ble_record("AE:EC:86:C0:BF:D7", SENSOR_A, 5)]).await;
     let outcomes = connector.script(SENSOR_A);
+    // A link drop in the middle of Pair Verify looks like a rejection: the
+    // accessory lost its handshake state when the link was re-established.
+    outcomes
+        .send(Err(BleError::PairingRejected(2)))
+        .await
+        .unwrap();
+    let (accessory, _gatt) = ble_accessory_with_db().await;
+    outcomes.send(Ok(accessory)).await.unwrap();
+
+    controller
+        .connect_when_advertised("AE:EC:86:C0:BF:D7")
+        .await
+        .unwrap();
+
+    assert_eq!(connector.calls().len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_handshake_that_keeps_failing_ends_the_wait_with_its_error() {
+    let (controller, connector) =
+        controller_with(vec![ble_record("AE:EC:86:C0:BF:D7", SENSOR_A, 5)]).await;
+    let outcomes = connector.script(SENSOR_A);
+    // A removed pairing is rejected on every wake; a lost-again accessory in
+    // between must not reset the count.
+    outcomes
+        .send(Err(BleError::PairingRejected(2)))
+        .await
+        .unwrap();
+    outcomes
+        .send(Err(BleError::AccessoryNotFound))
+        .await
+        .unwrap();
+    outcomes
+        .send(Err(BleError::PairingRejected(2)))
+        .await
+        .unwrap();
     outcomes
         .send(Err(BleError::PairingRejected(2)))
         .await
@@ -341,10 +377,10 @@ async fn a_rejected_pair_verify_is_returned_without_retrying() {
         .connect_when_advertised("AE:EC:86:C0:BF:D7")
         .await
         .err()
-        .expect("a rejected Pair Verify must end the wait");
+        .expect("a pairing the accessory keeps rejecting must end the wait");
 
     assert!(matches!(err, HapError::Ble(BleError::PairingRejected(2))));
-    assert_eq!(connector.calls().len(), 1);
+    assert_eq!(connector.calls().len(), 4);
 }
 
 #[tokio::test]

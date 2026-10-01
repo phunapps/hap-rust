@@ -33,8 +33,11 @@ changes.
 - **Lost-again accessories are waited out, not reported.** A sleepy device is
   often heard and gone again before the link comes up; `AccessoryNotFound`,
   `Disconnected` and `Backend` errors send the wait back to listening after a
-  short backoff. Errors that waiting cannot fix — a rejected Pair Verify, a
-  malformed response — are returned.
+  short backoff, without limit and without being reported. Any other failure
+  once the accessory was reached — a rejected Pair Verify, a malformed
+  response — is retried too, because a link that drops mid-handshake produces
+  the same errors as a removed pairing; it is returned the third time it
+  happens.
 - **No radio lock.** Unlike `watch_sleepy`'s cold connect, a wait does not hold
   the controller's radio lock, so one absent accessory cannot block other waits
   or other controller calls. Run at most one wait per accessory.

@@ -519,16 +519,22 @@ impl HapController {
     ///
     /// A sleepy accessory is often heard and then gone again before the link
     /// comes up. Those failures (`BleError::AccessoryNotFound`,
-    /// `BleError::Disconnected`, `BleError::Backend`) are not returned: the
-    /// wait goes back to listening for the next advertisement. That includes a
-    /// missing or unavailable Bluetooth adapter, so only the caller's timeout
-    /// bounds the wait.
+    /// `BleError::Disconnected`, `BleError::Backend`) are never returned or
+    /// otherwise reported: the wait goes back to listening for the next
+    /// advertisement, however often they repeat. That includes a missing or
+    /// unavailable Bluetooth adapter and any other failure the Bluetooth
+    /// backend keeps reporting, so only the caller's timeout bounds the wait.
+    ///
+    /// Any other failure once the accessory was reached — a rejected Pair
+    /// Verify, a malformed response — also sends the wait back to listening,
+    /// because a link that drops mid-handshake produces the same errors as a
+    /// removed pairing. It is returned the third time it happens.
     ///
     /// Waits for different accessories do not block one another, nor other
     /// controller calls: each listens on its own scan. Run at most one wait
-    /// per accessory, and do not combine one with
-    /// [`watch_sleepy`](Self::watch_sleepy) for the same accessory while that
-    /// watch is still connecting — both would connect to the one peripheral.
+    /// per accessory, and do not combine one with `watch_sleepy` for the same
+    /// accessory while that watch is still connecting — both would connect to
+    /// the one peripheral.
     /// On macOS a BLE connect cannot complete while a scan is running on the
     /// same connection; whether another wait's scan can stall a connect there
     /// has not been validated on hardware.
@@ -543,13 +549,14 @@ impl HapController {
     ///
     /// # Errors
     ///
-    /// [`HapError::UnknownAccessory`] if `accessory_id` is not in the store.
-    /// For an IP pairing, the errors of [`connect`](Self::connect). For a BLE
-    /// pairing, `HapError::Ble` once the accessory was reached but the session
-    /// could not be established for a reason that waiting will not fix — for
-    /// example it rejected Pair Verify because the pairing was removed.
-    /// Without the `ble` feature, a BLE pairing fails with
-    /// [`HapError::UnsupportedByTransport`].
+    /// [`HapError::UnknownAccessory`] if `accessory_id` is not in the store;
+    /// [`HapError::Pairing`] if the store cannot be read. For an IP pairing,
+    /// the errors of [`connect`](Self::connect). For a BLE pairing,
+    /// `HapError::Ble` once the accessory was reached three times and the
+    /// session could not be established — for example it rejects Pair Verify
+    /// because the pairing was removed. Three failures in a row make that
+    /// likely, not certain. Without the `ble` feature, a BLE pairing fails
+    /// with [`HapError::UnsupportedByTransport`].
     pub fn connect_when_advertised(
         &self,
         accessory_id: &str,
@@ -920,17 +927,26 @@ async fn connect_ip(
 }
 
 /// How long [`connect_ble_when_advertised`] pauses before listening again
-/// after the accessory was lost mid-connect, so a connector that fails fast is
-/// not spun.
+/// after a failed attempt, so a connector that fails fast is not spun.
 #[cfg(feature = "ble")]
 const ADVERT_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+
+/// How many times [`connect_ble_when_advertised`] lets the session setup fail,
+/// once the accessory was reached, before it gives up and returns the error.
+/// The transport reconnects through a link drop without reporting it, so a
+/// drop in the middle of Pair Verify surfaces as a rejection or a malformed
+/// response from an accessory whose pairing is in fact fine; only a failure
+/// that repeats is evidence of a real problem.
+#[cfg(feature = "ble")]
+const MAX_SESSION_FAILURES: u32 = 3;
 
 /// Wait for a stored BLE accessory to advertise, then connect and Pair-Verify.
 ///
 /// The connector blocks until the device is heard. Failures that only mean
 /// "it went back to sleep before the link came up" send the wait back to
-/// listening; anything else (a rejected Pair Verify, a malformed response) is
-/// returned, because waiting longer will not change it.
+/// listening, without limit. Any other failure (a rejected Pair Verify, a
+/// malformed response) also goes back to listening, but is returned once it
+/// has happened [`MAX_SESSION_FAILURES`] times.
 #[cfg(feature = "ble")]
 async fn connect_ble_when_advertised(
     connector: &dyn hap_ble::SleepyConnector,
@@ -938,6 +954,7 @@ async fn connect_ble_when_advertised(
     pairing: &hap_crypto::AccessoryPairing,
     broadcast: Option<&StoredBroadcast>,
 ) -> Result<AccessoryHandle> {
+    let mut session_failures = 0;
     loop {
         let state = broadcast.map(|b| hap_ble::BleBroadcastState {
             key: b.key.clone(),
@@ -949,9 +966,15 @@ async fn connect_ble_when_advertised(
                 hap_ble::BleError::AccessoryNotFound
                 | hap_ble::BleError::Disconnected
                 | hap_ble::BleError::Backend(_),
-            ) => tokio::time::sleep(ADVERT_RETRY_BACKOFF).await,
-            Err(e) => return Err(e.into()),
+            ) => {}
+            Err(e) => {
+                session_failures += 1;
+                if session_failures >= MAX_SESSION_FAILURES {
+                    return Err(e.into());
+                }
+            }
         }
+        tokio::time::sleep(ADVERT_RETRY_BACKOFF).await;
     }
 }
 
