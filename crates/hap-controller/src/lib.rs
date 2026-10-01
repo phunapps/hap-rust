@@ -161,6 +161,15 @@
 //!   has connected.
 //!
 //! Both paths are feature-gated behind `ble`.
+//!
+//! To get a full, connected handle for a sleepy accessory that is not
+//! advertising right now — for example to read its accessory database after
+//! it dropped the link straight after Pair Setup — use
+//! [`HapController::connect_when_advertised`]. Where
+//! [`connect`](HapController::connect) scans for a bounded window and gives
+//! up, it waits until the accessory next advertises, then connects. The
+//! future it returns does not borrow the controller, so the wait can run in
+//! its own task for hours without blocking other controller calls.
 
 #![forbid(unsafe_code)]
 

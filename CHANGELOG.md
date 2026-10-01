@@ -8,6 +8,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each crate is versioned independently. Sections below are grouped by crate; the
 workspace-wide foundation work is tracked under "Workspace".
 
+## hap-controller 3.3.0 — 2026-10-01 — `connect_when_advertised` for sleepy BLE accessories
+
+`connect` finds a stored BLE accessory with one bounded scan (about 10 s). A
+sleepy accessory advertises rarely when idle, so each attempt is a coin toss
+and a consumer that wants a connected handle — typically to read the accessory
+database after the device dropped the link straight after Pair Setup — had to
+poll. The wait-until-it-advertises connect already existed, but only inside
+`watch_sleepy`, which never returns a handle. Additive; no existing behavior
+changes.
+
+- **New:** `HapController::connect_when_advertised(accessory_id)` — for a
+  stored BLE pairing, waits with no internal timeout until the accessory next
+  advertises, then connects, runs Pair Verify and returns the same
+  `AccessoryHandle` `connect` would. For an IP pairing it behaves exactly like
+  `connect`. The id resolves as it does for `connect`. Without the `ble`
+  feature a BLE pairing returns `UnsupportedByTransport`.
+- **Shape:** it is a `&self` method returning
+  `impl Future<Output = Result<AccessoryHandle>> + Send + 'static`. It is called
+  like an `async fn`, but the future owns what it needs and does not borrow the
+  controller: a caller that serializes controller calls behind a mutex can
+  create the future under the lock, release the lock, and await (or spawn) it
+  outside. Bound the wait with `tokio::time::timeout`.
+- **Lost-again accessories are waited out, not reported.** A sleepy device is
+  often heard and gone again before the link comes up; `AccessoryNotFound`,
+  `Disconnected` and `Backend` errors send the wait back to listening after a
+  short backoff. Errors that waiting cannot fix — a rejected Pair Verify, a
+  malformed response — are returned.
+- **No radio lock.** Unlike `watch_sleepy`'s cold connect, a wait does not hold
+  the controller's radio lock, so one absent accessory cannot block other waits
+  or other controller calls. Run at most one wait per accessory.
+- **Cancellation.** Dropping the future while it is listening stops the scan
+  and leaves nothing behind. Dropping it after the link came up but before the
+  handle is returned releases the link on macOS; on Linux (BlueZ) the link
+  stays up until the accessory drops it.
+
+**Not yet validated on hardware.** The scan-and-connect path is the one
+`watch_sleepy` already uses against real sensors, and the new method is covered
+by connector-level tests, but it has not been run against a real sleepy
+accessory, and several concurrent waits have not been exercised on a real
+radio. On macOS a BLE connect cannot complete while a scan is running on the
+same connection; whether another wait's scan can stall a connect there is
+unverified, and `hap-ble`'s initial connect is not time-bounded, so a stalled
+connect would look like a wait that never ends.
+
 ## hap-controller 3.2.0 — 2026-10-01 — Local-only `forget_pairing`
 
 `remove_pairing` unpairs on the accessory first and only then deletes the local

@@ -473,7 +473,9 @@ impl HapController {
     pub async fn connect(&self, accessory_id: &str) -> Result<AccessoryHandle> {
         let stored = self.load_stored(accessory_id).await?;
         match &stored.transport {
-            StoredTransport::Ip { .. } => self.connect_ip(stored).await,
+            StoredTransport::Ip { .. } => {
+                connect_ip(stored, self.keypair.clone(), self.request_timeout).await
+            }
             #[cfg(feature = "ble")]
             StoredTransport::Ble {
                 device_id,
@@ -489,17 +491,98 @@ impl HapController {
         }
     }
 
-    async fn connect_ip(&self, stored: StoredAccessory) -> Result<AccessoryHandle> {
-        let session = hap_pairing::connect(&stored, &self.keypair).await?;
-        let reconnector = Box::new(PairingReconnector {
-            stored,
-            keypair: self.keypair.clone(),
-        });
-        Ok(AccessoryHandle::from_ip(IpHandle::connect(
-            Arc::new(session),
-            reconnector,
-            self.request_timeout,
-        )))
+    /// Wait until a stored pairing can be reached, then open a secure session
+    /// to it and return a handle exactly like [`connect`](Self::connect).
+    ///
+    /// For a **BLE** pairing this waits — with no internal timeout — until the
+    /// accessory next advertises, then connects and runs Pair Verify. It is
+    /// meant for sleepy accessories, which advertise rarely when idle, so a
+    /// bounded [`connect`](Self::connect) scan usually misses them. Bound the
+    /// wait yourself with `tokio::time::timeout`. For an **IP** pairing there
+    /// is nothing to wait for: it behaves exactly like `connect`.
+    ///
+    /// `accessory_id` resolves as it does for `connect`
+    /// (ASCII-case-insensitive, with the BLE device-id fallback).
+    ///
+    /// # The returned future does not borrow the controller
+    ///
+    /// The future is `Send + 'static` and owns everything it needs, so a wait
+    /// that may last hours does not keep `&self` borrowed. If you serialize
+    /// controller calls behind a mutex, create the future while holding the
+    /// lock, release the lock, then await (or `tokio::spawn`) the future.
+    /// Nothing is done until the future is first polled: the stored pairing
+    /// is read then, and later changes to it — including
+    /// [`forget_pairing`](Self::forget_pairing) — do not affect or end a wait
+    /// already in progress.
+    ///
+    /// # Waiting and retrying (BLE)
+    ///
+    /// A sleepy accessory is often heard and then gone again before the link
+    /// comes up. Those failures (`BleError::AccessoryNotFound`,
+    /// `BleError::Disconnected`, `BleError::Backend`) are not returned: the
+    /// wait goes back to listening for the next advertisement. That includes a
+    /// missing or unavailable Bluetooth adapter, so only the caller's timeout
+    /// bounds the wait.
+    ///
+    /// Waits for different accessories do not block one another, nor other
+    /// controller calls: each listens on its own scan. Run at most one wait
+    /// per accessory, and do not combine one with
+    /// [`watch_sleepy`](Self::watch_sleepy) for the same accessory while that
+    /// watch is still connecting — both would connect to the one peripheral.
+    /// On macOS a BLE connect cannot complete while a scan is running on the
+    /// same connection; whether another wait's scan can stall a connect there
+    /// has not been validated on hardware.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping the future abandons the wait. While it is listening for the
+    /// advertisement that stops the scan and leaves nothing behind. If it is
+    /// dropped after the link came up but before the handle was returned (the
+    /// connect, database read and Pair Verify), the link is released on macOS;
+    /// on Linux (`BlueZ`) it stays up until the accessory drops it.
+    ///
+    /// # Errors
+    ///
+    /// [`HapError::UnknownAccessory`] if `accessory_id` is not in the store.
+    /// For an IP pairing, the errors of [`connect`](Self::connect). For a BLE
+    /// pairing, `HapError::Ble` once the accessory was reached but the session
+    /// could not be established for a reason that waiting will not fix — for
+    /// example it rejected Pair Verify because the pairing was removed.
+    /// Without the `ble` feature, a BLE pairing fails with
+    /// [`HapError::UnsupportedByTransport`].
+    pub fn connect_when_advertised(
+        &self,
+        accessory_id: &str,
+    ) -> impl std::future::Future<Output = Result<AccessoryHandle>> + Send + 'static {
+        let store = self.store.clone();
+        let keypair = self.keypair.clone();
+        let request_timeout = self.request_timeout;
+        #[cfg(feature = "ble")]
+        let connector = self.sleepy_connector.clone();
+        let accessory_id = accessory_id.to_string();
+        async move {
+            let stored = load_stored(store.as_ref(), &accessory_id).await?;
+            match &stored.transport {
+                StoredTransport::Ip { .. } => connect_ip(stored, keypair, request_timeout).await,
+                #[cfg(feature = "ble")]
+                StoredTransport::Ble {
+                    device_id,
+                    broadcast,
+                } => {
+                    connect_ble_when_advertised(
+                        connector.as_ref(),
+                        *device_id,
+                        &stored.pairing,
+                        broadcast.as_ref(),
+                    )
+                    .await
+                }
+                #[cfg(not(feature = "ble"))]
+                StoredTransport::Ble { .. } => Err(HapError::UnsupportedByTransport(
+                    "connect_when_advertised (enable the `ble` feature)",
+                )),
+            }
+        }
     }
 
     #[cfg(feature = "ble")]
@@ -780,33 +863,95 @@ impl HapController {
         ))
     }
 
-    /// Load the stored pairing matching `accessory_id`, or
-    /// [`HapError::UnknownAccessory`].
-    ///
-    /// The `pairing_id` match is ASCII-case-insensitive: BLE accessory ids
-    /// surface in two casings — [`Discovered::id`] yields the lowercase
-    /// advertised device-id string, while the store keys BLE records by the
-    /// accessory-cased Pair Setup id captured at `pair` time. If no
-    /// `pairing_id` matches and `accessory_id` parses as a BLE device-id
-    /// string, this falls back to matching a stored BLE record's
-    /// `device_id` bytes, so either casing or either id form finds the
-    /// same record.
+    /// Load the stored pairing matching `accessory_id`; see [`load_stored`].
     async fn load_stored(&self, accessory_id: &str) -> Result<StoredAccessory> {
-        let all = self.store.load_pairings().await?;
-        if let Some(found) = all
-            .iter()
-            .find(|s| s.pairing.pairing_id.eq_ignore_ascii_case(accessory_id))
-        {
+        load_stored(self.store.as_ref(), accessory_id).await
+    }
+}
+
+/// Load the stored pairing matching `accessory_id`, or
+/// [`HapError::UnknownAccessory`].
+///
+/// The `pairing_id` match is ASCII-case-insensitive: BLE accessory ids
+/// surface in two casings — [`Discovered::id`] yields the lowercase
+/// advertised device-id string, while the store keys BLE records by the
+/// accessory-cased Pair Setup id captured at `pair` time. If no
+/// `pairing_id` matches and `accessory_id` parses as a BLE device-id
+/// string, this falls back to matching a stored BLE record's
+/// `device_id` bytes, so either casing or either id form finds the
+/// same record.
+///
+/// A free function (not a method) so [`HapController::connect_when_advertised`]
+/// can run it inside a future that does not borrow the controller.
+async fn load_stored(
+    store: &(dyn PairingStore + Send + Sync),
+    accessory_id: &str,
+) -> Result<StoredAccessory> {
+    let all = store.load_pairings().await?;
+    if let Some(found) = all
+        .iter()
+        .find(|s| s.pairing.pairing_id.eq_ignore_ascii_case(accessory_id))
+    {
+        return Ok(found.clone());
+    }
+    if let Some(bytes) = hap_pairing::parse_device_id(accessory_id) {
+        if let Some(found) = all.iter().find(|s| {
+            matches!(&s.transport, StoredTransport::Ble { device_id, .. } if *device_id == bytes)
+        }) {
             return Ok(found.clone());
         }
-        if let Some(bytes) = hap_pairing::parse_device_id(accessory_id) {
-            if let Some(found) = all.iter().find(|s| {
-                matches!(&s.transport, StoredTransport::Ble { device_id, .. } if *device_id == bytes)
-            }) {
-                return Ok(found.clone());
-            }
+    }
+    Err(HapError::UnknownAccessory(accessory_id.to_string()))
+}
+
+/// Open a secure IP session to `stored` and wrap it in a reconnecting handle.
+async fn connect_ip(
+    stored: StoredAccessory,
+    keypair: ControllerKeypair,
+    request_timeout: Duration,
+) -> Result<AccessoryHandle> {
+    let session = hap_pairing::connect(&stored, &keypair).await?;
+    let reconnector = Box::new(PairingReconnector { stored, keypair });
+    Ok(AccessoryHandle::from_ip(IpHandle::connect(
+        Arc::new(session),
+        reconnector,
+        request_timeout,
+    )))
+}
+
+/// How long [`connect_ble_when_advertised`] pauses before listening again
+/// after the accessory was lost mid-connect, so a connector that fails fast is
+/// not spun.
+#[cfg(feature = "ble")]
+const ADVERT_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+
+/// Wait for a stored BLE accessory to advertise, then connect and Pair-Verify.
+///
+/// The connector blocks until the device is heard. Failures that only mean
+/// "it went back to sleep before the link came up" send the wait back to
+/// listening; anything else (a rejected Pair Verify, a malformed response) is
+/// returned, because waiting longer will not change it.
+#[cfg(feature = "ble")]
+async fn connect_ble_when_advertised(
+    connector: &dyn hap_ble::SleepyConnector,
+    device_id: [u8; 6],
+    pairing: &hap_crypto::AccessoryPairing,
+    broadcast: Option<&StoredBroadcast>,
+) -> Result<AccessoryHandle> {
+    loop {
+        let state = broadcast.map(|b| hap_ble::BleBroadcastState {
+            key: b.key.clone(),
+            gsn: b.gsn,
+        });
+        match connector.connect(device_id, pairing, state).await {
+            Ok(accessory) => return Ok(AccessoryHandle::from_ble(accessory)),
+            Err(
+                hap_ble::BleError::AccessoryNotFound
+                | hap_ble::BleError::Disconnected
+                | hap_ble::BleError::Backend(_),
+            ) => tokio::time::sleep(ADVERT_RETRY_BACKOFF).await,
+            Err(e) => return Err(e.into()),
         }
-        Err(HapError::UnknownAccessory(accessory_id.to_string()))
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "hap-controller"
-version = "3.2.0"
+version = "3.3.0"
 description = "High-level HomeKit (HAP) controller API: discover, pair, connect, read/write/subscribe characteristics."
 edition.workspace = true
 rust-version.workspace = true
@@ -43,6 +43,11 @@ required-features = ["ble"]
 [[test]]
 name = "sleepy_cold_arm"
 path = "tests/sleepy_cold_arm.rs"
+required-features = ["ble"]
+
+[[test]]
+name = "connect_when_advertised"
+path = "tests/connect_when_advertised.rs"
 required-features = ["ble"]
 
 [[example]]

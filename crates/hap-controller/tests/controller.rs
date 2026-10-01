@@ -195,3 +195,75 @@ async fn failed_remove_pairing_leaves_local_state_unchanged() {
         vec!["AA:BB:CC:DD:EE:FF".to_string()]
     );
 }
+
+#[tokio::test]
+async fn connect_when_advertised_unknown_id_errors() {
+    let controller = HapController::new(common::MockStore::new()).await.unwrap();
+    let err = controller
+        .connect_when_advertised("nope")
+        .await
+        .err()
+        .expect("an unknown id has nothing to wait for");
+    assert!(matches!(
+        err,
+        hap_controller::HapError::UnknownAccessory(id) if id == "nope"
+    ));
+}
+
+#[tokio::test]
+async fn connect_when_advertised_on_an_ip_pairing_fails_like_connect() {
+    // An "accessory" that accepts the TCP connection and hangs up at once, so
+    // the connect fails fast (no mDNS fallback browse).
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            drop(socket);
+        }
+    });
+    let mut entry = common::sample_pairing("AA:BB:CC:DD:EE:FF");
+    entry.transport = StoredTransport::Ip { addr };
+    let controller = HapController::new(common::MockStore::new().with_pairing(entry))
+        .await
+        .unwrap();
+
+    let waited = controller
+        .connect_when_advertised("AA:BB:CC:DD:EE:FF")
+        .await
+        .err()
+        .expect("nothing answers Pair Verify");
+    let direct = controller
+        .connect("AA:BB:CC:DD:EE:FF")
+        .await
+        .err()
+        .expect("nothing answers Pair Verify");
+
+    assert_eq!(
+        std::mem::discriminant(&waited),
+        std::mem::discriminant(&direct)
+    );
+}
+
+#[cfg(not(feature = "ble"))]
+#[tokio::test]
+async fn connect_when_advertised_on_a_ble_pairing_needs_the_ble_feature() {
+    let mut entry = common::sample_pairing("AE:EC:86:C0:BF:D7");
+    entry.transport = StoredTransport::Ble {
+        device_id: [0xAE, 0xEC, 0x86, 0xC0, 0xBF, 0xD7],
+        broadcast: None,
+    };
+    let controller = HapController::new(common::MockStore::new().with_pairing(entry))
+        .await
+        .unwrap();
+
+    let err = controller
+        .connect_when_advertised("AE:EC:86:C0:BF:D7")
+        .await
+        .err()
+        .expect("a BLE pairing cannot be reached without the `ble` feature");
+
+    assert!(matches!(
+        err,
+        hap_controller::HapError::UnsupportedByTransport(_)
+    ));
+}
