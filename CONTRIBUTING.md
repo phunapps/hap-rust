@@ -52,16 +52,18 @@ Please **open an issue first** before starting work on:
    cargo xtask check
    ```
    This runs every gate CI runs: `rustfmt --check`, `clippy -D warnings`,
-   `cargo test`, and `cargo doc -D warnings`. See **Local toolchain** below for
-   the optional `cargo-audit` / `cargo-deny` gates CI also runs.
+   `cargo test`, `cargo doc -D warnings`, and the fuzz lockfile check (see
+   **Fuzzing** below). See **Local toolchain** below for the optional
+   `cargo-audit` / `cargo-deny` gates CI also runs.
 4. Open a PR. Fill in the template completely.
 5. Address review feedback. Expect at least one full reviewer pass on anything
    that touches protocol code.
 
 ## Local toolchain
 
-`cargo xtask check` covers fmt, clippy, test, and doc. CI also runs
-`cargo audit` and `cargo deny`. To run those two locally, install them once:
+`cargo xtask check` covers fmt, clippy, test, doc, and the fuzz lockfile check.
+CI also runs `cargo audit` and `cargo deny`. To run those two locally, install
+them once:
 
 ```
 cargo install cargo-audit --locked
@@ -69,6 +71,40 @@ cargo install cargo-deny --locked
 ```
 
 `rustfmt` and `clippy` ship with `rustup` and don't need separate installation.
+
+## Fuzzing
+
+The parsers of untrusted input have `cargo-fuzz` targets: `parse` in
+`crates/hap-tlv8/fuzz` and `accessories` in `crates/hap-model/fuzz`. The
+`Fuzz` workflow runs both weekly, seeded from `test-vectors/` and from the
+previous run's corpus. To run one
+locally (needs a nightly toolchain; CI pins the same `cargo-fuzz` version):
+
+```
+cargo install cargo-fuzz --version 0.13.2 --locked
+cd crates/hap-tlv8
+mkdir -p fuzz/corpus/parse
+cargo +nightly fuzz run parse fuzz/corpus/parse ../../test-vectors/tlv8
+```
+
+Each fuzz crate is a standalone workspace, so it has its own `Cargo.lock`,
+which the root `cargo update` does not touch. Both lockfiles are committed and
+must pin every package they share with the root `Cargo.lock` to the same
+version, so the fuzzer exercises the dependency set the workspace tests and
+ships. CI enforces this (the `fuzz lockfiles` job, also part of
+`cargo xtask check`). After a root `cargo update`, or a version or dependency
+change in `hap-tlv8` or `hap-model`, regenerate them with:
+
+```
+cargo xtask fuzz-lock --sync
+```
+
+and commit the result. The sync also moves the fuzz-only packages
+(`libfuzzer-sys`, `cc`, …) to their latest versions, which shows up in the diff.
+A new fuzz crate is picked up by the check
+automatically, and the check fails until it has a `- crate:` entry in the
+matrices of `.github/workflows/fuzz.yml` and the `audit-fuzz` job in
+`.github/workflows/ci.yml`.
 
 ## Crypto-touching changes
 
@@ -117,6 +153,8 @@ requirement that matches only `0.0.0`). Before `cargo publish` of any crate:
   on by an `= "0.0.0"` requirement.)
 - Ensure each crate being published has a `README.md` in its crate directory —
   the `readme = "README.md"` manifest key requires the file to exist.
+- After bumping `hap-tlv8` or `hap-model`, run `cargo xtask fuzz-lock --sync`
+  and commit the regenerated fuzz lockfiles.
 
 ## Questions
 

@@ -7,7 +7,6 @@
 //! committed so downstream crates build without running `xtask`.
 
 use std::fmt::Write as _;
-use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -72,10 +71,7 @@ fn format_variant(fmt: &str) -> &'static str {
 /// `xtask/model/hap-types.json` cannot be read or parsed, or the output file
 /// cannot be written.
 pub(crate) fn run() -> Result<String> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .context("xtask has no parent directory")?
-        .to_path_buf();
+    let root = crate::workspace_root()?;
     let table_path = root.join("xtask/model/hap-types.json");
     let bytes =
         std::fs::read(&table_path).with_context(|| format!("reading {}", table_path.display()))?;

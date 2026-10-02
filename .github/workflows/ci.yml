@@ -96,3 +96,41 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+
+  fuzz-lock:
+    name: fuzz lockfiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # The check builds the fuzz workspaces into target/fuzz-lock. List them,
+      # or the cache drops the fuzz-only crates (libFuzzer's C++ build) as
+      # foreign to the root workspace and every run rebuilds them.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            crates/hap-tlv8/fuzz -> ../../../target/fuzz-lock
+            crates/hap-model/fuzz -> ../../../target/fuzz-lock
+      # The fuzz crates are standalone workspaces with their own Cargo.lock.
+      # Fails if one drifted from the root lockfile, no longer compiles, or is
+      # missing from a workflow matrix. Fix drift locally with
+      # `cargo xtask fuzz-lock --sync`.
+      - run: cargo run --locked --quiet --package xtask -- fuzz-lock
+
+  audit-fuzz:
+    name: cargo audit (${{ matrix.crate }} fuzz)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per fuzz workspace; `cargo xtask fuzz-lock` checks the list.
+        include:
+          - crate: hap-tlv8
+          - crate: hap-model
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: crates/${{ matrix.crate }}/fuzz

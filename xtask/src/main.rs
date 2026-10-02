@@ -8,11 +8,15 @@
 //! - `capture-pair-setup` — point to the Pair Setup (SRP-6a) capture tooling (M2).
 //! - `codegen-hap-types`  — generate the HAP-defined service / characteristic type
 //!   tables into `crates/hap-model/src/generated.rs` (M6).
+//! - `fuzz-lock`          — check (or, with `--sync`, regenerate) the fuzz
+//!   workspaces' lockfiles against the root `Cargo.lock`.
 
 #![forbid(unsafe_code)]
 
 mod codegen_hap_types;
+mod fuzz_lock;
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use anyhow::{bail, Context, Result};
@@ -27,7 +31,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run every gate CI runs: fmt, clippy, test, doc.
+    /// Run every gate CI runs: fmt, clippy, test, doc, fuzz lockfiles.
     Check,
     /// Capture TLV8 pairing vectors from aiohomekit (lands in M1).
     CaptureTlv8,
@@ -35,6 +39,12 @@ enum Cmd {
     CapturePairSetup,
     /// Generate the HAP-defined type tables into hap-model/src/generated.rs (M6).
     CodegenHapTypes,
+    /// Check the fuzz workspaces' lockfiles against the root Cargo.lock.
+    FuzzLock {
+        /// Regenerate the fuzz lockfiles from the root one before checking.
+        #[arg(long)]
+        sync: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -47,6 +57,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         Cmd::CodegenHapTypes => codegen_hap_types::run().map(|path| println!("wrote {path}")),
+        Cmd::FuzzLock { sync } => fuzz_lock::run(sync),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -55,6 +66,14 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The repository root: the parent of the `xtask` crate directory.
+fn workspace_root() -> Result<PathBuf> {
+    Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("xtask has no parent directory")?
+        .to_path_buf())
 }
 
 fn not_yet(name: &str, when: &str) -> Result<()> {
@@ -105,6 +124,7 @@ fn run_check() -> Result<()> {
         &["doc", "--workspace", "--all-features", "--no-deps"],
         &[("RUSTDOCFLAGS", "-D warnings")],
     )?;
+    fuzz_lock::run(false)?;
     println!("xtask check: all gates passed");
     Ok(())
 }
