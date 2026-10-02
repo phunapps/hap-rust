@@ -51,6 +51,9 @@ must_use_candidate = "allow"
 missing_const_for_fn = "allow"
 # "HomeKit" is a product name in our docs, not code — don't force backticks.
 doc_markdown = "allow"
+# `assert!(x.is_empty())` reads better than the suggested
+# `assert_eq!(x, [] as [T; 0])`, and it is only used in tests.
+assert_is_empty = "allow"
 
 # Common dependency versions, so every member crate pulls the same release.
 # Add to this table — do not bump per-crate without discussion. Crypto-primitive
