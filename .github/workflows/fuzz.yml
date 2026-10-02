@@ -5,20 +5,84 @@ on:
     # 06:00 UTC every Monday. Avoids the PR-CI traffic peaks.
     - cron: '0 6 * * 1'
   workflow_dispatch:
+    inputs:
+      seconds:
+        description: Fuzzing time per target, in seconds (keep under 6000)
+        type: number
+        default: 1200
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+  CARGO_FUZZ_VERSION: 0.13.2
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  fuzz_tlv8:
-    name: fuzz hap-tlv8 reader (stub until M1)
+  fuzz:
+    name: fuzz ${{ matrix.crate }} (${{ matrix.target }})
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      # One target finding a crash must not cancel the other.
+      fail-fast: false
+      matrix:
+        # One entry per fuzz workspace; `cargo xtask fuzz-lock` checks the list.
+        include:
+          - crate: hap-tlv8
+            target: parse
+            seeds: test-vectors/tlv8
+          - crate: hap-model
+            target: accessories
+            seeds: test-vectors/accessories
+    env:
+      FUZZ_SECONDS: ${{ inputs.seconds || 1200 }}
     steps:
       - uses: actions/checkout@v4
-      - name: No fuzz targets yet
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      # cargo-fuzz has no --locked flag. Fail here if the committed lockfile is
+      # stale or missing, and again below if the build rewrote it.
+      - name: Committed lockfile resolves
+        run: cargo fetch --locked --manifest-path "crates/${{ matrix.crate }}/fuzz/Cargo.toml"
+      - name: Build
+        working-directory: crates/${{ matrix.crate }}
+        run: cargo fuzz build "${{ matrix.target }}"
+      - name: Build used the committed lockfile
+        run: git diff --exit-code -- "crates/${{ matrix.crate }}/fuzz/Cargo.lock"
+      # Carry the corpus from the previous successful run so coverage builds up
+      # week to week. Caches expire after seven idle days; a miss only means
+      # this run starts from the seeds alone.
+      - name: Restore corpus
+        uses: actions/cache@v5
+        with:
+          path: crates/${{ matrix.crate }}/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.crate }}-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.crate }}-${{ matrix.target }}-
+      # The first directory receives new inputs; the second is a read-only seed
+      # corpus from the captured test vectors. A crash, hang or OOM exits
+      # non-zero and fails the job.
+      - name: Fuzz
+        working-directory: crates/${{ matrix.crate }}
         run: |
-          echo "::notice::No fuzz targets exist yet. The hap-tlv8 reader fuzz"
-          echo "::notice::target lands in M1; this workflow becomes a real"
-          echo "::notice::'cargo +nightly fuzz run' step then."
-          echo "Skipping: nothing to fuzz in M0."
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          cargo fuzz run "${{ matrix.target }}" \
+            "fuzz/corpus/${{ matrix.target }}" \
+            "$GITHUB_WORKSPACE/${{ matrix.seeds }}" \
+            -- -max_total_time="$FUZZ_SECONDS" -timeout=10
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts-${{ matrix.crate }}-${{ matrix.target }}
+          path: crates/${{ matrix.crate }}/fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 90
