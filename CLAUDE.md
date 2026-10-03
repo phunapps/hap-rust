@@ -92,6 +92,7 @@ Crypto primitives (NEVER reimplement; provider chosen in M2):
   ring and/or RustCrypto      → ChaCha20-Poly1305, HKDF-SHA512, SHA-512,
                                 Ed25519 (ed25519-dalek), X25519 (x25519-dalek)
   crypto-bigint / num-bigint  → SRP-6a modular exponentiation
+  getrandom (SysRng)          → OS CSPRNG (keypair, SRP salt/private values)
 Networking:
   tokio                       → async runtime (transport + controller layers)
   mdns-sd                     → _hap._tcp discovery

@@ -93,14 +93,18 @@ subtle = "2"
 hkdf = "0.13"
 # ChaCha20-Poly1305 AEAD, IETF 96-bit-nonce construction (RustCrypto).
 chacha20poly1305 = "0.11"
-# Ed25519 controller long-term keypair (dalek); rand_core feature enables OsRng.
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+# Ed25519 controller long-term keypair (dalek); the rand_core feature enables
+# SigningKey::generate.
+ed25519-dalek = { version = "3", features = ["rand_core"] }
 # X25519 ephemeral ECDH for Pair Verify (M3, dalek). `static_secrets` enables
 # constructing a secret from raw 32-byte material (deterministic replay/tests);
 # `getrandom` lets `StaticSecret::random_from_rng`/`random` use the OS CSPRNG.
-x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
-# CSPRNG entropy source for Ed25519 keypair generation.
-rand_core = { version = "0.6", features = ["getrandom"] }
+x25519-dalek = { version = "3", features = ["static_secrets", "getrandom"] }
+# OS CSPRNG for the Ed25519 keypair and the SRP-6a salt and private values:
+# getrandom's SysRng, behind rand_core's RNG traits (UnwrapErr makes it
+# infallible, panicking only if the OS source fails).
+rand_core = "0.10"
+getrandom = { version = "0.4", features = ["sys_rng"] }
 # Testing / automation.
 proptest = "1"
 anyhow = "1"

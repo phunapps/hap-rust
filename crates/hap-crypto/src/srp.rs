@@ -290,11 +290,12 @@ impl<D: Digest> SrpServer<D> {
 
     /// Build a server with a random salt and private `b` from the OS CSPRNG.
     pub(crate) fn new(group: SrpGroup, username: &[u8], password: &[u8]) -> Self {
-        use rand_core::RngCore;
+        use rand_core::Rng;
+        let mut rng = rand_core::UnwrapErr(getrandom::SysRng);
         let mut salt = [0u8; 16];
         let mut b = [0u8; 32];
-        rand_core::OsRng.fill_bytes(&mut salt);
-        rand_core::OsRng.fill_bytes(&mut b);
+        rng.fill_bytes(&mut salt);
+        rng.fill_bytes(&mut b);
         Self::with_salt_and_private(group, username, password, &salt, BigUint::from_bytes_be(&b))
     }
 
@@ -385,7 +386,7 @@ impl<D: Digest> SrpClient<D> {
     /// Build a client with a freshly generated random private exponent `a`.
     ///
     /// `a` is drawn from a 256-bit value sourced from the operating-system
-    /// CSPRNG ([`OsRng`](rand_core::OsRng)) — comfortably above the SRP-6a
+    /// CSPRNG ([`SysRng`](getrandom::SysRng)) — comfortably above the SRP-6a
     /// minimum and matching what production controllers use.
     ///
     /// # Errors
@@ -393,9 +394,9 @@ impl<D: Digest> SrpClient<D> {
     /// Returns [`CryptoError::SrpBadParameters`] if the resulting public
     /// ephemeral `A` is congruent to zero mod `N` (vanishingly unlikely).
     pub(crate) fn new(group: SrpGroup, username: &[u8]) -> Result<Self> {
-        use rand_core::RngCore;
+        use rand_core::Rng;
         let mut bytes = [0u8; 32];
-        rand_core::OsRng.fill_bytes(&mut bytes);
+        rand_core::UnwrapErr(getrandom::SysRng).fill_bytes(&mut bytes);
         Self::with_private(group, username, BigUint::from_bytes_be(&bytes))
     }
 

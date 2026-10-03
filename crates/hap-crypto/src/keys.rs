@@ -9,7 +9,8 @@
 //! [`ed25519_dalek`].
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use rand_core::OsRng;
+use getrandom::SysRng;
+use rand_core::UnwrapErr;
 
 use crate::error::{CryptoError, Result};
 
@@ -26,10 +27,15 @@ pub struct ControllerKeypair {
 
 impl ControllerKeypair {
     /// Generate a fresh random Ed25519 keypair bound to `id`, using the
-    /// operating system CSPRNG ([`OsRng`]).
+    /// operating system CSPRNG ([`SysRng`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the operating system's random source fails, which does not
+    /// happen on a supported platform.
     #[must_use]
     pub fn generate(id: String) -> Self {
-        let signing = SigningKey::generate(&mut OsRng);
+        let signing = SigningKey::generate(&mut UnwrapErr(SysRng));
         Self { id, signing }
     }
 
