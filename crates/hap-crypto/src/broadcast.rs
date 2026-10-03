@@ -64,20 +64,16 @@ impl BroadcastKey {
         let mut nonce = [0u8; 12];
         nonce[4..].copy_from_slice(&u64::from(gsn).to_le_bytes());
 
-        let mut cipher = chacha20::ChaCha20::new(
-            chacha20::Key::from_slice(&self.0),
-            chacha20::Nonce::from_slice(&nonce),
-        );
+        let mut cipher = chacha20::ChaCha20::new((&self.0).into(), (&nonce).into());
         // Block 0: derive the Poly1305 one-time key.
-        let mut poly_block = zeroize::Zeroizing::new([0u8; 64]);
-        cipher.apply_keystream(&mut *poly_block);
+        let poly_key = poly1305_key(&mut cipher);
 
         // Encrypt at block 1 (cipher already positioned there).
         let mut ciphertext = plaintext.to_vec();
         cipher.apply_keystream(&mut ciphertext);
 
         // Compute the RFC 8439 MAC over the ciphertext.
-        let mut mac = poly1305::Poly1305::new(poly1305::Key::from_slice(&poly_block[..32]));
+        let mut mac = poly1305::Poly1305::new((&*poly_key).into());
         mac.update_padded(&mac_data(advertising_id, &ciphertext));
         let full_tag = mac.finalize();
 
@@ -113,18 +109,12 @@ impl BroadcastKey {
         let (ciphertext, tag4) = combined_text.split_at(combined_text.len() - 4);
 
         // Derive the Poly1305 one-time key from ChaCha20 block 0 (64 bytes).
-        let mut cipher = chacha20::ChaCha20::new(
-            chacha20::Key::from_slice(&self.0),
-            chacha20::Nonce::from_slice(&nonce),
-        );
-        // Zeroized on drop: the block-0 keystream contains the Poly1305 one-time
-        // key (secret-derived material).
-        let mut poly_block = zeroize::Zeroizing::new([0u8; 64]);
-        cipher.apply_keystream(&mut *poly_block);
+        let mut cipher = chacha20::ChaCha20::new((&self.0).into(), (&nonce).into());
+        let poly_key = poly1305_key(&mut cipher);
 
         // Compute the RFC 8439 MAC over (aad || pad16 || ciphertext || pad16 ||
         // le64(aad_len) || le64(ciphertext_len)).
-        let mut mac = poly1305::Poly1305::new(poly1305::Key::from_slice(&poly_block[..32]));
+        let mut mac = poly1305::Poly1305::new((&*poly_key).into());
         mac.update_padded(&mac_data(advertising_id, ciphertext));
         let full_tag = mac.finalize();
 
@@ -138,6 +128,20 @@ impl BroadcastKey {
         cipher.apply_keystream(&mut plaintext);
         Ok(plaintext)
     }
+}
+
+/// Consume ChaCha20 block 0 from `cipher` (RFC 8439 §2.6): the first 32
+/// bytes are the Poly1305 one-time key, the rest is discarded, leaving the
+/// cipher positioned at block 1 for the payload. Both halves are
+/// secret-derived keystream, so both are zeroized on drop.
+fn poly1305_key(cipher: &mut chacha20::ChaCha20) -> zeroize::Zeroizing<[u8; 32]> {
+    use chacha20::cipher::StreamCipher;
+
+    let mut key = zeroize::Zeroizing::new([0u8; 32]);
+    let mut rest = zeroize::Zeroizing::new([0u8; 32]);
+    cipher.apply_keystream(&mut *key);
+    cipher.apply_keystream(&mut *rest);
+    key
 }
 
 /// RFC 8439 AEAD MAC input: `aad || pad16 || ciphertext || pad16 ||

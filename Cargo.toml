@@ -85,14 +85,14 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 # Crypto primitives for hap-crypto (M2). SRP-6a modular exponentiation uses
 # num-bigint's dynamic-width integers; sha2 provides SHA-512; subtle gives
 # constant-time comparison of secret proofs. Primitives are never reimplemented.
-num-bigint = "0.4"
+num-bigint = "0.5"
 num-traits = "0.2"
-sha2 = "0.10"
+sha2 = "0.11"
 subtle = "2"
 # HKDF-SHA512 key derivation (RustCrypto, over sha2::Sha512).
-hkdf = "0.12"
+hkdf = "0.13"
 # ChaCha20-Poly1305 AEAD, IETF 96-bit-nonce construction (RustCrypto).
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 # Ed25519 controller long-term keypair (dalek); rand_core feature enables OsRng.
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 # X25519 ephemeral ECDH for Pair Verify (M3, dalek). `static_secrets` enables
@@ -114,12 +114,13 @@ mdns-sd = "0.21"
 # socket via tokio). Isolated behind the crate's CoapTransport trait so the
 # choice is swappable. See hap-thread design decision D1.
 coap-lite = "0.13"
-# Dev-only: RFC 5054 known-answer test uses SHA-1 (sha1) and hex fixtures.
-sha-1 = "0.10"
+# Dev-only: RFC 5054 known-answer test uses SHA-1 and hex fixtures. `sha1` is
+# the renamed successor of the `sha-1` crate (same RustCrypto project).
+sha1 = "0.11"
 hex = "0.4"
 zeroize = { version = "1", features = ["derive"] }
-chacha20 = "0.9"
-poly1305 = "0.8"
+chacha20 = "0.10"
+poly1305 = "0.9"
 
 # Release profile defaults. Keep these conservative; consumers can override.
 [profile.release]

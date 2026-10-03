@@ -34,6 +34,6 @@ poly1305 = { workspace = true }
 [dev-dependencies]
 # RFC 5054 Appendix B known-answer test (1024-bit group, SHA-1) for the generic
 # SRP-6a core; hex decodes the published vector literals.
-sha-1 = { workspace = true }
+sha1 = { workspace = true }
 hex = { workspace = true }
 serde_json = { workspace = true }

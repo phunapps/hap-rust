@@ -25,7 +25,7 @@
 //! remaining high bytes zero. See the crate-internal `hap_nonce` helper.
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+use chacha20poly1305::ChaCha20Poly1305;
 
 use crate::error::{CryptoError, Result};
 
@@ -58,10 +58,10 @@ pub(crate) fn encrypt(
     aad: &[u8],
     plaintext: &[u8],
 ) -> Result<Vec<u8>> {
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+    let cipher = ChaCha20Poly1305::new(key.into());
     cipher
         .encrypt(
-            Nonce::from_slice(nonce),
+            nonce.into(),
             Payload {
                 msg: plaintext,
                 aad,
@@ -85,10 +85,10 @@ pub(crate) fn decrypt(
     aad: &[u8],
     ciphertext_and_tag: &[u8],
 ) -> Result<Vec<u8>> {
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+    let cipher = ChaCha20Poly1305::new(key.into());
     cipher
         .decrypt(
-            Nonce::from_slice(nonce),
+            nonce.into(),
             Payload {
                 msg: ciphertext_and_tag,
                 aad,
