@@ -65,7 +65,9 @@ bitflags = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # base64 for the opaque `tlv8` / `data` characteristic value formats (hap-model M6).
-base64 = "0.22"
+# No default features: they add `simd-unsafe` engines (unsafe SIMD code) we
+# never call, since we use the scalar `general_purpose` engine.
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 tokio = { version = "1", default-features = false }
 # Channel→Stream adapter for the controller's events() API (hap-controller M7).
 # tokio-stream re-exports futures_core::Stream and provides BroadcastStream, so
@@ -104,7 +106,7 @@ proptest = "1"
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
-toml = "0.8" # hap-tlv8 test-vector manifest; xtask lockfile parsing (fuzz-lock)
+toml = "1" # hap-tlv8 test-vector manifest; xtask lockfile parsing (fuzz-lock)
 # mDNS service discovery for _hap._tcp (hap-transport M4) and _hap._udp
 # (hap-thread / Thread-CoAP).
 mdns-sd = "0.21"
