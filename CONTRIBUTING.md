@@ -103,8 +103,9 @@ and commit the result. The sync also moves the fuzz-only packages
 (`libfuzzer-sys`, `cc`, …) to their latest versions, which shows up in the diff.
 A new fuzz crate is picked up by the check
 automatically, and the check fails until it has a `- crate:` entry in the
-matrices of `.github/workflows/fuzz.yml` and the `audit-fuzz` job in
-`.github/workflows/ci.yml`.
+matrices of `.github/workflows/fuzz.yml` and the `fuzz-deps` job in
+`.github/workflows/ci.yml`, which runs `cargo audit` and `cargo deny` against
+each fuzz lockfile.
 
 ## Crypto-touching changes
 

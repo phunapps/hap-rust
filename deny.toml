@@ -28,10 +28,15 @@ allow = [
     "0BSD",
     "CC0-1.0",
 ]
+# libfuzzer-sys bundles LLVM's libFuzzer, which is NCSA-licensed. It is only
+# reached through the fuzz workspaces (`crates/*/fuzz`), never a published crate.
+exceptions = [{ crate = "libfuzzer-sys", allow = ["NCSA"] }]
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# The unpublished fuzz crates depend on their parent crate by bare path.
+allow-wildcard-paths = true
 highlight = "all"
 
 [sources]

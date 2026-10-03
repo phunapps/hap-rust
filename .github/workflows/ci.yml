@@ -118,8 +118,8 @@ jobs:
       # `cargo xtask fuzz-lock --sync`.
       - run: cargo run --locked --quiet --package xtask -- fuzz-lock
 
-  audit-fuzz:
-    name: cargo audit (${{ matrix.crate }} fuzz)
+  fuzz-deps:
+    name: fuzz deps (${{ matrix.crate }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -130,7 +130,14 @@ jobs:
           - crate: hap-model
     steps:
       - uses: actions/checkout@v4
+      # The fuzz crates have their own Cargo.lock, which the root audit and
+      # deny jobs never read. `cargo deny` finds the root deny.toml by walking
+      # up from the manifest.
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           working-directory: crates/${{ matrix.crate }}/fuzz
+      - if: ${{ !cancelled() }}
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: crates/${{ matrix.crate }}/fuzz/Cargo.toml

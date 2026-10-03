@@ -34,7 +34,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 /// Workflows whose job matrix must have a `- crate: <name>` entry for every
-/// fuzz workspace: the weekly fuzz run, and the `audit-fuzz` job.
+/// fuzz workspace: the weekly fuzz run, and the `fuzz-deps` job.
 const MATRIX_WORKFLOWS: [&str; 2] = [".github/workflows/fuzz.yml", ".github/workflows/ci.yml"];
 
 #[derive(Deserialize)]
