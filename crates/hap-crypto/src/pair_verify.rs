@@ -125,6 +125,11 @@ pub struct PairVerifyClient {
 impl PairVerifyClient {
     /// Create a client that verifies against `accessory` using `controller`'s
     /// long-term identity. A fresh random ephemeral X25519 keypair is generated.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the operating system's random source fails, which does not
+    /// happen on a supported platform.
     #[must_use]
     pub fn new(controller: &ControllerKeypair, accessory: &AccessoryPairing) -> Self {
         Self::build(controller, accessory, EphemeralKeypair::generate())

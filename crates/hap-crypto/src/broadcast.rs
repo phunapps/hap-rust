@@ -130,17 +130,18 @@ impl BroadcastKey {
     }
 }
 
-/// Consume ChaCha20 block 0 from `cipher` (RFC 8439 §2.6): the first 32
-/// bytes are the Poly1305 one-time key, the rest is discarded, leaving the
-/// cipher positioned at block 1 for the payload. Both halves are
-/// secret-derived keystream, so both are zeroized on drop.
+/// Consume ChaCha20 block 0 from `cipher` (RFC 8439 §2.6) and return its first
+/// 32 bytes, the Poly1305 one-time key, leaving the cipher positioned at block 1
+/// for the payload. The whole block is read in one call: a partial-block read
+/// would leave the rest of the keystream in the cipher's internal buffer. Both
+/// the block and the returned key are zeroized on drop.
 fn poly1305_key(cipher: &mut chacha20::ChaCha20) -> zeroize::Zeroizing<[u8; 32]> {
     use chacha20::cipher::StreamCipher;
 
+    let mut block = zeroize::Zeroizing::new([0u8; 64]);
+    cipher.apply_keystream(&mut *block);
     let mut key = zeroize::Zeroizing::new([0u8; 32]);
-    let mut rest = zeroize::Zeroizing::new([0u8; 32]);
-    cipher.apply_keystream(&mut *key);
-    cipher.apply_keystream(&mut *rest);
+    key.copy_from_slice(&block[..32]);
     key
 }
 

@@ -93,6 +93,7 @@ Crypto primitives (NEVER reimplement; provider chosen in M2):
                                 Ed25519 (ed25519-dalek), X25519 (x25519-dalek)
   crypto-bigint / num-bigint  → SRP-6a modular exponentiation
   getrandom (SysRng)          → OS CSPRNG (keypair, SRP salt/private values)
+  cipher (zeroize feature)    → wipes ChaCha20 keystream buffers on drop
 Networking:
   tokio                       → async runtime (transport + controller layers)
   mdns-sd                     → _hap._tcp discovery

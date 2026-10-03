@@ -133,6 +133,11 @@ impl PairSetupClient {
     ///
     /// Returns [`CryptoError::SrpBadParameters`] if the freshly generated SRP
     /// public ephemeral `A` is zero mod `N` (vanishingly unlikely).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the operating system's random source fails, which does not
+    /// happen on a supported platform.
     pub fn new(setup_code: &str, controller: ControllerKeypair) -> Result<Self> {
         let srp = SrpClient::<Sha512>::new(hap_group()?, PAIR_SETUP_USERNAME)?;
         Ok(Self {
@@ -385,6 +390,11 @@ impl HapPairSetupSrpServer {
     ///
     /// Returns [`CryptoError`] only if the embedded HAP group is rejected (which
     /// the fixed constant never triggers).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the operating system's random source fails, which does not
+    /// happen on a supported platform.
     pub fn new(setup_code: &str) -> Result<(Self, Vec<u8>)> {
         let password = normalize_setup_code(setup_code);
         let inner =

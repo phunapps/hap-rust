@@ -38,6 +38,11 @@ impl EphemeralKeypair {
     ///
     /// This is the constructor production code uses; every Pair Verify session
     /// gets its own keypair.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the operating system's random source fails, which does not
+    /// happen on a supported platform.
     #[must_use]
     pub fn generate() -> Self {
         let secret = StaticSecret::random();

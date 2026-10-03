@@ -92,13 +92,15 @@ subtle = "2"
 # HKDF-SHA512 key derivation (RustCrypto, over sha2::Sha512).
 hkdf = "0.13"
 # ChaCha20-Poly1305 AEAD, IETF 96-bit-nonce construction (RustCrypto).
-chacha20poly1305 = "0.11"
+# `zeroize` (off by default since 0.11) wipes the cipher's key copy, the
+# per-message Poly1305 key and the ChaCha20 state on drop.
+chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 # Ed25519 controller long-term keypair (dalek); the rand_core feature enables
 # SigningKey::generate.
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 # X25519 ephemeral ECDH for Pair Verify (M3, dalek). `static_secrets` enables
 # constructing a secret from raw 32-byte material (deterministic replay/tests);
-# `getrandom` lets `StaticSecret::random_from_rng`/`random` use the OS CSPRNG.
+# `getrandom` lets `StaticSecret::random` draw from the OS CSPRNG.
 x25519-dalek = { version = "3", features = ["static_secrets", "getrandom"] }
 # OS CSPRNG for the Ed25519 keypair and the SRP-6a salt and private values:
 # getrandom's SysRng, behind rand_core's RNG traits (UnwrapErr makes it
@@ -123,8 +125,16 @@ coap-lite = "0.13"
 sha1 = "0.11"
 hex = "0.4"
 zeroize = { version = "1", features = ["derive"] }
-chacha20 = "0.10"
-poly1305 = "0.9"
+# Raw ChaCha20 + Poly1305 for the BLE broadcast cipher's 4-byte tag.
+# `zeroize` wipes the ChaCha20 state (the broadcast key) and the Poly1305
+# state (also the AEAD's, through feature unification) on drop.
+chacha20 = { version = "0.10", features = ["zeroize"] }
+poly1305 = { version = "0.9", features = ["zeroize"] }
+# Not used in code: depended on only to turn on its `zeroize` feature, which
+# wipes the keystream buffer of every ChaCha20 instance (chacha20poly1305's
+# and ours) on drop. That buffer can hold the Poly1305 one-time key, and
+# neither chacha20 nor chacha20poly1305 forwards the feature.
+cipher = { version = "0.5", default-features = false, features = ["zeroize"] }
 
 # Release profile defaults. Keep these conservative; consumers can override.
 [profile.release]

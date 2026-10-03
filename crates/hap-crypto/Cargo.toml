@@ -24,6 +24,7 @@ sha2 = { workspace = true }
 subtle = { workspace = true }
 hkdf = { workspace = true }
 chacha20poly1305 = { workspace = true }
+cipher = { workspace = true }
 ed25519-dalek = { workspace = true }
 x25519-dalek = { workspace = true }
 rand_core = { workspace = true }
@@ -38,3 +39,8 @@ poly1305 = { workspace = true }
 sha1 = { workspace = true }
 hex = { workspace = true }
 serde_json = { workspace = true }
+
+# `cipher` is depended on only for its `zeroize` feature (see the workspace
+# manifest), so no code references it.
+[package.metadata.cargo-machete]
+ignored = ["cipher"]
